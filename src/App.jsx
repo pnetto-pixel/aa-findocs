@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X } from "lucide-react";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
@@ -50,6 +50,12 @@ function fmtMoney(n, opts = {}) {
     minimumFractionDigits: opts.short ? 0 : 2,
     maximumFractionDigits: opts.short ? 0 : 2,
   }).format(n);
+}
+
+// Returns masked dollar string when hidden=true, formatted money otherwise.
+function maskMoney(n, hidden, opts = {}) {
+  if (hidden) return "$ ••••";
+  return fmtMoney(n, opts);
 }
 
 function fmtPct(n, digits = 2) {
@@ -179,6 +185,20 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
 
   // Allocation chart grouping mode
   const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
+
+  // Privacy mode: hide $ amounts (for showing the app to others)
+  const [valuesHidden, setValuesHidden] = useState(() => {
+    try {
+      return localStorage.getItem("values_hidden") === "1";
+    } catch (e) {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("values_hidden", valuesHidden ? "1" : "0");
+    } catch (e) {}
+  }, [valuesHidden]);
 
   // Load holdings from localStorage on mount
   useEffect(() => {
@@ -692,6 +712,20 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                   {refreshing ? "Refreshing" : "Refresh all"}
                 </button>
                 <button
+                  onClick={() => setValuesHidden((v) => !v)}
+                  title={valuesHidden ? "Show values" : "Hide values"}
+                  style={{
+                    background: valuesHidden ? "rgba(201, 169, 97, 0.12)" : "transparent",
+                    border: `1px solid ${valuesHidden ? T.gold : T.border}`,
+                    color: valuesHidden ? T.gold : T.textDim,
+                    padding: "6px 8px",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  {valuesHidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                </button>
+                <button
                   onClick={onLogout}
                   title="Sign out"
                   style={{
@@ -773,7 +807,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 color: T.text,
               }}
             >
-              {fmtMoney(totalValue)}
+              {maskMoney(totalValue, valuesHidden)}
             </div>
             <div
               style={{
@@ -865,7 +899,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 <DonutChart
                   slices={chartData.actualSlices}
                   centerLabel="Actual"
-                  centerValue={fmtMoney(chartData.totalActualValue, { short: true })}
+                  centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
                 />
               </div>
 
@@ -1199,6 +1233,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                         holding={h}
                         totalValue={totalValue}
                         busy={!!busyIds[h.id]}
+                        valuesHidden={valuesHidden}
                         onRefresh={() => refreshOne(h.id, h.ticker)}
                         onRemove={() => removeHolding(h.id)}
                         editingClass={editingClassId === h.id}
@@ -1234,6 +1269,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                         key={h.id}
                         holding={h}
                         totalValue={totalValue}
+                        valuesHidden={valuesHidden}
                         onUpdate={(patch) => updateManualHolding(h.id, patch)}
                         onRemove={() => removeHolding(h.id)}
                       />
@@ -1609,12 +1645,12 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                     }}
                   >
                     {rebalance.map((r) => (
-                      <RebalanceRow key={r.holding.id} item={r} />
+                      <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
                     ))}
                   </div>
 
                   {/* Summary */}
-                  <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} />
+                  <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} valuesHidden={valuesHidden} />
 
                   {Math.abs(totalTarget - 100) > 0.5 && (
                     <div
@@ -1690,6 +1726,7 @@ function HoldingRow({
   holding,
   totalValue,
   busy,
+  valuesHidden,
   onRefresh,
   onRemove,
   editingClass,
@@ -1847,7 +1884,7 @@ function HoldingRow({
               lineHeight: 1.1,
             }}
           >
-            {value != null ? fmtMoney(value) : busy ? "…" : "—"}
+            {value != null ? maskMoney(value, valuesHidden) : busy ? "…" : "—"}
           </div>
           <div
             style={{
@@ -1857,7 +1894,7 @@ function HoldingRow({
               marginTop: 2,
             }}
           >
-            {fmtNum(holding.qty)} × {holding.price != null ? fmtMoney(holding.price) : "—"}
+            {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
           </div>
         </div>
       </div>
@@ -1992,7 +2029,7 @@ function IconButton({ children, onClick, disabled, danger, label }) {
   );
 }
 
-function RebalanceRow({ item }) {
+function RebalanceRow({ item, valuesHidden }) {
   const { holding, currentValue, targetValue, deltaDollars, deltaShares } = item;
   // Threshold: if within $5 or 0.5% of target, consider on target
   const onTarget = Math.abs(deltaDollars) < Math.max(5, targetValue * 0.005);
@@ -2032,7 +2069,7 @@ function RebalanceRow({ item }) {
             letterSpacing: "0.04em",
           }}
         >
-          {fmtMoney(currentValue, { short: true })} → {fmtMoney(targetValue, { short: true })}
+          {maskMoney(currentValue, valuesHidden, { short: true })} → {maskMoney(targetValue, valuesHidden, { short: true })}
         </div>
       </div>
 
@@ -2082,7 +2119,7 @@ function RebalanceRow({ item }) {
   );
 }
 
-function RebalanceSummary({ items, newCash }) {
+function RebalanceSummary({ items, newCash, valuesHidden }) {
   const totalBuy = items.reduce((s, i) => s + (i.deltaDollars > 0 ? i.deltaDollars : 0), 0);
 
   if (totalBuy === 0) return null;
@@ -2106,7 +2143,7 @@ function RebalanceSummary({ items, newCash }) {
         <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.textFaint, marginBottom: 2 }}>
           Total to buy
         </div>
-        <div style={{ color: T.green, fontWeight: 600 }}>{fmtMoney(totalBuy)}</div>
+        <div style={{ color: T.green, fontWeight: 600 }}>{maskMoney(totalBuy, valuesHidden)}</div>
       </div>
     </div>
   );
@@ -2350,7 +2387,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, totalValue, onUpdate, onRemove }) {
+function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
@@ -2478,7 +2515,7 @@ function ManualHoldingRow({ holding, totalValue, onUpdate, onRemove }) {
               lineHeight: 1.1,
             }}
           >
-            {fmtMoney(value)}
+            {maskMoney(value, valuesHidden)}
           </div>
           {holding.manualMode === "qty_price" && (
             <div
@@ -2489,7 +2526,7 @@ function ManualHoldingRow({ holding, totalValue, onUpdate, onRemove }) {
                 marginTop: 2,
               }}
             >
-              {fmtNum(holding.qty)} × {fmtMoney(holding.manualPrice)}
+              {fmtNum(holding.qty)} × {maskMoney(holding.manualPrice, valuesHidden)}
             </div>
           )}
         </div>
