@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut } from "lucide-react";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
@@ -35,7 +35,7 @@ function fmtMoney(n, opts = {}) {
   }).format(n);
 }
 
-function fmtPct(n, digits = 1) {
+function fmtPct(n, digits = 2) {
   if (n == null || isNaN(n)) return "—";
   return `${n.toFixed(digits)}%`;
 }
@@ -138,6 +138,27 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   const [showRebalance, setShowRebalance] = useState(false);
   const [newCash, setNewCash] = useState("");
   const fileInputRef = useRef(null);
+  const importJsonRef = useRef(null);
+
+  // Manual asset form state
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [manualName, setManualName] = useState("");
+  const [manualMode, setManualMode] = useState("value"); // "value" | "qty_price"
+  const [manualValueInput, setManualValueInput] = useState("");
+  const [manualQty, setManualQty] = useState("");
+  const [manualPriceInput, setManualPriceInput] = useState("");
+  const [manualTarget, setManualTarget] = useState("");
+  const [manualClass, setManualClass] = useState("");
+  const [manualFormError, setManualFormError] = useState("");
+
+  // Filter/sort state
+  const [filterText, setFilterText] = useState("");
+  const [filterClass, setFilterClass] = useState("");
+  const [sortBy, setSortBy] = useState("default"); // default | name | value | name_desc | value_desc
+
+  // Edit asset class state
+  const [editingClassId, setEditingClassId] = useState(null);
+  const [editingClassValue, setEditingClassValue] = useState("");
 
   // Load holdings from localStorage on mount
   useEffect(() => {
@@ -156,8 +177,21 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     } catch (e) {}
   }, [holdings, loaded]);
 
+  // Compute current value for any holding type
+  function holdingValue(h) {
+    if (h.type === "manual") {
+      if (h.manualMode === "value") {
+        return h.manualValue != null ? h.manualValue : 0;
+      }
+      // manualMode === "qty_price"
+      return h.manualPrice != null && h.qty != null ? h.manualPrice * h.qty : 0;
+    }
+    // auto
+    return h.price ? h.price * h.qty : 0;
+  }
+
   const totalValue = useMemo(
-    () => holdings.reduce((s, h) => s + (h.price ? h.price * h.qty : 0), 0),
+    () => holdings.reduce((s, h) => s + holdingValue(h), 0),
     [holdings]
   );
 
@@ -185,6 +219,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 ...h,
                 price: data.price,
                 name: data.name || h.name,
+                assetClass: h.assetClassOverride || data.assetClass || h.assetClass || "Uncategorized",
                 lastUpdated: new Date().toISOString(),
                 error: null,
               }
@@ -207,9 +242,10 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   }
 
   async function refreshAll() {
-    if (holdings.length === 0) return;
+    const autoHoldings = holdings.filter((h) => h.type !== "manual");
+    if (autoHoldings.length === 0) return;
     setRefreshing(true);
-    await Promise.all(holdings.map((h) => refreshOne(h.id, h.ticker)));
+    await Promise.all(autoHoldings.map((h) => refreshOne(h.id, h.ticker)));
     setRefreshing(false);
   }
 
@@ -225,11 +261,14 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const newH = {
       id,
+      type: "auto",
       ticker: t,
       qty: q,
       target: tgt,
       price: null,
       name: null,
+      assetClass: null,
+      assetClassOverride: null,
       error: null,
       lastUpdated: null,
     };
@@ -242,6 +281,116 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
 
   function removeHolding(id) {
     setHoldings((prev) => prev.filter((h) => h.id !== id));
+  }
+
+  function addManualHolding() {
+    setManualFormError("");
+    const name = manualName.trim();
+    if (!name) return setManualFormError("Name required");
+    const tgt = manualTarget === "" ? 0 : parseFloat(manualTarget);
+    if (tgt < 0 || tgt > 100) return setManualFormError("Target % must be 0–100");
+
+    let qty = null;
+    let manualPrice = null;
+    let manualValue = null;
+
+    if (manualMode === "value") {
+      manualValue = parseFloat(manualValueInput);
+      if (isNaN(manualValue) || manualValue < 0)
+        return setManualFormError("Value must be ≥ 0");
+    } else {
+      qty = parseFloat(manualQty);
+      manualPrice = parseFloat(manualPriceInput);
+      if (isNaN(qty) || qty <= 0) return setManualFormError("Quantity must be > 0");
+      if (isNaN(manualPrice) || manualPrice < 0)
+        return setManualFormError("Price must be ≥ 0");
+    }
+
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    setHoldings((prev) => [
+      ...prev,
+      {
+        id,
+        type: "manual",
+        ticker: name.toUpperCase().slice(0, 12),
+        name,
+        manualMode,
+        qty,
+        manualPrice,
+        manualValue,
+        target: tgt,
+        assetClass: manualClass.trim() || "Manual",
+        assetClassOverride: manualClass.trim() || null,
+        price: null,
+        error: null,
+        lastUpdated: new Date().toISOString(),
+      },
+    ]);
+    // Reset form
+    setManualName("");
+    setManualValueInput("");
+    setManualQty("");
+    setManualPriceInput("");
+    setManualTarget("");
+    setManualClass("");
+    setShowManualForm(false);
+  }
+
+  function updateManualHolding(id, patch) {
+    setHoldings((prev) =>
+      prev.map((h) =>
+        h.id === id
+          ? { ...h, ...patch, lastUpdated: new Date().toISOString() }
+          : h
+      )
+    );
+  }
+
+  function saveAssetClass(id) {
+    setHoldings((prev) =>
+      prev.map((h) =>
+        h.id === id
+          ? {
+              ...h,
+              assetClass: editingClassValue.trim() || "Uncategorized",
+              assetClassOverride: editingClassValue.trim() || null,
+            }
+          : h
+      )
+    );
+    setEditingClassId(null);
+    setEditingClassValue("");
+  }
+
+  function exportData() {
+    const blob = new Blob([JSON.stringify({ holdings, exportedAt: new Date().toISOString() }, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `portfolio-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function importData(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        const incoming = Array.isArray(parsed) ? parsed : parsed.holdings;
+        if (!Array.isArray(incoming)) throw new Error("Invalid format");
+        if (!confirm(`Replace your current ${holdings.length} holdings with ${incoming.length} from backup?`)) return;
+        setHoldings(incoming);
+      } catch (err) {
+        alert(`Import failed: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
   }
 
   function handleCSVFile(file) {
@@ -276,11 +425,14 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
               const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
               const pos = {
                 id,
+                type: "auto",
                 ticker: r.ticker,
                 qty: r.qty,
                 target: r.target,
                 price: null,
                 name: null,
+                assetClass: null,
+                assetClassOverride: null,
                 error: null,
                 lastUpdated: null,
               };
@@ -312,21 +464,90 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   }
 
   // Rebalance: compute buy/sell per holding to hit target allocation
+  // Includes both auto and manual holdings. For manual qty_price, deltaShares is computed.
+  // For manual value-only, only deltaDollars is shown.
   const rebalance = useMemo(() => {
     const cash = parseFloat(newCash) || 0;
     const investableTotal = totalValue + cash;
     if (investableTotal <= 0) return [];
 
     return holdings
-      .filter((h) => h.price && h.target > 0)
+      .filter((h) => {
+        if (h.target <= 0) return false;
+        if (h.type === "manual") {
+          if (h.manualMode === "value") return h.manualValue != null;
+          return h.manualPrice != null && h.qty != null;
+        }
+        return h.price != null;
+      })
       .map((h) => {
-        const currentValue = h.price * h.qty;
+        const currentValue = holdingValue(h);
         const targetValue = investableTotal * (h.target / 100);
         const deltaDollars = targetValue - currentValue;
-        const deltaShares = deltaDollars / h.price;
+        let deltaShares = null;
+        if (h.type === "manual") {
+          if (h.manualMode === "qty_price" && h.manualPrice) {
+            deltaShares = deltaDollars / h.manualPrice;
+          }
+        } else if (h.price) {
+          deltaShares = deltaDollars / h.price;
+        }
         return { holding: h, currentValue, targetValue, deltaDollars, deltaShares };
       });
   }, [holdings, totalValue, newCash]);
+
+  // Build asset class dropdown options from existing holdings
+  const assetClassOptions = useMemo(() => {
+    const set = new Set();
+    holdings.forEach((h) => {
+      const c = h.assetClass || "Uncategorized";
+      set.add(c);
+    });
+    return Array.from(set).sort();
+  }, [holdings]);
+
+  // Apply text filter, class filter, then sort
+  function applyFiltersAndSort(list) {
+    let result = list;
+    if (filterText.trim()) {
+      const q = filterText.trim().toLowerCase();
+      result = result.filter(
+        (h) =>
+          (h.ticker || "").toLowerCase().includes(q) ||
+          (h.name || "").toLowerCase().includes(q)
+      );
+    }
+    if (filterClass) {
+      result = result.filter((h) => (h.assetClass || "Uncategorized") === filterClass);
+    }
+    if (sortBy !== "default") {
+      result = [...result].sort((a, b) => {
+        if (sortBy === "name" || sortBy === "name_desc") {
+          const an = (a.name || a.ticker || "").toLowerCase();
+          const bn = (b.name || b.ticker || "").toLowerCase();
+          return sortBy === "name" ? an.localeCompare(bn) : bn.localeCompare(an);
+        }
+        if (sortBy === "value" || sortBy === "value_desc") {
+          const av = holdingValue(a);
+          const bv = holdingValue(b);
+          return sortBy === "value" ? av - bv : bv - av;
+        }
+        return 0;
+      });
+    }
+    return result;
+  }
+
+  const filteredAutoHoldings = useMemo(
+    () => applyFiltersAndSort(holdings.filter((h) => h.type !== "manual")),
+    [holdings, filterText, filterClass, sortBy]
+  );
+  const filteredManualHoldings = useMemo(
+    () => applyFiltersAndSort(holdings.filter((h) => h.type === "manual")),
+    [holdings, filterText, filterClass, sortBy]
+  );
+
+  const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "default");
 
   return (
     <>
@@ -491,7 +712,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
               <span>{holdings.length} {holdings.length === 1 ? "position" : "positions"}</span>
               {totalTarget > 0 && (
                 <span>
-                  Target alloc: <span style={{ color: T.text }}>{fmtPct(totalTarget, 0)}</span>
+                  Target alloc: <span style={{ color: T.text }}>{fmtPct(totalTarget)}</span>
                   {Math.abs(totalTarget - 100) > 0.1 && (
                     <span style={{ color: T.gold, marginLeft: 6 }}>
                       ({totalTarget > 100 ? "+" : ""}{(totalTarget - 100).toFixed(1)} from 100)
@@ -699,19 +920,438 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
               No positions yet. Add your first ticker above.
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {holdings.map((h) => (
-                <HoldingRow
-                  key={h.id}
-                  holding={h}
-                  totalValue={totalValue}
-                  busy={!!busyIds[h.id]}
-                  onRefresh={() => refreshOne(h.id, h.ticker)}
-                  onRemove={() => removeHolding(h.id)}
-                />
-              ))}
-            </div>
+            <>
+              {/* Filter / sort bar */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  marginBottom: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div
+                  style={{
+                    flex: "1 1 140px",
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  <Search
+                    size={12}
+                    style={{
+                      position: "absolute",
+                      left: 10,
+                      color: T.textFaint,
+                      pointerEvents: "none",
+                    }}
+                  />
+                  <input
+                    placeholder="Filter by ticker or name"
+                    value={filterText}
+                    onChange={(e) => setFilterText(e.target.value)}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${T.border}`,
+                      color: T.text,
+                      padding: "8px 10px 8px 28px",
+                      fontSize: 12,
+                      fontFamily: FONT_MONO,
+                      borderRadius: 2,
+                      width: "100%",
+                    }}
+                  />
+                </div>
+                <select
+                  value={filterClass}
+                  onChange={(e) => setFilterClass(e.target.value)}
+                  style={{
+                    background: T.cardElev,
+                    border: `1px solid ${T.border}`,
+                    color: filterClass ? T.text : T.textFaint,
+                    padding: "8px 10px",
+                    fontSize: 11,
+                    fontFamily: FONT_MONO,
+                    borderRadius: 2,
+                    flex: "1 1 110px",
+                    minWidth: 110,
+                  }}
+                >
+                  <option value="">All classes</option>
+                  {assetClassOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  style={{
+                    background: T.cardElev,
+                    border: `1px solid ${T.border}`,
+                    color: sortBy !== "default" ? T.text : T.textFaint,
+                    padding: "8px 10px",
+                    fontSize: 11,
+                    fontFamily: FONT_MONO,
+                    borderRadius: 2,
+                    flex: "1 1 110px",
+                    minWidth: 110,
+                  }}
+                >
+                  <option value="default">Default order</option>
+                  <option value="name">Name A→Z</option>
+                  <option value="name_desc">Name Z→A</option>
+                  <option value="value_desc">Value high→low</option>
+                  <option value="value">Value low→high</option>
+                </select>
+                {hasActiveFilter && (
+                  <button
+                    onClick={() => {
+                      setFilterText("");
+                      setFilterClass("");
+                      setSortBy("default");
+                    }}
+                    title="Clear filters"
+                    style={{
+                      background: "transparent",
+                      border: `1px solid ${T.border}`,
+                      color: T.textDim,
+                      padding: "8px 10px",
+                      borderRadius: 2,
+                      display: "flex",
+                      alignItems: "center",
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              {/* Auto holdings */}
+              {filteredAutoHoldings.length > 0 && (
+                <>
+                  <SectionLabel
+                    label="Tracked"
+                    count={filteredAutoHoldings.length}
+                    of={holdings.filter((h) => h.type !== "manual").length}
+                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {filteredAutoHoldings.map((h) => (
+                      <HoldingRow
+                        key={h.id}
+                        holding={h}
+                        totalValue={totalValue}
+                        busy={!!busyIds[h.id]}
+                        onRefresh={() => refreshOne(h.id, h.ticker)}
+                        onRemove={() => removeHolding(h.id)}
+                        editingClass={editingClassId === h.id}
+                        editingClassValue={editingClassValue}
+                        onEditClass={() => {
+                          setEditingClassId(h.id);
+                          setEditingClassValue(h.assetClassOverride || h.assetClass || "");
+                        }}
+                        onSaveClass={() => saveAssetClass(h.id)}
+                        onCancelEditClass={() => {
+                          setEditingClassId(null);
+                          setEditingClassValue("");
+                        }}
+                        onChangeEditClassValue={setEditingClassValue}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Manual holdings */}
+              {filteredManualHoldings.length > 0 && (
+                <>
+                  <SectionLabel
+                    label="Manual"
+                    count={filteredManualHoldings.length}
+                    of={holdings.filter((h) => h.type === "manual").length}
+                    icon={<Wallet size={11} />}
+                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {filteredManualHoldings.map((h) => (
+                      <ManualHoldingRow
+                        key={h.id}
+                        holding={h}
+                        totalValue={totalValue}
+                        onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                        onRemove={() => removeHolding(h.id)}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* No results from filter */}
+              {filteredAutoHoldings.length === 0 && filteredManualHoldings.length === 0 && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "30px 20px",
+                    color: T.textFaint,
+                    fontStyle: "italic",
+                    fontFamily: FONT_DISPLAY,
+                    fontSize: 14,
+                  }}
+                >
+                  No holdings match your filter.
+                </div>
+              )}
+            </>
           )}
+
+          {/* Add manual asset section */}
+          <section
+            style={{
+              marginTop: 18,
+              background: T.card,
+              border: `1px solid ${T.borderSoft}`,
+              borderRadius: 4,
+              padding: 14,
+            }}
+          >
+            <button
+              onClick={() => setShowManualForm(!showManualForm)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.text,
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: 0,
+              }}
+            >
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: T.gold,
+                }}
+              >
+                <Wallet size={12} />
+                Add Manual Asset
+              </span>
+              <ChevronDown
+                size={14}
+                style={{
+                  color: T.textDim,
+                  transform: showManualForm ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                }}
+              />
+            </button>
+
+            {showManualForm && (
+              <div style={{ marginTop: 14 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: T.textDim,
+                    fontFamily: FONT_MONO,
+                    marginBottom: 8,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  For assets without a public ticker (Cash, Bonds, Tesouro SELIC, Tesouro IPCA, etc.). Price won't auto-update.
+                </div>
+
+                {/* Mode toggle */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <ModeButton
+                    active={manualMode === "value"}
+                    onClick={() => setManualMode("value")}
+                    label="Total value"
+                  />
+                  <ModeButton
+                    active={manualMode === "qty_price"}
+                    onClick={() => setManualMode("qty_price")}
+                    label="Qty × price"
+                  />
+                </div>
+
+                <Input
+                  placeholder="Name (e.g. Cash, Tesouro SELIC)"
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                  style={{ marginBottom: 8 }}
+                />
+
+                {manualMode === "value" ? (
+                  <Input
+                    placeholder="Current value (e.g. 5000)"
+                    value={manualValueInput}
+                    onChange={(e) => setManualValueInput(e.target.value)}
+                    inputMode="decimal"
+                    style={{ marginBottom: 8 }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 8,
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Input
+                      placeholder="Quantity"
+                      value={manualQty}
+                      onChange={(e) => setManualQty(e.target.value)}
+                      inputMode="decimal"
+                    />
+                    <Input
+                      placeholder="Price"
+                      value={manualPriceInput}
+                      onChange={(e) => setManualPriceInput(e.target.value)}
+                      inputMode="decimal"
+                    />
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 8,
+                    marginBottom: 10,
+                  }}
+                >
+                  <Input
+                    placeholder="Target % (e.g. 5.5)"
+                    value={manualTarget}
+                    onChange={(e) => setManualTarget(e.target.value)}
+                    inputMode="decimal"
+                  />
+                  <Input
+                    placeholder="Class (e.g. Cash)"
+                    value={manualClass}
+                    onChange={(e) => setManualClass(e.target.value)}
+                  />
+                </div>
+
+                <button
+                  onClick={addManualHolding}
+                  style={{
+                    width: "100%",
+                    background: T.gold,
+                    color: T.bg,
+                    border: "none",
+                    padding: "11px 16px",
+                    fontWeight: 600,
+                    fontSize: 12,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontFamily: FONT_BODY,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    borderRadius: 2,
+                  }}
+                >
+                  <Plus size={14} strokeWidth={2.5} />
+                  Add manual asset
+                </button>
+                {manualFormError && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      fontSize: 12,
+                      color: T.red,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <AlertCircle size={12} />
+                    {manualFormError}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Backup / restore */}
+          <div
+            style={{
+              marginTop: 18,
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+            }}
+          >
+            <input
+              ref={importJsonRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) importData(f);
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={exportData}
+              disabled={holdings.length === 0}
+              style={{
+                flex: 1,
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.textDim,
+                padding: "9px 12px",
+                fontSize: 11,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                fontFamily: FONT_BODY,
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                borderRadius: 2,
+              }}
+            >
+              <Download size={12} />
+              Export backup
+            </button>
+            <button
+              onClick={() => importJsonRef.current?.click()}
+              style={{
+                flex: 1,
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.textDim,
+                padding: "9px 12px",
+                fontSize: 11,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                fontFamily: FONT_BODY,
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                borderRadius: 2,
+              }}
+            >
+              <Upload size={12} />
+              Restore backup
+            </button>
+          </div>
+
 
           {/* Rebalance Section */}
           {rebalance.length > 0 && (
@@ -840,7 +1480,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                     >
                       <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
                       <span>
-                        Targets sum to {fmtPct(totalTarget, 1)}, not 100%. Rebalance numbers
+                        Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
                         assume the targets you've set; cash may not be fully deployed.
                       </span>
                     </div>
@@ -891,7 +1531,19 @@ function Input({ style, onEnter, ...props }) {
   );
 }
 
-function HoldingRow({ holding, totalValue, busy, onRefresh, onRemove }) {
+function HoldingRow({
+  holding,
+  totalValue,
+  busy,
+  onRefresh,
+  onRemove,
+  editingClass,
+  editingClassValue,
+  onEditClass,
+  onSaveClass,
+  onCancelEditClass,
+  onChangeEditClassValue,
+}) {
   const value = holding.price ? holding.price * holding.qty : null;
   const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
@@ -950,6 +1602,84 @@ function HoldingRow({ holding, totalValue, busy, onRefresh, onRemove }) {
               {holding.name}
             </div>
           )}
+          {/* Asset class chip / edit */}
+          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
+            {editingClass ? (
+              <>
+                <input
+                  value={editingClassValue}
+                  onChange={(e) => onChangeEditClassValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onSaveClass();
+                    if (e.key === "Escape") onCancelEditClass();
+                  }}
+                  autoFocus
+                  placeholder="Asset class"
+                  style={{
+                    background: T.cardElev,
+                    border: `1px solid ${T.gold}`,
+                    color: T.text,
+                    padding: "3px 6px",
+                    fontSize: 10,
+                    fontFamily: FONT_MONO,
+                    borderRadius: 1,
+                    minWidth: 0,
+                    flex: 1,
+                    maxWidth: 180,
+                  }}
+                />
+                <button
+                  onClick={onSaveClass}
+                  style={{
+                    background: T.gold,
+                    color: T.bg,
+                    border: "none",
+                    padding: "3px 6px",
+                    fontSize: 10,
+                    borderRadius: 1,
+                    fontWeight: 600,
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  onClick={onCancelEditClass}
+                  style={{
+                    background: "transparent",
+                    border: `1px solid ${T.border}`,
+                    color: T.textDim,
+                    padding: "3px 6px",
+                    fontSize: 10,
+                    borderRadius: 1,
+                  }}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={onEditClass}
+                title="Edit asset class"
+                style={{
+                  background: "rgba(201, 169, 97, 0.08)",
+                  border: `1px solid ${T.goldDim}55`,
+                  color: T.gold,
+                  padding: "2px 7px",
+                  fontSize: 9,
+                  fontFamily: FONT_MONO,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  borderRadius: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                {holding.assetClass || "Uncategorized"}
+                <Pencil size={8} />
+              </button>
+            )}
+          </div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div
@@ -1030,11 +1760,11 @@ function HoldingRow({ holding, totalValue, busy, onRefresh, onRemove }) {
               Actual <span style={{ color: T.gold }}>{fmtPct(actualPct)}</span>
             </span>
             <span>
-              Target <span style={{ color: T.text }}>{fmtPct(holding.target, 0)}</span>
+              Target <span style={{ color: T.text }}>{fmtPct(holding.target)}</span>
             </span>
             <span style={{ display: "flex", alignItems: "center", gap: 4, color: driftColor }}>
               <DriftIcon size={10} strokeWidth={2.5} />
-              {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(1)}` : "—"}
+              {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)}` : "—"}
             </span>
           </div>
         </div>
@@ -1186,7 +1916,9 @@ function RebalanceRow({ item }) {
                 marginBottom: 3,
               }}
             >
-              {action} {fmtNum(Math.abs(deltaShares).toFixed(2))}
+              {deltaShares != null
+                ? `${action} ${fmtNum(Math.abs(deltaShares).toFixed(2))}`
+                : action}
             </div>
             <div
               style={{
@@ -1418,5 +2150,397 @@ function LoginGate({ onAuth }) {
         </div>
       </div>
     </>
+  );
+}
+
+function SectionLabel({ label, count, of, icon }) {
+  return (
+    <div
+      style={{
+        marginTop: 18,
+        marginBottom: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        paddingBottom: 6,
+        borderBottom: `1px solid ${T.borderSoft}`,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: FONT_MONO,
+          fontSize: 9,
+          letterSpacing: "0.2em",
+          textTransform: "uppercase",
+          color: T.gold,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        {icon}
+        {label}
+      </div>
+      <div
+        style={{
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          color: T.textFaint,
+        }}
+      >
+        {count}
+        {of != null && of !== count ? ` / ${of}` : ""}
+      </div>
+    </div>
+  );
+}
+
+function ModeButton({ active, onClick, label }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1,
+        background: active ? T.gold : "transparent",
+        border: `1px solid ${active ? T.gold : T.border}`,
+        color: active ? T.bg : T.textDim,
+        padding: "7px 10px",
+        fontSize: 10,
+        fontFamily: FONT_MONO,
+        letterSpacing: "0.1em",
+        textTransform: "uppercase",
+        fontWeight: 600,
+        borderRadius: 2,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ManualHoldingRow({ holding, totalValue, onUpdate, onRemove }) {
+  const [editing, setEditing] = useState(false);
+  const [draftValue, setDraftValue] = useState("");
+  const [draftQty, setDraftQty] = useState("");
+  const [draftPrice, setDraftPrice] = useState("");
+  const [draftTarget, setDraftTarget] = useState("");
+  const [draftClass, setDraftClass] = useState("");
+
+  const value =
+    holding.manualMode === "value"
+      ? holding.manualValue ?? 0
+      : (holding.manualPrice ?? 0) * (holding.qty ?? 0);
+  const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
+  const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
+
+  const driftColor =
+    drift == null ? T.textDim : Math.abs(drift) < 1 ? T.textDim : drift > 0 ? T.green : T.red;
+  const DriftIcon =
+    drift == null ? Minus : Math.abs(drift) < 1 ? Minus : drift > 0 ? TrendingUp : TrendingDown;
+
+  function startEdit() {
+    setDraftValue(holding.manualValue != null ? String(holding.manualValue) : "");
+    setDraftQty(holding.qty != null ? String(holding.qty) : "");
+    setDraftPrice(holding.manualPrice != null ? String(holding.manualPrice) : "");
+    setDraftTarget(holding.target != null ? String(holding.target) : "");
+    setDraftClass(holding.assetClass || "");
+    setEditing(true);
+  }
+
+  function saveEdit() {
+    const patch = {
+      target: draftTarget === "" ? 0 : parseFloat(draftTarget) || 0,
+      assetClass: draftClass.trim() || "Manual",
+      assetClassOverride: draftClass.trim() || null,
+    };
+    if (holding.manualMode === "value") {
+      const v = parseFloat(draftValue);
+      patch.manualValue = isNaN(v) ? 0 : v;
+    } else {
+      const q = parseFloat(draftQty);
+      const p = parseFloat(draftPrice);
+      patch.qty = isNaN(q) ? 0 : q;
+      patch.manualPrice = isNaN(p) ? 0 : p;
+    }
+    onUpdate(patch);
+    setEditing(false);
+  }
+
+  return (
+    <div
+      className="card-enter"
+      style={{
+        background: T.card,
+        border: `1px solid ${T.borderSoft}`,
+        borderRadius: 4,
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontFamily: FONT_DISPLAY,
+              fontSize: 18,
+              fontWeight: 500,
+              fontStyle: "italic",
+              color: T.text,
+              marginBottom: 2,
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {holding.name}
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                background: "rgba(201, 169, 97, 0.08)",
+                border: `1px solid ${T.goldDim}55`,
+                color: T.gold,
+                padding: "2px 7px",
+                fontSize: 9,
+                fontFamily: FONT_MONO,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                borderRadius: 1,
+              }}
+            >
+              {holding.assetClass || "Manual"}
+            </span>
+            <span
+              style={{
+                fontSize: 9,
+                color: T.textFaint,
+                fontFamily: FONT_MONO,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              · {holding.manualMode === "value" ? "Total value" : "Qty × price"}
+            </span>
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div
+            style={{
+              fontFamily: FONT_DISPLAY,
+              fontSize: 20,
+              fontWeight: 500,
+              letterSpacing: "-0.01em",
+              color: T.text,
+              lineHeight: 1.1,
+            }}
+          >
+            {fmtMoney(value)}
+          </div>
+          {holding.manualMode === "qty_price" && (
+            <div
+              style={{
+                fontSize: 11,
+                color: T.textDim,
+                fontFamily: FONT_MONO,
+                marginTop: 2,
+              }}
+            >
+              {fmtNum(holding.qty)} × {fmtMoney(holding.manualPrice)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Edit form (inline) */}
+      {editing && (
+        <div
+          style={{
+            background: T.cardElev,
+            border: `1px solid ${T.border}`,
+            borderRadius: 2,
+            padding: 10,
+            marginBottom: 10,
+          }}
+        >
+          {holding.manualMode === "value" ? (
+            <Input
+              placeholder="Current value"
+              value={draftValue}
+              onChange={(e) => setDraftValue(e.target.value)}
+              inputMode="decimal"
+              style={{ marginBottom: 8 }}
+            />
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <Input
+                placeholder="Quantity"
+                value={draftQty}
+                onChange={(e) => setDraftQty(e.target.value)}
+                inputMode="decimal"
+              />
+              <Input
+                placeholder="Price"
+                value={draftPrice}
+                onChange={(e) => setDraftPrice(e.target.value)}
+                inputMode="decimal"
+              />
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <Input
+              placeholder="Target %"
+              value={draftTarget}
+              onChange={(e) => setDraftTarget(e.target.value)}
+              inputMode="decimal"
+            />
+            <Input
+              placeholder="Class"
+              value={draftClass}
+              onChange={(e) => setDraftClass(e.target.value)}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={saveEdit}
+              style={{
+                flex: 1,
+                background: T.gold,
+                color: T.bg,
+                border: "none",
+                padding: "8px 12px",
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                borderRadius: 2,
+                fontFamily: FONT_BODY,
+              }}
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              style={{
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.textDim,
+                padding: "8px 12px",
+                fontSize: 11,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                borderRadius: 2,
+                fontFamily: FONT_BODY,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Allocation bar */}
+      {holding.target > 0 && (
+        <div style={{ marginTop: 12, marginBottom: 4 }}>
+          <div
+            style={{
+              position: "relative",
+              height: 6,
+              background: T.cardElev,
+              borderRadius: 1,
+              overflow: "hidden",
+            }}
+          >
+            {actualPct != null && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  height: "100%",
+                  width: `${Math.min(actualPct, 100)}%`,
+                  background: T.gold,
+                  transition: "width 0.4s ease",
+                }}
+              />
+            )}
+            <div
+              style={{
+                position: "absolute",
+                top: -2,
+                left: `${Math.min(holding.target, 100)}%`,
+                width: 2,
+                height: 10,
+                background: T.text,
+                transform: "translateX(-1px)",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              marginTop: 6,
+              fontSize: 11,
+              fontFamily: FONT_MONO,
+              color: T.textDim,
+            }}
+          >
+            <span>
+              Actual <span style={{ color: T.gold }}>{fmtPct(actualPct)}</span>
+            </span>
+            <span>
+              Target <span style={{ color: T.text }}>{fmtPct(holding.target)}</span>
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4, color: driftColor }}>
+              <DriftIcon size={10} strokeWidth={2.5} />
+              {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)}` : "—"}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Footer / actions */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginTop: 14,
+          paddingTop: 10,
+          borderTop: `1px solid ${T.borderSoft}`,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            color: T.textFaint,
+            fontFamily: FONT_MONO,
+            letterSpacing: "0.05em",
+          }}
+        >
+          {holding.lastUpdated ? `Updated ${timeAgo(holding.lastUpdated)}` : "Manual"}
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
+            <Pencil size={13} />
+          </IconButton>
+          <IconButton onClick={onRemove} label="Remove" danger>
+            <Trash2 size={13} />
+          </IconButton>
+        </div>
+      </div>
+    </div>
   );
 }
