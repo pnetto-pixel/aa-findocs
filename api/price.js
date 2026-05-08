@@ -1,3 +1,6 @@
+// Vercel serverless function — Finnhub stock price + profile (sector/industry)
+// Gates access via APP_PASSWORD. Requires FINNHUB_API_KEY env var.
+
 export default async function handler(req, res) {
   const expectedPassword = process.env.APP_PASSWORD;
   const providedPassword = req.headers["x-app-password"];
@@ -20,6 +23,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Quote: current price
     const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${apiKey}`;
     const r = await fetch(quoteUrl);
     if (!r.ok) {
@@ -30,13 +34,19 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: `No data for "${ticker}"` });
     }
 
+    // Profile: name, industry, sector
     let name = ticker;
+    let industry = null;
+    let sector = null;
     try {
       const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${apiKey}`;
       const pr = await fetch(profileUrl);
       if (pr.ok) {
         const profile = await pr.json();
         if (profile && profile.name) name = profile.name;
+        if (profile && profile.finnhubIndustry) industry = profile.finnhubIndustry;
+        // Finnhub doesn't return a separate "sector" on free tier; industry is the main signal
+        sector = industry;
       }
     } catch (e) {}
 
@@ -46,6 +56,9 @@ export default async function handler(req, res) {
       name,
       currency: "USD",
       previousClose: data.pc ?? null,
+      assetClass: industry || "Uncategorized",
+      industry,
+      sector,
     });
   } catch (e) {
     return res.status(500).json({ error: e.message || "Fetch failed" });
