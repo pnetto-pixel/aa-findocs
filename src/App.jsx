@@ -21,6 +21,23 @@ const T = {
   redBg: "rgba(232, 140, 140, 0.08)",
 };
 
+// Earth-tone palette for donut segments (dark theme friendly)
+const DONUT_COLORS = [
+  "#c9a961", // gold
+  "#7898a9", // dusty blue
+  "#c97a61", // terracotta
+  "#8aa978", // sage
+  "#a978a9", // mauve
+  "#d4a04e", // amber
+  "#6a98a0", // teal
+  "#b88858", // copper
+  "#9a9a6a", // olive
+  "#b87878", // rose
+  "#788a98", // slate
+  "#6a8a6a", // forest
+];
+const UNALLOCATED_COLOR = "#3a3f48";
+
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -159,6 +176,9 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   // Edit asset class state
   const [editingClassId, setEditingClassId] = useState(null);
   const [editingClassValue, setEditingClassValue] = useState("");
+
+  // Allocation chart grouping mode
+  const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
 
   // Load holdings from localStorage on mount
   useEffect(() => {
@@ -549,6 +569,62 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
 
   const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "default");
 
+  // Build allocation chart data: target vs actual, grouped by class or per holding
+  const chartData = useMemo(() => {
+    const keyOf = (h) =>
+      chartGrouping === "class" ? h.assetClass || "Uncategorized" : h.name || h.ticker;
+
+    const targetMap = new Map();
+    const actualMap = new Map();
+
+    holdings.forEach((h) => {
+      const key = keyOf(h);
+      if (h.target > 0) {
+        targetMap.set(key, (targetMap.get(key) || 0) + h.target);
+      }
+      const v = holdingValue(h);
+      if (v > 0) {
+        actualMap.set(key, (actualMap.get(key) || 0) + v);
+      }
+    });
+
+    // Stable sort + color assignment
+    const allKeys = Array.from(new Set([...targetMap.keys(), ...actualMap.keys()])).sort();
+    const colorMap = {};
+    allKeys.forEach((k, i) => {
+      colorMap[k] = DONUT_COLORS[i % DONUT_COLORS.length];
+    });
+
+    const totalTarget = Array.from(targetMap.values()).reduce((s, v) => s + v, 0);
+    const targetSlices = allKeys
+      .filter((k) => targetMap.has(k))
+      .map((k) => ({
+        key: k,
+        pct: targetMap.get(k),
+        color: colorMap[k],
+      }));
+    if (totalTarget < 99.5) {
+      targetSlices.push({
+        key: "Unallocated",
+        pct: 100 - totalTarget,
+        color: UNALLOCATED_COLOR,
+        isUnallocated: true,
+      });
+    }
+
+    const totalActualValue = Array.from(actualMap.values()).reduce((s, v) => s + v, 0);
+    const actualSlices = allKeys
+      .filter((k) => actualMap.has(k))
+      .map((k) => ({
+        key: k,
+        pct: totalActualValue > 0 ? (actualMap.get(k) / totalActualValue) * 100 : 0,
+        value: actualMap.get(k),
+        color: colorMap[k],
+      }));
+
+    return { targetSlices, actualSlices, totalTarget, totalActualValue, colorMap };
+  }, [holdings, chartGrouping]);
+
   return (
     <>
       <style>{FONT_IMPORT}</style>
@@ -722,6 +798,85 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
               )}
             </div>
           </section>
+
+          {/* Allocation charts: Target vs Actual */}
+          {(chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0) && (
+            <section
+              style={{
+                background: T.card,
+                border: `1px solid ${T.borderSoft}`,
+                borderRadius: 4,
+                padding: 16,
+                marginBottom: 20,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 14,
+                  flexWrap: "wrap",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.18em",
+                    color: T.textDim,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Allocation
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <ToggleButton
+                    active={chartGrouping === "class"}
+                    onClick={() => setChartGrouping("class")}
+                    label="By class"
+                  />
+                  <ToggleButton
+                    active={chartGrouping === "holding"}
+                    onClick={() => setChartGrouping("holding")}
+                    label="Per holding"
+                  />
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 12,
+                  marginBottom: 14,
+                }}
+              >
+                <DonutChart
+                  slices={chartData.targetSlices}
+                  centerLabel="Target"
+                  centerValue={
+                    chartData.totalTarget < 99.5
+                      ? fmtPct(chartData.totalTarget)
+                      : "100%"
+                  }
+                />
+                <DonutChart
+                  slices={chartData.actualSlices}
+                  centerLabel="Actual"
+                  centerValue={fmtMoney(chartData.totalActualValue, { short: true })}
+                />
+              </div>
+
+              {/* Shared legend */}
+              <ChartLegend
+                colorMap={chartData.colorMap}
+                targetSlices={chartData.targetSlices}
+                actualSlices={chartData.actualSlices}
+              />
+            </section>
+          )}
 
           {/* Add form */}
           <section
@@ -1920,15 +2075,6 @@ function RebalanceRow({ item }) {
                 ? `${action} ${fmtNum(Math.abs(deltaShares).toFixed(2))}`
                 : action}
             </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: T.textDim,
-                fontFamily: FONT_MONO,
-              }}
-            >
-              ≈ {fmtMoney(Math.abs(deltaDollars))}
-            </div>
           </>
         )}
       </div>
@@ -1938,10 +2084,8 @@ function RebalanceRow({ item }) {
 
 function RebalanceSummary({ items, newCash }) {
   const totalBuy = items.reduce((s, i) => s + (i.deltaDollars > 0 ? i.deltaDollars : 0), 0);
-  const totalSell = items.reduce((s, i) => s + (i.deltaDollars < 0 ? -i.deltaDollars : 0), 0);
-  const net = totalBuy - totalSell;
 
-  if (totalBuy === 0 && totalSell === 0) return null;
+  if (totalBuy === 0) return null;
 
   return (
     <div
@@ -1960,21 +2104,9 @@ function RebalanceSummary({ items, newCash }) {
     >
       <div>
         <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.textFaint, marginBottom: 2 }}>
-          Buy
+          Total to buy
         </div>
         <div style={{ color: T.green, fontWeight: 600 }}>{fmtMoney(totalBuy)}</div>
-      </div>
-      <div>
-        <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.textFaint, marginBottom: 2 }}>
-          Sell
-        </div>
-        <div style={{ color: T.red, fontWeight: 600 }}>{fmtMoney(totalSell)}</div>
-      </div>
-      <div>
-        <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.textFaint, marginBottom: 2 }}>
-          Net cash {newCash > 0 ? "deployed" : "needed"}
-        </div>
-        <div style={{ color: T.text, fontWeight: 600 }}>{fmtMoney(net)}</div>
       </div>
     </div>
   );
@@ -2541,6 +2673,280 @@ function ManualHoldingRow({ holding, totalValue, onUpdate, onRemove }) {
           </IconButton>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ToggleButton({ active, onClick, label }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? T.gold : "transparent",
+        border: `1px solid ${active ? T.gold : T.border}`,
+        color: active ? T.bg : T.textDim,
+        padding: "5px 10px",
+        fontSize: 9,
+        fontFamily: FONT_MONO,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        fontWeight: 600,
+        borderRadius: 2,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function DonutChart({ slices, centerLabel, centerValue }) {
+  const size = 140;
+  const cx = size / 2;
+  const cy = size / 2;
+  const rOuter = 60;
+  const rInner = 38;
+
+  const total = slices.reduce((s, sl) => s + sl.pct, 0);
+  let cumulative = 0;
+
+  // Generate SVG arc path for one segment
+  function arcPath(startPct, endPct) {
+    const startAngle = (startPct / 100) * 2 * Math.PI - Math.PI / 2;
+    const endAngle = (endPct / 100) * 2 * Math.PI - Math.PI / 2;
+    const largeArc = endPct - startPct > 50 ? 1 : 0;
+
+    const x1 = cx + rOuter * Math.cos(startAngle);
+    const y1 = cy + rOuter * Math.sin(startAngle);
+    const x2 = cx + rOuter * Math.cos(endAngle);
+    const y2 = cy + rOuter * Math.sin(endAngle);
+    const x3 = cx + rInner * Math.cos(endAngle);
+    const y3 = cy + rInner * Math.sin(endAngle);
+    const x4 = cx + rInner * Math.cos(startAngle);
+    const y4 = cy + rInner * Math.sin(startAngle);
+
+    return `M ${x1} ${y1} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x4} ${y4} Z`;
+  }
+
+  // Special case: single slice = 100% = full ring (need different rendering, can't draw a full arc)
+  const isFullCircle = slices.length === 1 && Math.abs(slices[0].pct - 100) < 0.5;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+      }}
+    >
+      <div style={{ position: "relative", width: size, height: size }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {/* Background ring (visible if no slices) */}
+          {slices.length === 0 && (
+            <circle
+              cx={cx}
+              cy={cy}
+              r={(rOuter + rInner) / 2}
+              fill="none"
+              stroke={T.cardElev}
+              strokeWidth={rOuter - rInner}
+            />
+          )}
+          {isFullCircle ? (
+            <>
+              <circle cx={cx} cy={cy} r={rOuter} fill={slices[0].color} />
+              <circle cx={cx} cy={cy} r={rInner} fill={T.card} />
+            </>
+          ) : (
+            slices.map((sl, i) => {
+              const startPct = cumulative;
+              cumulative += sl.pct;
+              const endPct = cumulative;
+              if (sl.pct < 0.01) return null;
+              return (
+                <path
+                  key={sl.key}
+                  d={arcPath(startPct, endPct)}
+                  fill={sl.color}
+                  stroke={T.card}
+                  strokeWidth="0.5"
+                />
+              );
+            })
+          )}
+        </svg>
+        {/* Center label */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 8,
+              letterSpacing: "0.18em",
+              color: T.textDim,
+              textTransform: "uppercase",
+              marginBottom: 2,
+            }}
+          >
+            {centerLabel}
+          </div>
+          <div
+            style={{
+              fontFamily: FONT_DISPLAY,
+              fontSize: 15,
+              fontWeight: 500,
+              color: T.text,
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {centerValue}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChartLegend({ colorMap, targetSlices, actualSlices }) {
+  // Build unified rows showing target % vs actual % per key
+  const targetMap = new Map(targetSlices.filter((s) => !s.isUnallocated).map((s) => [s.key, s.pct]));
+  const actualMap = new Map(actualSlices.map((s) => [s.key, s.pct]));
+  const allKeys = Array.from(new Set([...targetMap.keys(), ...actualMap.keys()])).sort();
+
+  const hasUnallocated = targetSlices.some((s) => s.isUnallocated);
+  const unallocPct = hasUnallocated ? targetSlices.find((s) => s.isUnallocated).pct : 0;
+
+  return (
+    <div
+      style={{
+        background: T.cardElev,
+        borderRadius: 2,
+        padding: "8px 10px",
+        fontFamily: FONT_MONO,
+        fontSize: 11,
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto auto auto",
+          gap: 10,
+          paddingBottom: 6,
+          marginBottom: 4,
+          borderBottom: `1px solid ${T.borderSoft}`,
+          fontSize: 9,
+          color: T.textFaint,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+        }}
+      >
+        <div></div>
+        <div style={{ textAlign: "right", minWidth: 44 }}>Target</div>
+        <div style={{ textAlign: "right", minWidth: 44 }}>Actual</div>
+        <div style={{ textAlign: "right", minWidth: 50 }}>Drift</div>
+      </div>
+
+      {allKeys.map((key) => {
+        const t = targetMap.get(key);
+        const a = actualMap.get(key);
+        const drift = a != null && t != null ? a - t : null;
+        const driftColor =
+          drift == null
+            ? T.textFaint
+            : Math.abs(drift) < 0.5
+            ? T.textDim
+            : drift > 0
+            ? T.green
+            : T.red;
+
+        return (
+          <div
+            key={key}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto auto auto",
+              gap: 10,
+              padding: "5px 0",
+              alignItems: "center",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  background: colorMap[key],
+                  borderRadius: 1,
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  color: T.text,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {key}
+              </span>
+            </div>
+            <div style={{ textAlign: "right", color: T.textDim, minWidth: 44 }}>
+              {t != null ? fmtPct(t) : "—"}
+            </div>
+            <div style={{ textAlign: "right", color: T.text, minWidth: 44 }}>
+              {a != null ? fmtPct(a) : "—"}
+            </div>
+            <div style={{ textAlign: "right", color: driftColor, minWidth: 50 }}>
+              {drift != null
+                ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)}`
+                : "—"}
+            </div>
+          </div>
+        );
+      })}
+
+      {hasUnallocated && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto auto auto",
+            gap: 10,
+            padding: "5px 0",
+            alignItems: "center",
+            opacity: 0.7,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                background: UNALLOCATED_COLOR,
+                borderRadius: 1,
+              }}
+            />
+            <span style={{ color: T.textDim, fontStyle: "italic" }}>Unallocated</span>
+          </div>
+          <div style={{ textAlign: "right", color: T.textDim, minWidth: 44 }}>
+            {fmtPct(unallocPct)}
+          </div>
+          <div style={{ textAlign: "right", color: T.textFaint, minWidth: 44 }}>—</div>
+          <div style={{ textAlign: "right", color: T.textFaint, minWidth: 50 }}>—</div>
+        </div>
+      )}
     </div>
   );
 }
