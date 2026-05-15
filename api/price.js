@@ -7,6 +7,47 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Retry fetch with exponential backoff on 429 (rate limit) — important for Finnhub free tier.
+async function fetchWithRetry(url, options = {}, maxAttempts = 4) {
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      // 800ms, 1.6s, 3.2s
+      await sleep(800 * Math.pow(2, attempt - 1));
+    }
+    try {
+      const r = await fetch(url, options);
+      if (r.status === 429) {
+        lastError = new Error("429 Too Many Requests");
+        continue;
+      }
+      return r;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error("Fetch failed");
+}
+
+// In-memory profile cache (lives across requests within the same warm function instance).
+// Profile data (name, industry) rarely changes — caching avoids hammering Finnhub on every refresh.
+const profileCache = new Map();
+const PROFILE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function getCachedProfile(ticker) {
+  const entry = profileCache.get(ticker);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > PROFILE_TTL_MS) {
+    profileCache.delete(ticker);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCachedProfile(ticker, data) {
+  profileCache.set(ticker, { ts: Date.now(), data });
+}
+
 function isBrazilianTicker(t) {
   // Explicit .SA suffix, or B3 pattern: 4 letters + 1-2 digits (BBSE3, TAEE11)
   return /\.SA$/i.test(t) || /^[A-Z]{4}\d{1,2}$/i.test(t);
@@ -130,57 +171,63 @@ async function handleBrazilian(ticker, brapiKey, finnhubKey) {
 }
 
 async function handleUS(ticker, finnhubKey) {
+  // Quote: always fresh (it's the price)
   const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(
     ticker
   )}&token=${finnhubKey}`;
-  const r = await fetch(quoteUrl);
+  const r = await fetchWithRetry(quoteUrl);
   if (!r.ok) throw new Error(`Finnhub ${r.status}`);
   const data = await r.json();
   if (!data || data.c == null || data.c === 0) {
     throw new Error(`No data for "${ticker}"`);
   }
 
-  let name = ticker;
-  let industry = null;
-  try {
-    const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(
-      ticker
-    )}&token=${finnhubKey}`;
-    const pr = await fetch(profileUrl);
-    if (pr.ok) {
-      const profile = await pr.json();
-      if (profile?.name) name = profile.name;
-      if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
-    }
-  } catch (e) {}
+  // Profile (name + industry): check cache first to avoid hitting Finnhub on every refresh
+  let cached = getCachedProfile(ticker);
+  let name = cached?.name || ticker;
+  let industry = cached?.industry || null;
 
-  // Fallback for ETFs / instruments not in profile2: use symbol search
-  // Sometimes Finnhub rate-limits the search endpoint when called rapidly (Refresh All).
-  // Retry once with a small delay if the first attempt fails or returns nothing useful.
-  if (name === ticker) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) await sleep(400);
+  if (!cached) {
+    try {
+      const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(
+        ticker
+      )}&token=${finnhubKey}`;
+      const pr = await fetchWithRetry(profileUrl);
+      if (pr.ok) {
+        const profile = await pr.json();
+        if (profile?.name) name = profile.name;
+        if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
+      }
+    } catch (e) {}
+
+    // Fallback for ETFs: search endpoint
+    if (name === ticker) {
       try {
         const searchUrl = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(
           ticker
         )}&exchange=US&token=${finnhubKey}`;
-        const sr = await fetch(searchUrl);
-        if (!sr.ok) continue;
-        const sd = await sr.json();
-        const match =
-          (sd?.result || []).find(
-            (x) => (x.symbol || "").toUpperCase() === ticker.toUpperCase()
-          ) || (sd?.result || [])[0];
-        if (match?.description) {
-          name = match.description
-            .toLowerCase()
-            .replace(/\b\w/g, (c) => c.toUpperCase());
+        const sr = await fetchWithRetry(searchUrl);
+        if (sr.ok) {
+          const sd = await sr.json();
+          const match =
+            (sd?.result || []).find(
+              (x) => (x.symbol || "").toUpperCase() === ticker.toUpperCase()
+            ) || (sd?.result || [])[0];
+          if (match?.description) {
+            name = match.description
+              .toLowerCase()
+              .replace(/\b\w/g, (c) => c.toUpperCase());
+          }
+          if (!industry && match?.type) {
+            industry = match.type === "ETP" ? "ETF" : match.type;
+          }
         }
-        if (!industry && match?.type) {
-          industry = match.type === "ETP" ? "ETF" : match.type;
-        }
-        if (name !== ticker) break; // got a name, stop retrying
       } catch (e) {}
+    }
+
+    // Only cache if we got a real name (not just ticker fallback)
+    if (name !== ticker) {
+      setCachedProfile(ticker, { name, industry });
     }
   }
 
