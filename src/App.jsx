@@ -193,6 +193,18 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   const [trackedCollapsed, setTrackedCollapsed] = useState(false);
   const [manualCollapsed, setManualCollapsed] = useState(false);
 
+  // Toast for background refresh status
+  const [toast, setToast] = useState(null); // { kind: 'info'|'success'|'error', message: string }
+
+  // Auto-dismiss toast after a few seconds (info toasts persist while refreshing)
+  useEffect(() => {
+    if (!toast) return;
+    if (toast.kind === "info") return; // info toast stays until refreshAll replaces it
+    const timeout = toast.kind === "error" ? 6000 : 3500;
+    const t = setTimeout(() => setToast(null), timeout);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   // Privacy mode: hide $ amounts (for showing the app to others)
   const [valuesHidden, setValuesHidden] = useState(() => {
     try {
@@ -255,32 +267,37 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
       return next;
     });
 
+  // Build the updated holding object from fetched price data
+  function buildHoldingPatch(existing, data, tickerSymbol) {
+    return {
+      ...existing,
+      price: data.price,
+      previousClose: data.previousClose ?? existing.previousClose ?? null,
+      name:
+        data.name && data.name.toUpperCase() !== tickerSymbol.toUpperCase()
+          ? data.name
+          : existing.name || data.name,
+      assetClass:
+        existing.assetClassOverride ||
+        data.assetClass ||
+        existing.assetClass ||
+        "Uncategorized",
+      originalCurrency: data.originalCurrency ?? null,
+      originalPrice: data.originalPrice ?? null,
+      originalPreviousClose: data.originalPreviousClose ?? null,
+      fxRate: data.fxRate ?? null,
+      market: data.market ?? existing.market ?? null,
+      lastUpdated: new Date().toISOString(),
+      error: null,
+    };
+  }
+
   async function refreshOne(id, tickerSymbol) {
     setBusy(id, true);
     try {
       const data = await fetchPrice(tickerSymbol, password);
       setHoldings((prev) =>
-        prev.map((h) =>
-          h.id === id
-            ? {
-                ...h,
-                price: data.price,
-                previousClose: data.previousClose ?? h.previousClose ?? null,
-                name:
-                  data.name && data.name.toUpperCase() !== tickerSymbol.toUpperCase()
-                    ? data.name
-                    : h.name || data.name,
-                assetClass: h.assetClassOverride || data.assetClass || h.assetClass || "Uncategorized",
-                originalCurrency: data.originalCurrency ?? null,
-                originalPrice: data.originalPrice ?? null,
-                originalPreviousClose: data.originalPreviousClose ?? null,
-                fxRate: data.fxRate ?? null,
-                market: data.market ?? h.market ?? null,
-                lastUpdated: new Date().toISOString(),
-                error: null,
-              }
-            : h
-        )
+        prev.map((h) => (h.id === id ? buildHoldingPatch(h, data, tickerSymbol) : h))
       );
     } catch (e) {
       if (e.code === 401) {
@@ -297,20 +314,60 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     }
   }
 
+  // Background refresh: stages all updates and applies them in a single setState at the end.
+  // Shows a non-intrusive toast with progress. No per-row flickering.
   async function refreshAll() {
     const autoHoldings = holdings.filter((h) => h.type !== "manual");
     if (autoHoldings.length === 0) return;
     setRefreshing(true);
-    // Run in small batches with a short delay to avoid Finnhub search rate-limiting (60 req/min on free tier)
-    const batchSize = 4;
+    setToast({ kind: "info", message: `Refreshing ${autoHoldings.length} positions…` });
+
+    const results = new Map(); // id -> { ok: true, patch } | { ok: false, error }
+    const batchSize = 3;
     for (let i = 0; i < autoHoldings.length; i += batchSize) {
       const batch = autoHoldings.slice(i, i + batchSize);
-      await Promise.all(batch.map((h) => refreshOne(h.id, h.ticker)));
+      await Promise.all(
+        batch.map(async (h) => {
+          try {
+            const data = await fetchPrice(h.ticker, password);
+            results.set(h.id, { ok: true, data });
+          } catch (e) {
+            if (e.code === 401) {
+              throw e; // bubble up to outer catch
+            }
+            results.set(h.id, { ok: false, error: e.message || "Failed" });
+          }
+        })
+      ).catch((e) => {
+        if (e.code === 401) onAuthFail();
+      });
       if (i + batchSize < autoHoldings.length) {
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 800));
       }
     }
+
+    // Apply everything atomically
+    setHoldings((prev) =>
+      prev.map((h) => {
+        const r = results.get(h.id);
+        if (!r) return h;
+        if (r.ok) return buildHoldingPatch(h, r.data, h.ticker);
+        return { ...h, error: r.error };
+      })
+    );
+
+    const successes = Array.from(results.values()).filter((r) => r.ok).length;
+    const failures = autoHoldings.length - successes;
+
     setRefreshing(false);
+    if (failures === 0) {
+      setToast({ kind: "success", message: `Refreshed ${successes} positions` });
+    } else {
+      setToast({
+        kind: "error",
+        message: `Refreshed ${successes}/${autoHoldings.length} · ${failures} failed`,
+      });
+    }
   }
 
   async function addHolding() {
@@ -765,6 +822,70 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
         }}
       >
         <div style={{ maxWidth: 640, margin: "0 auto" }}>
+          {/* Toast notification (fixed at bottom) */}
+          {toast && (
+            <div
+              style={{
+                position: "fixed",
+                bottom: `calc(20px + env(safe-area-inset-bottom, 0px))`,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background:
+                  toast.kind === "success"
+                    ? "#1a2e22"
+                    : toast.kind === "error"
+                    ? "#2e1a1a"
+                    : T.cardElev,
+                border: `1px solid ${
+                  toast.kind === "success"
+                    ? T.green
+                    : toast.kind === "error"
+                    ? T.red
+                    : T.gold
+                }55`,
+                color:
+                  toast.kind === "success"
+                    ? T.green
+                    : toast.kind === "error"
+                    ? T.red
+                    : T.text,
+                padding: "10px 16px",
+                borderRadius: 4,
+                fontFamily: FONT_MONO,
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+                zIndex: 1000,
+                maxWidth: "calc(100% - 32px)",
+              }}
+            >
+              {toast.kind === "info" && <RefreshCw size={13} className="spin" />}
+              {toast.kind === "success" && <CheckCircle2 size={13} />}
+              {toast.kind === "error" && <AlertCircle size={13} />}
+              <span>{toast.message}</span>
+              {toast.kind !== "info" && (
+                <button
+                  onClick={() => setToast(null)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "inherit",
+                    opacity: 0.6,
+                    padding: 0,
+                    marginLeft: 6,
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                  aria-label="Dismiss"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          )}
           {/* Masthead */}
           <header style={{ marginBottom: 28 }}>
             <div
