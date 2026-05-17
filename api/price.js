@@ -30,9 +30,9 @@ async function fetchWithRetry(url, options = {}, maxAttempts = 4) {
 }
 
 // In-memory profile cache (lives across requests within the same warm function instance).
-// Profile data (name, industry) rarely changes — caching avoids hammering Finnhub on every refresh.
+// Profile data (name, industry) almost never changes — long TTL avoids hammering Finnhub.
 const profileCache = new Map();
-const PROFILE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const PROFILE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 function getCachedProfile(ticker) {
   const entry = profileCache.get(ticker);
@@ -134,7 +134,7 @@ async function fetchYahooBR(ticker) {
   };
 }
 
-async function handleBrazilian(ticker, brapiKey, finnhubKey) {
+async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false) {
   const baseTicker = stripSA(ticker).toUpperCase();
 
   // Fetch BRL price (try brapi first if key available, else Yahoo)
@@ -156,21 +156,27 @@ async function handleBrazilian(ticker, brapiKey, finnhubKey) {
   // Get USD/BRL rate (real-time via Finnhub forex, then open.er-api, then Frankfurter EOD)
   const brlPerUsd = await fetchUsdBrlRate(brapiKey, finnhubKey);
 
-  return {
+  const base = {
     price: brl.price / brlPerUsd,
     previousClose: brl.previousClose != null ? brl.previousClose / brlPerUsd : null,
-    name: brl.name,
     currency: "USD",
-    assetClass: brl.sector || "Brazilian Equity",
     originalCurrency: "BRL",
     originalPrice: brl.price,
     originalPreviousClose: brl.previousClose,
     fxRate: brlPerUsd,
     market: "B3",
   };
+
+  if (quoteOnly) return base;
+
+  return {
+    ...base,
+    name: brl.name,
+    assetClass: brl.sector || "Brazilian Equity",
+  };
 }
 
-async function handleUS(ticker, finnhubKey) {
+async function handleUS(ticker, finnhubKey, quoteOnly = false) {
   // Quote: always fresh (it's the price)
   const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(
     ticker
@@ -180,6 +186,16 @@ async function handleUS(ticker, finnhubKey) {
   const data = await r.json();
   if (!data || data.c == null || data.c === 0) {
     throw new Error(`No data for "${ticker}"`);
+  }
+
+  // quoteOnly: client has cached profile already — return price only.
+  if (quoteOnly) {
+    return {
+      price: data.c,
+      currency: "USD",
+      previousClose: data.pc ?? null,
+      market: "US",
+    };
   }
 
   // Profile (name + industry): check cache first to avoid hitting Finnhub on every refresh
@@ -266,12 +282,16 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid ticker" });
   }
 
+  // quoteOnly=1: client signals it already has name/industry/sector cached.
+  // We skip the profile + search endpoints entirely, saving ~2/3 of Finnhub calls.
+  const quoteOnly = req.query.quoteOnly === "1" || req.query.quoteOnly === "true";
+
   try {
     let payload;
     if (isBrazilianTicker(tickerRaw)) {
-      payload = await handleBrazilian(tickerRaw, brapiKey, finnhubKey);
+      payload = await handleBrazilian(tickerRaw, brapiKey, finnhubKey, quoteOnly);
     } else {
-      payload = await handleUS(tickerRaw, finnhubKey);
+      payload = await handleUS(tickerRaw, finnhubKey, quoteOnly);
     }
     res.setHeader("Cache-Control", "private, max-age=60");
     return res.status(200).json(payload);
