@@ -211,6 +211,9 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   // Toast for background refresh status
   const [toast, setToast] = useState(null); // { kind: 'info'|'success'|'error', message: string }
 
+  // Modal alert (blocks until user dismisses with OK)
+  const [alertModal, setAlertModal] = useState(null); // { title, message, kind } | null
+
   // S&P 500 benchmark (via SPY)
   const [sp500, setSp500] = useState(null); // { price, previousClose, dayChangePct } | null
   const [sp500Loading, setSp500Loading] = useState(false);
@@ -424,12 +427,18 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     const failures = autoHoldings.length - successes;
 
     setRefreshing(false);
+    setToast(null); // dismiss the "Refreshing…" toast
     if (failures === 0) {
-      setToast({ kind: "success", message: `Refreshed ${successes} positions` });
+      setAlertModal({
+        kind: "success",
+        title: "Refresh complete",
+        message: `${successes} position${successes === 1 ? "" : "s"} updated.`,
+      });
     } else {
-      setToast({
+      setAlertModal({
         kind: "error",
-        message: `Refreshed ${successes}/${autoHoldings.length} · ${failures} failed`,
+        title: "Refresh finished with errors",
+        message: `${successes} of ${autoHoldings.length} positions updated. ${failures} failed — try refreshing individually.`,
       });
     }
   }
@@ -745,6 +754,22 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
           const bv = holdingValue(b);
           return sortBy === "value" ? av - bv : bv - av;
         }
+        if (sortBy === "gap_desc" || sortBy === "gap") {
+          // Gap = absolute difference between actual% and target%, in percentage points.
+          // Holdings with no target sink to the bottom of the list.
+          const gapOf = (h) => {
+            if (!h.target || h.target <= 0) return null;
+            const v = holdingValue(h);
+            const actualPct = totalValue > 0 ? (v / totalValue) * 100 : 0;
+            return Math.abs(actualPct - h.target);
+          };
+          const ag = gapOf(a);
+          const bg = gapOf(b);
+          if (ag == null && bg == null) return 0;
+          if (ag == null) return 1;
+          if (bg == null) return -1;
+          return sortBy === "gap_desc" ? bg - ag : ag - bg;
+        }
         return 0;
       });
     }
@@ -753,11 +778,11 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
 
   const filteredAutoHoldings = useMemo(
     () => applyFiltersAndSort(holdings.filter((h) => h.type !== "manual")),
-    [holdings, filterText, filterClass, sortBy]
+    [holdings, filterText, filterClass, sortBy, totalValue]
   );
   const filteredManualHoldings = useMemo(
     () => applyFiltersAndSort(holdings.filter((h) => h.type === "manual")),
-    [holdings, filterText, filterClass, sortBy]
+    [holdings, filterText, filterClass, sortBy, totalValue]
   );
 
   const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "value_desc");
@@ -886,6 +911,96 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
         }}
       >
         <div style={{ maxWidth: 640, margin: "0 auto" }}>
+          {/* Modal alert (blocks until OK is tapped) */}
+          {alertModal && (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0, 0, 0, 0.65)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                zIndex: 2000,
+                padding: 20,
+                backdropFilter: "blur(2px)",
+              }}
+              onClick={() => setAlertModal(null)}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  background: T.card,
+                  border: `1px solid ${
+                    alertModal.kind === "error" ? T.red : T.gold
+                  }55`,
+                  borderRadius: 6,
+                  padding: 20,
+                  maxWidth: 360,
+                  width: "100%",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    marginBottom: 12,
+                  }}
+                >
+                  {alertModal.kind === "success" ? (
+                    <CheckCircle2 size={20} style={{ color: T.green }} />
+                  ) : (
+                    <AlertCircle size={20} style={{ color: T.red }} />
+                  )}
+                  <div
+                    style={{
+                      fontFamily: FONT_DISPLAY,
+                      fontSize: 18,
+                      fontWeight: 500,
+                      color: T.text,
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {alertModal.title}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: T.textDim,
+                    fontFamily: FONT_BODY,
+                    lineHeight: 1.5,
+                    marginBottom: 18,
+                  }}
+                >
+                  {alertModal.message}
+                </div>
+                <button
+                  onClick={() => setAlertModal(null)}
+                  autoFocus
+                  style={{
+                    width: "100%",
+                    background: T.gold,
+                    color: T.bg,
+                    border: "none",
+                    padding: "11px 16px",
+                    fontFamily: FONT_BODY,
+                    fontWeight: 600,
+                    fontSize: 12,
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                  }}
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Toast notification (fixed at bottom) */}
           {toast && (
             <div
@@ -1519,6 +1634,8 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 >
                   <option value="value_desc">Value high→low</option>
                   <option value="value">Value low→high</option>
+                  <option value="gap_desc">Gap to target (largest)</option>
+                  <option value="gap">Gap to target (smallest)</option>
                   <option value="name">Name A→Z</option>
                   <option value="name_desc">Name Z→A</option>
                   <option value="default">Insertion order</option>
