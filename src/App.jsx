@@ -195,7 +195,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   // Filter/sort state
   const [filterText, setFilterText] = useState("");
   const [filterClass, setFilterClass] = useState("");
-  const [sortBy, setSortBy] = useState("value_desc"); // value_desc (default) | name | value | name_desc | value
+  const [sortBy, setSortBy] = useState("gap_desc"); // gap_desc (default) | gap | value_desc | value | name | name_desc | default
 
   // Edit asset class state
   const [editingClassId, setEditingClassId] = useState(null);
@@ -205,8 +205,10 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
 
   // Collapsed states for tracked and manual sub-sections (default to collapsed for cleaner first view)
+  // Collapsed states for the unified holdings section and the separate cash section.
+  // Default collapsed for cleaner first view.
   const [trackedCollapsed, setTrackedCollapsed] = useState(true);
-  const [manualCollapsed, setManualCollapsed] = useState(true);
+  const [cashCollapsed, setCashCollapsed] = useState(true);
 
   // Toast for background refresh status
   const [toast, setToast] = useState(null); // { kind: 'info'|'success'|'error', message: string }
@@ -287,6 +289,13 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     }
     // auto
     return h.price ? h.price * h.qty : 0;
+  }
+
+  // Cash accounts: manual assets with asset class "Cash" (case-insensitive).
+  // Excluded from rebalance and sorting; rendered in a dedicated section.
+  function isCash(h) {
+    if (h.type !== "manual") return false;
+    return (h.assetClass || "").trim().toLowerCase() === "cash";
   }
 
   const totalValue = useMemo(
@@ -675,6 +684,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     // Build candidate list: only underweight holdings with valid prices
     const candidates = holdings
       .filter((h) => {
+        if (isCash(h)) return false; // cash sits separately, not rebalanced
         if (h.target <= 0) return false;
         if (h.type === "manual") {
           // Manual value-only: no integer shares to buy. Skip from suggestions.
@@ -778,16 +788,26 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     return result;
   }
 
-  const filteredAutoHoldings = useMemo(
-    () => applyFiltersAndSort(holdings.filter((h) => h.type !== "manual")),
+  // Consolidated holdings (auto + manual non-cash) — filtered & sorted together
+  const filteredHoldings = useMemo(
+    () => applyFiltersAndSort(holdings.filter((h) => !isCash(h))),
     [holdings, filterText, filterClass, sortBy, totalValue]
   );
-  const filteredManualHoldings = useMemo(
-    () => applyFiltersAndSort(holdings.filter((h) => h.type === "manual")),
-    [holdings, filterText, filterClass, sortBy, totalValue]
-  );
+  // Cash accounts — separate section, not affected by sort/filter (except text filter)
+  const cashAccounts = useMemo(() => {
+    let result = holdings.filter(isCash);
+    if (filterText.trim()) {
+      const q = filterText.trim().toLowerCase();
+      result = result.filter(
+        (h) =>
+          (h.ticker || "").toLowerCase().includes(q) ||
+          (h.name || "").toLowerCase().includes(q)
+      );
+    }
+    return result;
+  }, [holdings, filterText]);
 
-  const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "value_desc");
+  const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "gap_desc");
 
   // Build allocation chart data: target vs actual, grouped by class or per holding
   const chartData = useMemo(() => {
@@ -1634,10 +1654,10 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                     minWidth: 110,
                   }}
                 >
-                  <option value="value_desc">Value high→low</option>
-                  <option value="value">Value low→high</option>
                   <option value="gap_desc">Underweight → Overweight</option>
                   <option value="gap">Overweight → Underweight</option>
+                  <option value="value_desc">Value high→low</option>
+                  <option value="value">Value low→high</option>
                   <option value="name">Name A→Z</option>
                   <option value="name_desc">Name Z→A</option>
                   <option value="default">Insertion order</option>
@@ -1647,7 +1667,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                     onClick={() => {
                       setFilterText("");
                       setFilterClass("");
-                      setSortBy("value_desc");
+                      setSortBy("gap_desc");
                     }}
                     title="Clear filters"
                     style={{
@@ -1665,63 +1685,73 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 )}
               </div>
 
-              {/* Auto holdings */}
-              {filteredAutoHoldings.length > 0 && (
+              {/* Consolidated holdings (auto + manual non-cash) */}
+              {filteredHoldings.length > 0 && (
                 <>
                   <SectionLabel
-                    label="Tracked"
-                    count={filteredAutoHoldings.length}
-                    of={holdings.filter((h) => h.type !== "manual").length}
+                    label="Holdings"
+                    count={filteredHoldings.length}
+                    of={holdings.filter((h) => !isCash(h)).length}
                     collapsible
                     collapsed={trackedCollapsed}
                     onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
                   />
                   {!trackedCollapsed && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {filteredAutoHoldings.map((h) => (
-                        <HoldingRow
-                          key={h.id}
-                          holding={h}
-                          totalValue={totalValue}
-                          busy={!!busyIds[h.id]}
-                          valuesHidden={valuesHidden}
-                          onRefresh={() => refreshOne(h.id, h.ticker)}
-                          onRemove={() => removeHolding(h.id)}
-                          onUpdate={(patch) => updateHolding(h.id, patch)}
-                          editingClass={editingClassId === h.id}
-                          editingClassValue={editingClassValue}
-                          onEditClass={() => {
-                            setEditingClassId(h.id);
-                            setEditingClassValue(h.assetClassOverride || h.assetClass || "");
-                          }}
-                          onSaveClass={() => saveAssetClass(h.id)}
-                          onCancelEditClass={() => {
-                            setEditingClassId(null);
-                            setEditingClassValue("");
-                          }}
-                          onChangeEditClassValue={setEditingClassValue}
-                        />
-                      ))}
+                      {filteredHoldings.map((h) =>
+                        h.type === "manual" ? (
+                          <ManualHoldingRow
+                            key={h.id}
+                            holding={h}
+                            totalValue={totalValue}
+                            valuesHidden={valuesHidden}
+                            onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                            onRemove={() => removeHolding(h.id)}
+                          />
+                        ) : (
+                          <HoldingRow
+                            key={h.id}
+                            holding={h}
+                            totalValue={totalValue}
+                            busy={!!busyIds[h.id]}
+                            valuesHidden={valuesHidden}
+                            onRefresh={() => refreshOne(h.id, h.ticker)}
+                            onRemove={() => removeHolding(h.id)}
+                            onUpdate={(patch) => updateHolding(h.id, patch)}
+                            editingClass={editingClassId === h.id}
+                            editingClassValue={editingClassValue}
+                            onEditClass={() => {
+                              setEditingClassId(h.id);
+                              setEditingClassValue(h.assetClassOverride || h.assetClass || "");
+                            }}
+                            onSaveClass={() => saveAssetClass(h.id)}
+                            onCancelEditClass={() => {
+                              setEditingClassId(null);
+                              setEditingClassValue("");
+                            }}
+                            onChangeEditClassValue={setEditingClassValue}
+                          />
+                        )
+                      )}
                     </div>
                   )}
                 </>
               )}
 
-              {/* Manual holdings */}
-              {filteredManualHoldings.length > 0 && (
+              {/* Cash accounts — separate, excluded from rebalance and sort */}
+              {cashAccounts.length > 0 && (
                 <>
                   <SectionLabel
-                    label="Manual"
-                    count={filteredManualHoldings.length}
-                    of={holdings.filter((h) => h.type === "manual").length}
+                    label="Cash"
+                    count={cashAccounts.length}
                     icon={<Wallet size={11} />}
                     collapsible
-                    collapsed={manualCollapsed}
-                    onToggle={() => setManualCollapsed(!manualCollapsed)}
+                    collapsed={cashCollapsed}
+                    onToggle={() => setCashCollapsed(!cashCollapsed)}
                   />
-                  {!manualCollapsed && (
+                  {!cashCollapsed && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {filteredManualHoldings.map((h) => (
+                      {cashAccounts.map((h) => (
                         <ManualHoldingRow
                           key={h.id}
                           holding={h}
@@ -1737,7 +1767,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
               )}
 
               {/* No results from filter */}
-              {filteredAutoHoldings.length === 0 && filteredManualHoldings.length === 0 && (
+              {filteredHoldings.length === 0 && cashAccounts.length === 0 && (
                 <div
                   style={{
                     textAlign: "center",
