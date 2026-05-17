@@ -755,13 +755,15 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
           return sortBy === "value" ? av - bv : bv - av;
         }
         if (sortBy === "gap_desc" || sortBy === "gap") {
-          // Gap = absolute difference between actual% and target%, in percentage points.
-          // Holdings with no target sink to the bottom of the list.
+          // Signed gap = target% - actual%. Positive = underweight (needs buying).
+          // gap_desc: most underweight first → most overweight last (matches rebalance logic).
+          // gap: reverse.
+          // Holdings with no target sink to the bottom.
           const gapOf = (h) => {
             if (!h.target || h.target <= 0) return null;
             const v = holdingValue(h);
             const actualPct = totalValue > 0 ? (v / totalValue) * 100 : 0;
-            return Math.abs(actualPct - h.target);
+            return h.target - actualPct;
           };
           const ag = gapOf(a);
           const bg = gapOf(b);
@@ -1634,8 +1636,8 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 >
                   <option value="value_desc">Value high→low</option>
                   <option value="value">Value low→high</option>
-                  <option value="gap_desc">Gap to target (largest)</option>
-                  <option value="gap">Gap to target (smallest)</option>
+                  <option value="gap_desc">Underweight → Overweight</option>
+                  <option value="gap">Overweight → Underweight</option>
                   <option value="name">Name A→Z</option>
                   <option value="name_desc">Name Z→A</option>
                   <option value="default">Insertion order</option>
