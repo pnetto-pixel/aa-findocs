@@ -82,8 +82,10 @@ function timeAgo(iso) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-async function fetchPrice(ticker, password) {
-  const res = await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`, {
+async function fetchPrice(ticker, password, quoteOnly = false) {
+  const params = new URLSearchParams({ ticker });
+  if (quoteOnly) params.set("quoteOnly", "1");
+  const res = await fetch(`/api/price?${params.toString()}`, {
     headers: { "x-app-password": password || "" },
   });
 
@@ -106,6 +108,19 @@ async function fetchPrice(ticker, password) {
   if (parsed.price == null) throw new Error("No price returned");
   return parsed;
 }
+
+async function fetchIndexQuote(symbol, password) {
+  const res = await fetch(`/api/index-quote?symbol=${encodeURIComponent(symbol)}`, {
+    headers: { "x-app-password": password || "" },
+  });
+  if (!res.ok) throw new Error(`Index ${res.status}`);
+  const d = await res.json();
+  if (d.error) throw new Error(d.error);
+  return d;
+}
+
+// How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
+const PROFILE_REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // Flexible CSV field lookup — accepts variations in column naming
 function normalizeCSVRow(row) {
@@ -189,12 +204,34 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   // Allocation chart grouping mode
   const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
 
-  // Collapsed states for tracked and manual sub-sections
-  const [trackedCollapsed, setTrackedCollapsed] = useState(false);
-  const [manualCollapsed, setManualCollapsed] = useState(false);
+  // Collapsed states for tracked and manual sub-sections (default to collapsed for cleaner first view)
+  const [trackedCollapsed, setTrackedCollapsed] = useState(true);
+  const [manualCollapsed, setManualCollapsed] = useState(true);
 
   // Toast for background refresh status
   const [toast, setToast] = useState(null); // { kind: 'info'|'success'|'error', message: string }
+
+  // S&P 500 benchmark (via SPY)
+  const [sp500, setSp500] = useState(null); // { price, previousClose, dayChangePct } | null
+  const [sp500Loading, setSp500Loading] = useState(false);
+
+  async function refreshSp500() {
+    setSp500Loading(true);
+    try {
+      const d = await fetchIndexQuote("SPY", password);
+      setSp500(d);
+    } catch (e) {
+      // Silent fail; SP500 is just a reference
+    } finally {
+      setSp500Loading(false);
+    }
+  }
+
+  // Fetch S&P 500 on mount and any time the user manually refreshes
+  useEffect(() => {
+    refreshSp500();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-dismiss toast after a few seconds (info toasts persist while refreshing)
   useEffect(() => {
@@ -267,35 +304,58 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
       return next;
     });
 
-  // Build the updated holding object from fetched price data
+  // Decide whether the cached client-side profile is still fresh.
+  function profileIsFresh(h) {
+    if (!h.name || h.name.toUpperCase() === h.ticker.toUpperCase()) return false;
+    if (!h.assetClass || h.assetClass === "Uncategorized") return false;
+    if (!h.profileLoadedAt) return false;
+    return Date.now() - new Date(h.profileLoadedAt).getTime() < PROFILE_REFRESH_INTERVAL_MS;
+  }
+
+  // Build the updated holding object from fetched price data.
+  // If `data` is quote-only (no name/assetClass), keep the existing profile fields.
   function buildHoldingPatch(existing, data, tickerSymbol) {
-    return {
+    const isQuoteOnly = data.name == null && data.assetClass == null;
+
+    const patch = {
       ...existing,
       price: data.price,
       previousClose: data.previousClose ?? existing.previousClose ?? null,
-      name:
-        data.name && data.name.toUpperCase() !== tickerSymbol.toUpperCase()
-          ? data.name
-          : existing.name || data.name,
-      assetClass:
-        existing.assetClassOverride ||
-        data.assetClass ||
-        existing.assetClass ||
-        "Uncategorized",
-      originalCurrency: data.originalCurrency ?? null,
-      originalPrice: data.originalPrice ?? null,
-      originalPreviousClose: data.originalPreviousClose ?? null,
-      fxRate: data.fxRate ?? null,
+      originalCurrency: data.originalCurrency ?? existing.originalCurrency ?? null,
+      originalPrice: data.originalPrice ?? existing.originalPrice ?? null,
+      originalPreviousClose:
+        data.originalPreviousClose ?? existing.originalPreviousClose ?? null,
+      fxRate: data.fxRate ?? existing.fxRate ?? null,
       market: data.market ?? existing.market ?? null,
       lastUpdated: new Date().toISOString(),
       error: null,
     };
+
+    if (!isQuoteOnly) {
+      patch.name =
+        data.name && data.name.toUpperCase() !== tickerSymbol.toUpperCase()
+          ? data.name
+          : existing.name || data.name;
+      patch.assetClass =
+        existing.assetClassOverride ||
+        data.assetClass ||
+        existing.assetClass ||
+        "Uncategorized";
+      // Only mark profile loaded if we actually got a real name back
+      if (patch.name && patch.name.toUpperCase() !== tickerSymbol.toUpperCase()) {
+        patch.profileLoadedAt = new Date().toISOString();
+      }
+    }
+
+    return patch;
   }
 
   async function refreshOne(id, tickerSymbol) {
     setBusy(id, true);
     try {
-      const data = await fetchPrice(tickerSymbol, password);
+      const existing = holdings.find((h) => h.id === id);
+      const quoteOnly = existing ? profileIsFresh(existing) : false;
+      const data = await fetchPrice(tickerSymbol, password, quoteOnly);
       setHoldings((prev) =>
         prev.map((h) => (h.id === id ? buildHoldingPatch(h, data, tickerSymbol) : h))
       );
@@ -322,6 +382,9 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     setRefreshing(true);
     setToast({ kind: "info", message: `Refreshing ${autoHoldings.length} positions…` });
 
+    // Kick off S&P 500 refresh in parallel (silent)
+    refreshSp500();
+
     const results = new Map(); // id -> { ok: true, patch } | { ok: false, error }
     const batchSize = 3;
     for (let i = 0; i < autoHoldings.length; i += batchSize) {
@@ -329,7 +392,8 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
       await Promise.all(
         batch.map(async (h) => {
           try {
-            const data = await fetchPrice(h.ticker, password);
+            const quoteOnly = profileIsFresh(h);
+            const data = await fetchPrice(h.ticker, password, quoteOnly);
             results.set(h.id, { ok: true, data });
           } catch (e) {
             if (e.code === 401) {
@@ -1108,7 +1172,49 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                         <Minus size={10} strokeWidth={2.5} />
                       )}
                       {chartData.portfolioDayChange > 0 ? "+" : ""}
-                      {chartData.portfolioDayChange.toFixed(2)}% today
+                      {chartData.portfolioDayChange.toFixed(2)}%
+                    </span>
+                  )}
+                  {sp500 && sp500.dayChangePct != null && (
+                    <span
+                      style={{
+                        textTransform: "none",
+                        letterSpacing: "0.04em",
+                        fontSize: 11,
+                        color: T.textDim,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        paddingLeft: 8,
+                        borderLeft: `1px solid ${T.borderSoft}`,
+                      }}
+                    >
+                      <span style={{ color: T.textFaint, fontSize: 9, letterSpacing: "0.1em" }}>
+                        S&P
+                      </span>
+                      <span
+                        style={{
+                          color:
+                            sp500.dayChangePct > 0
+                              ? T.green
+                              : sp500.dayChangePct < 0
+                              ? T.red
+                              : T.textDim,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 2,
+                        }}
+                      >
+                        {sp500.dayChangePct > 0 ? (
+                          <TrendingUp size={10} strokeWidth={2.5} />
+                        ) : sp500.dayChangePct < 0 ? (
+                          <TrendingDown size={10} strokeWidth={2.5} />
+                        ) : (
+                          <Minus size={10} strokeWidth={2.5} />
+                        )}
+                        {sp500.dayChangePct > 0 ? "+" : ""}
+                        {sp500.dayChangePct.toFixed(2)}%
+                      </span>
                     </span>
                   )}
                 </div>
