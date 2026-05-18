@@ -10,7 +10,7 @@
     "vercel-dev": "vercel dev"
   },
   "dependencies": {
-    "@upstash/redis": "^1.34.0",
+    "ioredis": "^5.4.1",
     "lucide-react": "^0.383.0",
     "papaparse": "^5.4.1",
     "react": "^18.3.1",
