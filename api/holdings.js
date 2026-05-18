@@ -1,4 +1,6 @@
-// Vercel serverless function — server-side holdings storage backed by Upstash Redis.
+// Vercel serverless function — server-side holdings storage backed by Redis (via ioredis TCP).
+// Works with the Vercel Marketplace "Redis" integration that provides REDIS_URL.
+//
 // GET  /api/holdings → loads the current holdings array (or null if never saved)
 // PUT  /api/holdings → saves the entire holdings array (body: { holdings: [...] })
 //
@@ -7,21 +9,30 @@
 //
 // Required env vars:
 // - APP_PASSWORD
-// - KV_REST_API_URL or UPSTASH_REDIS_REST_URL  (auto-set by Vercel Marketplace integration)
-// - KV_REST_API_TOKEN or UPSTASH_REDIS_REST_TOKEN
+// - REDIS_URL (auto-set by Vercel Marketplace integration; rediss://default:<token>@<host>:<port>)
 
-import { Redis } from "@upstash/redis";
+import Redis from "ioredis";
 import crypto from "node:crypto";
 
-// Build a Redis client from whichever env vars are available.
+// Singleton Redis client across warm function invocations.
+let redisClient = null;
 function getRedis() {
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token });
+  if (redisClient) return redisClient;
+  const url = process.env.REDIS_URL;
+  if (!url) return null;
+  redisClient = new Redis(url, {
+    maxRetriesPerRequest: 2,
+    enableReadyCheck: true,
+    connectTimeout: 5000,
+    lazyConnect: false,
+  });
+  // Silence unhandled error events on the client
+  redisClient.on("error", (err) => {
+    console.error("[redis] error:", err.message);
+  });
+  return redisClient;
 }
 
-// Hash the password to a stable key so we never store the raw password in keys.
 function storageKey(password) {
   const hash = crypto.createHash("sha256").update(password).digest("hex").slice(0, 16);
   return `portfolio:${hash}:holdings`;
@@ -41,7 +52,7 @@ export default async function handler(req, res) {
   const redis = getRedis();
   if (!redis) {
     return res.status(503).json({
-      error: "Redis not configured. Add the Upstash Redis integration in Vercel Marketplace.",
+      error: "Redis not configured. Add the Redis integration in Vercel Marketplace.",
     });
   }
 
@@ -49,16 +60,20 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const value = await redis.get(key);
-      // Upstash auto-deserializes JSON values
-      if (value == null) {
+      const raw = await redis.get(key);
+      if (raw == null) {
         return res.status(200).json({ holdings: null, exists: false });
       }
-      // value may be the array directly or wrapped in { holdings, savedAt }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return res.status(500).json({ error: "Stored data is not valid JSON" });
+      }
       const wrapped =
-        Array.isArray(value)
-          ? { holdings: value }
-          : (value && typeof value === "object" ? value : { holdings: null });
+        Array.isArray(parsed)
+          ? { holdings: parsed }
+          : (parsed && typeof parsed === "object" ? parsed : { holdings: null });
       return res.status(200).json({ ...wrapped, exists: true });
     }
 
@@ -75,12 +90,11 @@ export default async function handler(req, res) {
       if (!Array.isArray(holdings)) {
         return res.status(400).json({ error: "Body must contain `holdings` array" });
       }
-      // Cap to avoid abuse — a personal portfolio shouldn't exceed this.
       if (holdings.length > 500) {
         return res.status(413).json({ error: "Too many holdings (max 500)" });
       }
       const payload = { holdings, savedAt: new Date().toISOString() };
-      await redis.set(key, payload);
+      await redis.set(key, JSON.stringify(payload));
       return res.status(200).json({ ok: true, savedAt: payload.savedAt, count: holdings.length });
     }
 
