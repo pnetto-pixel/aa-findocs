@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
@@ -117,6 +117,58 @@ async function fetchIndexQuote(symbol, password) {
   const d = await res.json();
   if (d.error) throw new Error(d.error);
   return d;
+}
+
+// Server-side holdings sync (Upstash Redis backend)
+async function fetchHoldingsFromServer(password) {
+  const res = await fetch("/api/holdings", {
+    headers: { "x-app-password": password || "" },
+  });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (res.status === 503) {
+    // Redis not configured — caller should fall back to local-only mode
+    const err = new Error("Storage not configured");
+    err.code = 503;
+    throw err;
+  }
+  if (!res.ok) {
+    let msg = `Storage ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await res.json(); // { holdings: [] | null, exists: bool }
+}
+
+async function saveHoldingsToServer(password, holdings) {
+  const res = await fetch("/api/holdings", {
+    method: "PUT",
+    headers: {
+      "x-app-password": password || "",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ holdings }),
+  });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (!res.ok) {
+    let msg = `Save ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await res.json(); // { ok, savedAt, count }
 }
 
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
@@ -261,21 +313,101 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     } catch (e) {}
   }, [valuesHidden]);
 
-  // Load holdings from localStorage on mount
+  // Sync state: tracks server-side persistence health.
+  // "loading" while initial load; "synced" when up-to-date; "saving" mid-write;
+  // "offline" if server unreachable (using local cache); "local-only" if Redis not configured.
+  const [syncState, setSyncState] = useState("loading");
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+
+  // Load holdings: try server first, fall back to localStorage cache.
+  // First-time migration: if server has nothing but localStorage has data, push it up.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("holdings");
-      if (raw) setHoldings(JSON.parse(raw));
-    } catch (e) {}
-    setLoaded(true);
+    let cancelled = false;
+    (async () => {
+      // Always read local cache immediately so the UI has something to render
+      let localData = null;
+      try {
+        const raw = localStorage.getItem("holdings");
+        if (raw) localData = JSON.parse(raw);
+      } catch (e) {}
+
+      try {
+        const result = await fetchHoldingsFromServer(password);
+        if (cancelled) return;
+
+        if (result.exists && Array.isArray(result.holdings)) {
+          // Server has data → use it
+          setHoldings(result.holdings);
+          try {
+            localStorage.setItem("holdings", JSON.stringify(result.holdings));
+          } catch (e) {}
+          setSyncState("synced");
+        } else if (localData && Array.isArray(localData) && localData.length > 0) {
+          // Server empty but local has data → migrate up
+          setHoldings(localData);
+          try {
+            const saveResult = await saveHoldingsToServer(password, localData);
+            if (!cancelled) {
+              setLastSavedAt(saveResult.savedAt);
+              setSyncState("synced");
+            }
+          } catch (e) {
+            if (!cancelled) setSyncState("offline");
+          }
+        } else {
+          // Both empty → fresh start
+          setSyncState("synced");
+        }
+      } catch (e) {
+        if (cancelled) return;
+        if (e.code === 401) {
+          onAuthFail();
+          return;
+        }
+        // Server unreachable or Redis not configured → use local cache
+        if (localData && Array.isArray(localData)) {
+          setHoldings(localData);
+        }
+        setSyncState(e.code === 503 ? "local-only" : "offline");
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist on change
+  // Save holdings: debounced server write + immediate localStorage cache.
   useEffect(() => {
     if (!loaded) return;
+    // Cache locally immediately (so a reload always has the latest)
     try {
       localStorage.setItem("holdings", JSON.stringify(holdings));
     } catch (e) {}
+
+    // Skip server save if we know it's unavailable
+    if (syncState === "local-only") return;
+
+    // Debounce: wait 1500ms after the last change before saving to server
+    const handle = setTimeout(async () => {
+      setSyncState("saving");
+      try {
+        const result = await saveHoldingsToServer(password, holdings);
+        setLastSavedAt(result.savedAt);
+        setSyncState("synced");
+      } catch (e) {
+        if (e.code === 401) {
+          onAuthFail();
+          return;
+        }
+        setSyncState("offline");
+      }
+    }, 1500);
+
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdings, loaded]);
 
   // Compute current value for any holding type
@@ -1142,6 +1274,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                 >
                   {valuesHidden ? <EyeOff size={11} /> : <Eye size={11} />}
                 </button>
+                <SyncIndicator state={syncState} lastSavedAt={lastSavedAt} />
                 <button
                   onClick={onLogout}
                   title="Sign out"
@@ -3770,6 +3903,60 @@ function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap }) {
           <div style={{ textAlign: "right", color: T.textFaint, minWidth: colMin + 8 }}>—</div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SyncIndicator({ state, lastSavedAt }) {
+  let icon;
+  let color = T.textDim;
+  let title = "";
+  let spinning = false;
+
+  if (state === "loading") {
+    icon = <RefreshCw size={11} />;
+    title = "Loading from server…";
+    spinning = true;
+  } else if (state === "saving") {
+    icon = <Cloud size={11} />;
+    color = T.gold;
+    title = "Saving…";
+  } else if (state === "synced") {
+    icon = <Cloud size={11} />;
+    color = T.green;
+    title = lastSavedAt
+      ? `Synced · last saved ${new Date(lastSavedAt).toLocaleTimeString()}`
+      : "Synced";
+  } else if (state === "offline") {
+    icon = <CloudOff size={11} />;
+    color = T.red;
+    title = "Offline — changes saved locally only";
+  } else if (state === "local-only") {
+    icon = <CloudOff size={11} />;
+    color = T.textFaint;
+    title = "Cloud sync not configured — local only";
+  } else {
+    icon = <Cloud size={11} />;
+    title = "";
+  }
+
+  return (
+    <div
+      title={title}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "6px 8px",
+        border: `1px solid ${T.border}`,
+        color,
+        background: "transparent",
+        borderRadius: 2,
+      }}
+    >
+      <span className={spinning ? "spin" : ""} style={{ display: "flex" }}>
+        {icon}
+      </span>
     </div>
   );
 }
