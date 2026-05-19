@@ -4,15 +4,17 @@
 // GET  /api/holdings → loads the current holdings array (or null if never saved)
 // PUT  /api/holdings → saves the entire holdings array (body: { holdings: [...] })
 //
-// Auth: APP_PASSWORD header (same as other endpoints).
-// Storage key: derived from APP_PASSWORD so different passwords never collide.
+// Auth: Google ID token (x-google-token header) OR APP_PASSWORD (x-app-password header).
+// Storage key: derived from the authenticated user identity (per-email isolation when Google).
 //
 // Required env vars:
-// - APP_PASSWORD
-// - REDIS_URL (auto-set by Vercel Marketplace integration; rediss://default:<token>@<host>:<port>)
+// - APP_PASSWORD (legacy backup auth)
+// - GOOGLE_CLIENT_ID (for Google ID token verification)
+// - ALLOWED_EMAILS (comma-separated, optional but recommended)
+// - REDIS_URL (auto-set by Vercel Marketplace integration)
 
 import Redis from "ioredis";
-import crypto from "node:crypto";
+import { authenticate } from "../lib/auth.js";
 
 // Singleton Redis client across warm function invocations.
 let redisClient = null;
@@ -26,28 +28,19 @@ function getRedis() {
     connectTimeout: 5000,
     lazyConnect: false,
   });
-  // Silence unhandled error events on the client
   redisClient.on("error", (err) => {
     console.error("[redis] error:", err.message);
   });
   return redisClient;
 }
 
-function storageKey(password) {
-  const hash = crypto.createHash("sha256").update(password).digest("hex").slice(0, 16);
-  return `portfolio:${hash}:holdings`;
+function storageKey(userKey) {
+  return `portfolio:${userKey}:holdings`;
 }
 
 export default async function handler(req, res) {
-  const expectedPassword = process.env.APP_PASSWORD;
-  const providedPassword = req.headers["x-app-password"];
-
-  if (!expectedPassword) {
-    return res.status(500).json({ error: "APP_PASSWORD not configured" });
-  }
-  if (providedPassword !== expectedPassword) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const auth = await authenticate(req, res);
+  if (!auth) return; // authenticate() already sent response
 
   const redis = getRedis();
   if (!redis) {
@@ -56,7 +49,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const key = storageKey(providedPassword);
+  const key = storageKey(auth.userKey);
 
   try {
     if (req.method === "GET") {
