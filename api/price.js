@@ -1,7 +1,9 @@
 // Vercel serverless function — multi-source quotes
 // US stocks: Finnhub (price + profile)
 // Brazilian B3 stocks: brapi.dev (BRL price) + brapi (USD/BRL FX, real-time)
-// Auth: APP_PASSWORD header. Required env: APP_PASSWORD, FINNHUB_API_KEY, BRAPI_API_KEY (optional, falls back to Yahoo).
+// Auth: Google ID token OR APP_PASSWORD (via shared lib/auth.js)
+
+import { authenticate } from "../lib/auth.js";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -260,15 +262,8 @@ async function handleUS(ticker, finnhubKey, quoteOnly = false) {
 }
 
 export default async function handler(req, res) {
-  const expectedPassword = process.env.APP_PASSWORD;
-  const providedPassword = req.headers["x-app-password"];
-
-  if (!expectedPassword) {
-    return res.status(500).json({ error: "APP_PASSWORD not configured" });
-  }
-  if (providedPassword !== expectedPassword) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const auth = await authenticate(req, res);
+  if (!auth) return;
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const brapiKey = process.env.BRAPI_API_KEY || null;
