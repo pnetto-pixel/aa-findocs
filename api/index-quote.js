@@ -1,5 +1,7 @@
 // Lightweight index quote endpoint — used for S&P 500 ticker (SPY) reference card.
-// Same auth as /api/price. Uses Finnhub quote endpoint with retry.
+// Auth: Google ID token OR APP_PASSWORD (via shared lib/auth.js)
+
+import { authenticate } from "../lib/auth.js";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -24,15 +26,8 @@ async function fetchWithRetry(url, options = {}, maxAttempts = 3) {
 }
 
 export default async function handler(req, res) {
-  const expectedPassword = process.env.APP_PASSWORD;
-  const providedPassword = req.headers["x-app-password"];
-
-  if (!expectedPassword) {
-    return res.status(500).json({ error: "APP_PASSWORD not configured" });
-  }
-  if (providedPassword !== expectedPassword) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const auth = await authenticate(req, res);
+  if (!auth) return;
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   if (!finnhubKey) {
