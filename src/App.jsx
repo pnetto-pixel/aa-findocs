@@ -82,11 +82,19 @@ function timeAgo(iso) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-async function fetchPrice(ticker, password, quoteOnly = false) {
+// Build auth headers based on whether we have a Google token or just a password.
+function authHeaders(auth) {
+  const h = {};
+  if (auth?.googleToken) h["x-google-token"] = auth.googleToken;
+  if (auth?.password) h["x-app-password"] = auth.password;
+  return h;
+}
+
+async function fetchPrice(ticker, auth, quoteOnly = false) {
   const params = new URLSearchParams({ ticker });
   if (quoteOnly) params.set("quoteOnly", "1");
   const res = await fetch(`/api/price?${params.toString()}`, {
-    headers: { "x-app-password": password || "" },
+    headers: authHeaders(auth),
   });
 
   if (res.status === 401) {
@@ -109,9 +117,9 @@ async function fetchPrice(ticker, password, quoteOnly = false) {
   return parsed;
 }
 
-async function fetchIndexQuote(symbol, password) {
+async function fetchIndexQuote(symbol, auth) {
   const res = await fetch(`/api/index-quote?symbol=${encodeURIComponent(symbol)}`, {
-    headers: { "x-app-password": password || "" },
+    headers: authHeaders(auth),
   });
   if (!res.ok) throw new Error(`Index ${res.status}`);
   const d = await res.json();
@@ -120,9 +128,9 @@ async function fetchIndexQuote(symbol, password) {
 }
 
 // Server-side holdings sync (Upstash Redis backend)
-async function fetchHoldingsFromServer(password) {
+async function fetchHoldingsFromServer(auth) {
   const res = await fetch("/api/holdings", {
-    headers: { "x-app-password": password || "" },
+    headers: authHeaders(auth),
   });
   if (res.status === 401) {
     const err = new Error("Unauthorized");
@@ -130,7 +138,6 @@ async function fetchHoldingsFromServer(password) {
     throw err;
   }
   if (res.status === 503) {
-    // Redis not configured — caller should fall back to local-only mode
     const err = new Error("Storage not configured");
     err.code = 503;
     throw err;
@@ -143,14 +150,14 @@ async function fetchHoldingsFromServer(password) {
     } catch {}
     throw new Error(msg);
   }
-  return await res.json(); // { holdings: [] | null, exists: bool }
+  return await res.json();
 }
 
-async function saveHoldingsToServer(password, holdings) {
+async function saveHoldingsToServer(auth, holdings) {
   const res = await fetch("/api/holdings", {
     method: "PUT",
     headers: {
-      "x-app-password": password || "",
+      ...authHeaders(auth),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ holdings }),
@@ -168,7 +175,7 @@ async function saveHoldingsToServer(password, holdings) {
     } catch {}
     throw new Error(msg);
   }
-  return await res.json(); // { ok, savedAt, count }
+  return await res.json();
 }
 
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
@@ -194,31 +201,65 @@ function normalizeCSVRow(row) {
 }
 
 export default function App() {
-  const [password, setPassword] = useState(() =>
-    typeof window !== "undefined" ? localStorage.getItem("app_password") || "" : ""
-  );
-  const [authed, setAuthed] = useState(!!password);
+  // Auth state can be either Google or password.
+  //   { kind: 'google', googleToken, email, name, picture }
+  //   { kind: 'password', password }
+  // Persisted in localStorage so user stays logged in.
+  const [auth, setAuth] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = localStorage.getItem("auth");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.kind) return parsed;
+      }
+      // Backwards compat: old "app_password" → migrate to new shape
+      const legacyPw = localStorage.getItem("app_password");
+      if (legacyPw) return { kind: "password", password: legacyPw };
+    } catch (e) {}
+    return null;
+  });
 
-  function handleLogin(pw) {
-    localStorage.setItem("app_password", pw);
-    setPassword(pw);
-    setAuthed(true);
+  function handleGoogleLogin(googleToken, claims) {
+    const next = {
+      kind: "google",
+      googleToken,
+      email: claims.email,
+      name: claims.name,
+      picture: claims.picture,
+    };
+    localStorage.setItem("auth", JSON.stringify(next));
+    localStorage.removeItem("app_password");
+    setAuth(next);
+  }
+
+  function handlePasswordLogin(pw) {
+    const next = { kind: "password", password: pw };
+    localStorage.setItem("auth", JSON.stringify(next));
+    localStorage.removeItem("app_password");
+    setAuth(next);
   }
 
   function handleLogout() {
+    localStorage.removeItem("auth");
     localStorage.removeItem("app_password");
-    setPassword("");
-    setAuthed(false);
+    setAuth(null);
   }
 
-  if (!authed) {
-    return <LoginGate onAuth={handleLogin} />;
+  if (!auth) {
+    return <LoginGate onGoogleAuth={handleGoogleLogin} onPasswordAuth={handlePasswordLogin} />;
   }
 
-  return <PortfolioTracker password={password} onLogout={handleLogout} onAuthFail={handleLogout} />;
+  return (
+    <PortfolioTracker
+      auth={auth}
+      onLogout={handleLogout}
+      onAuthFail={handleLogout}
+    />
+  );
 }
 
-function PortfolioTracker({ password, onLogout, onAuthFail }) {
+function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [holdings, setHoldings] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [ticker, setTicker] = useState("");
@@ -275,7 +316,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
   async function refreshSp500() {
     setSp500Loading(true);
     try {
-      const d = await fetchIndexQuote("SPY", password);
+      const d = await fetchIndexQuote("SPY", auth);
       setSp500(d);
     } catch (e) {
       // Silent fail; SP500 is just a reference
@@ -332,7 +373,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
       } catch (e) {}
 
       try {
-        const result = await fetchHoldingsFromServer(password);
+        const result = await fetchHoldingsFromServer(auth);
         if (cancelled) return;
 
         if (result.exists && Array.isArray(result.holdings)) {
@@ -346,7 +387,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
           // Server empty but local has data → migrate up
           setHoldings(localData);
           try {
-            const saveResult = await saveHoldingsToServer(password, localData);
+            const saveResult = await saveHoldingsToServer(auth, localData);
             if (!cancelled) {
               setLastSavedAt(saveResult.savedAt);
               setSyncState("synced");
@@ -394,7 +435,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     const handle = setTimeout(async () => {
       setSyncState("saving");
       try {
-        const result = await saveHoldingsToServer(password, holdings);
+        const result = await saveHoldingsToServer(auth, holdings);
         setLastSavedAt(result.savedAt);
         setSyncState("synced");
       } catch (e) {
@@ -499,7 +540,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
     try {
       const existing = holdings.find((h) => h.id === id);
       const quoteOnly = existing ? profileIsFresh(existing) : false;
-      const data = await fetchPrice(tickerSymbol, password, quoteOnly);
+      const data = await fetchPrice(tickerSymbol, auth, quoteOnly);
       setHoldings((prev) =>
         prev.map((h) => (h.id === id ? buildHoldingPatch(h, data, tickerSymbol) : h))
       );
@@ -537,7 +578,7 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
         batch.map(async (h) => {
           try {
             const quoteOnly = profileIsFresh(h);
-            const data = await fetchPrice(h.ticker, password, quoteOnly);
+            const data = await fetchPrice(h.ticker, auth, quoteOnly);
             results.set(h.id, { ok: true, data });
           } catch (e) {
             if (e.code === 401) {
@@ -1275,9 +1316,22 @@ function PortfolioTracker({ password, onLogout, onAuthFail }) {
                   {valuesHidden ? <EyeOff size={11} /> : <Eye size={11} />}
                 </button>
                 <SyncIndicator state={syncState} lastSavedAt={lastSavedAt} />
+                {auth?.kind === "google" && auth?.picture && (
+                  <img
+                    src={auth.picture}
+                    alt={auth.name || auth.email}
+                    title={auth.email}
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      border: `1px solid ${T.border}`,
+                    }}
+                  />
+                )}
                 <button
                   onClick={onLogout}
-                  title="Sign out"
+                  title={auth?.email ? `Sign out (${auth.email})` : "Sign out"}
                   style={{
                     background: "transparent",
                     border: `1px solid ${T.border}`,
@@ -3015,19 +3069,101 @@ function RebalanceSummary({ items, newCash, valuesHidden }) {
   );
 }
 
-function LoginGate({ onAuth }) {
+// Reads the Google OAuth client ID from a meta tag injected at build time, or window global.
+function getGoogleClientId() {
+  if (typeof window === "undefined") return null;
+  if (window.__GOOGLE_CLIENT_ID__) return window.__GOOGLE_CLIENT_ID__;
+  const meta = document.querySelector('meta[name="google-client-id"]');
+  return meta?.content || null;
+}
+
+// Decode a JWT payload (no verification — server validates).
+function decodeJwtPayload(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payload.length % 4) payload += "=";
+    return JSON.parse(atob(payload));
+  } catch (e) {
+    return null;
+  }
+}
+
+function LoginGate({ onGoogleAuth, onPasswordAuth }) {
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(false);
+  const [showPasswordFallback, setShowPasswordFallback] = useState(false);
+  const [googleReady, setGoogleReady] = useState(false);
+  const googleButtonRef = useRef(null);
+  const clientId = getGoogleClientId();
 
-  async function submit() {
+  // Load the Google Identity Services script and render the button.
+  useEffect(() => {
+    if (!clientId) return;
+
+    function init() {
+      if (!window.google?.accounts?.id) return;
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: (response) => {
+          const claims = decodeJwtPayload(response.credential);
+          if (!claims) {
+            setError("Could not decode Google response");
+            return;
+          }
+          onGoogleAuth(response.credential, {
+            email: claims.email,
+            name: claims.name,
+            picture: claims.picture,
+          });
+        },
+        auto_select: false,
+        cancel_on_tap_outside: false,
+      });
+      if (googleButtonRef.current) {
+        window.google.accounts.id.renderButton(googleButtonRef.current, {
+          theme: "filled_black",
+          size: "large",
+          type: "standard",
+          text: "signin_with",
+          shape: "rectangular",
+          logo_alignment: "left",
+          width: 320,
+        });
+      }
+      setGoogleReady(true);
+    }
+
+    // Already loaded?
+    if (window.google?.accounts?.id) {
+      init();
+      return;
+    }
+
+    // Load the script
+    const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+    if (existing) {
+      existing.addEventListener("load", init);
+      return () => existing.removeEventListener("load", init);
+    }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = init;
+    script.onerror = () => setError("Failed to load Google Sign-In");
+    document.head.appendChild(script);
+  }, [clientId, onGoogleAuth]);
+
+  async function submitPassword() {
     if (!pw) {
       setError("Enter the password");
       return;
     }
     setError("");
     setChecking(true);
-    // Test the password by hitting the API with a sentinel ticker
     try {
       const res = await fetch("/api/price?ticker=SPY", {
         headers: { "x-app-password": pw },
@@ -3037,8 +3173,7 @@ function LoginGate({ onAuth }) {
         setChecking(false);
         return;
       }
-      // Any other status (200, 502, 500) means password was accepted
-      onAuth(pw);
+      onPasswordAuth(pw);
     } catch (e) {
       setError("Could not reach server");
       setChecking(false);
@@ -3106,7 +3241,7 @@ function LoginGate({ onAuth }) {
               lineHeight: 1.5,
             }}
           >
-            Enter your password to continue. You'll only need to do this once on this device.
+            Sign in to access your portfolio. Each user has an isolated set of holdings.
           </div>
 
           <div
@@ -3117,56 +3252,142 @@ function LoginGate({ onAuth }) {
               padding: 16,
             }}
           >
-            <input
-              type="password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="Password"
-              autoFocus
-              style={{
-                background: T.cardElev,
-                border: `1px solid ${T.border}`,
-                color: T.text,
-                padding: "12px 14px",
-                fontSize: 14,
-                fontFamily: FONT_MONO,
-                borderRadius: 2,
-                width: "100%",
-                marginBottom: 12,
-              }}
-            />
-            <button
-              onClick={submit}
-              disabled={checking}
-              style={{
-                width: "100%",
-                background: T.gold,
-                color: T.bg,
-                border: "none",
-                padding: "12px 16px",
-                fontWeight: 600,
-                fontSize: 12,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                fontFamily: FONT_BODY,
-                borderRadius: 2,
-                cursor: checking ? "not-allowed" : "pointer",
-                opacity: checking ? 0.6 : 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-              }}
-            >
-              {checking ? (
-                <>
-                  <RefreshCw size={12} className="spin" /> Checking
-                </>
-              ) : (
-                "Unlock"
-              )}
-            </button>
+            {clientId ? (
+              <div
+                ref={googleButtonRef}
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  minHeight: 44,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: T.red,
+                  fontFamily: FONT_MONO,
+                  textAlign: "center",
+                  padding: 12,
+                }}
+              >
+                Google Sign-In not configured.
+                <br />
+                Set GOOGLE_CLIENT_ID env var.
+              </div>
+            )}
+
+            {!showPasswordFallback ? (
+              <button
+                onClick={() => setShowPasswordFallback(true)}
+                style={{
+                  marginTop: 14,
+                  background: "transparent",
+                  border: "none",
+                  color: T.textDim,
+                  fontSize: 11,
+                  fontFamily: FONT_MONO,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  width: "100%",
+                  textAlign: "center",
+                  padding: "8px",
+                  textDecoration: "underline",
+                }}
+              >
+                Use password instead
+              </button>
+            ) : (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.borderSoft}` }}>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: T.textFaint,
+                    fontFamily: FONT_MONO,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    marginBottom: 10,
+                    textAlign: "center",
+                  }}
+                >
+                  Backup access
+                </div>
+                <input
+                  type="password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitPassword()}
+                  placeholder="Password"
+                  autoFocus
+                  style={{
+                    background: T.cardElev,
+                    border: `1px solid ${T.border}`,
+                    color: T.text,
+                    padding: "12px 14px",
+                    fontSize: 14,
+                    fontFamily: FONT_MONO,
+                    borderRadius: 2,
+                    width: "100%",
+                    marginBottom: 12,
+                  }}
+                />
+                <button
+                  onClick={submitPassword}
+                  disabled={checking}
+                  style={{
+                    width: "100%",
+                    background: T.gold,
+                    color: T.bg,
+                    border: "none",
+                    padding: "12px 16px",
+                    fontWeight: 600,
+                    fontSize: 12,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontFamily: FONT_BODY,
+                    borderRadius: 2,
+                    cursor: checking ? "not-allowed" : "pointer",
+                    opacity: checking ? 0.6 : 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                  }}
+                >
+                  {checking ? (
+                    <>
+                      <RefreshCw size={12} className="spin" /> Checking
+                    </>
+                  ) : (
+                    "Unlock with password"
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowPasswordFallback(false);
+                    setPw("");
+                    setError("");
+                  }}
+                  style={{
+                    marginTop: 8,
+                    background: "transparent",
+                    border: "none",
+                    color: T.textFaint,
+                    fontSize: 10,
+                    fontFamily: FONT_MONO,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                    width: "100%",
+                    padding: 4,
+                  }}
+                >
+                  ← Back to Google
+                </button>
+              </div>
+            )}
+
             {error && (
               <div
                 style={{
