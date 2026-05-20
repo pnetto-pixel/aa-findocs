@@ -178,6 +178,90 @@ async function saveHoldingsToServer(auth, holdings) {
   return await res.json();
 }
 
+// Admin-only: list/invite/remove users from the allowlist.
+async function fetchUsersList(auth) {
+  const res = await fetch("/api/users", {
+    headers: authHeaders(auth),
+  });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (res.status === 403) {
+    const err = new Error("Admin only");
+    err.code = 403;
+    throw err;
+  }
+  if (!res.ok) {
+    let msg = `Users ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await res.json();
+}
+
+async function inviteUser(auth, email) {
+  const res = await fetch("/api/users", {
+    method: "POST",
+    headers: {
+      ...authHeaders(auth),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    let msg = `Invite ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await res.json();
+}
+
+async function removeUser(auth, email) {
+  const res = await fetch("/api/users", {
+    method: "DELETE",
+    headers: {
+      ...authHeaders(auth),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    let msg = `Remove ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await res.json();
+}
+
+// Read admin emails from the meta tag (set via Vite from VITE_ADMIN_EMAILS).
+function getAdminEmails() {
+  if (typeof window === "undefined") return [];
+  const meta = document.querySelector('meta[name="admin-emails"]');
+  const raw = meta?.content || "";
+  if (!raw || raw.includes("%")) return []; // Vite placeholder not replaced
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isUserAdmin(auth) {
+  if (!auth || auth.kind !== "google" || !auth.email) return false;
+  const admins = getAdminEmails();
+  return admins.includes(auth.email.toLowerCase());
+}
+
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
 const PROFILE_REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -312,6 +396,70 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // S&P 500 benchmark (via SPY)
   const [sp500, setSp500] = useState(null); // { price, previousClose, dayChangePct } | null
   const [sp500Loading, setSp500Loading] = useState(false);
+
+  // Manage Users (admin only)
+  const isAdmin = useMemo(() => isUserAdmin(auth), [auth]);
+  const [usersOpen, setUsersOpen] = useState(false);
+  const [usersList, setUsersList] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteBusy, setInviteBusy] = useState(false);
+
+  async function loadUsers() {
+    setUsersLoading(true);
+    setUsersError("");
+    try {
+      const data = await fetchUsersList(auth);
+      setUsersList(Array.isArray(data.users) ? data.users : []);
+    } catch (e) {
+      if (e.code === 401) {
+        onAuthFail();
+        return;
+      }
+      setUsersError(e.message || "Failed to load users");
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
+  async function handleInvite() {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email) return;
+    setInviteBusy(true);
+    setUsersError("");
+    try {
+      await inviteUser(auth, email);
+      setInviteEmail("");
+      await loadUsers();
+    } catch (e) {
+      setUsersError(e.message || "Invite failed");
+    } finally {
+      setInviteBusy(false);
+    }
+  }
+
+  async function handleRemoveUser(email) {
+    const ok = window.confirm(
+      `Remove ${email}? Their portfolio data will also be deleted.`
+    );
+    if (!ok) return;
+    setUsersError("");
+    try {
+      await removeUser(auth, email);
+      await loadUsers();
+    } catch (e) {
+      setUsersError(e.message || "Remove failed");
+    }
+  }
+
+  // Load the user list the first time the admin opens the section.
+  useEffect(() => {
+    if (isAdmin && usersOpen && usersList.length === 0 && !usersLoading) {
+      loadUsers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, usersOpen]);
 
   async function refreshSp500() {
     setSp500Loading(true);
@@ -2413,7 +2561,225 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </button>
           </div>
 
+          {/* Manage Users — admin only */}
+          {isAdmin && (
+            <section
+              style={{
+                marginTop: 28,
+                background: T.card,
+                border: `1px solid ${T.borderSoft}`,
+                borderRadius: 4,
+                padding: "16px 18px",
+              }}
+            >
+              <button
+                onClick={() => setUsersOpen((v) => !v)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: T.text,
+                  padding: 0,
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  cursor: "pointer",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                }}
+              >
+                <span style={{ color: T.gold }}>Manage Users</span>
+                <ChevronDown
+                  size={14}
+                  style={{
+                    color: T.textDim,
+                    transform: usersOpen ? "rotate(180deg)" : "rotate(0deg)",
+                    transition: "transform 0.15s",
+                  }}
+                />
+              </button>
 
+              {usersOpen && (
+                <div style={{ marginTop: 14 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: T.textDim,
+                      fontFamily: FONT_MONO,
+                      lineHeight: 1.5,
+                      marginBottom: 12,
+                    }}
+                  >
+                    Invite an email to the Redis allowlist. They also need to be
+                    added as a Test User in Google Cloud Console while the app
+                    is in Testing mode.
+                  </div>
+
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                    <Input
+                      type="email"
+                      placeholder="friend@gmail.com"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      onEnter={handleInvite}
+                      style={{ flex: 1, fontSize: 12 }}
+                    />
+                    <button
+                      onClick={handleInvite}
+                      disabled={inviteBusy || !inviteEmail.trim()}
+                      style={{
+                        background: T.gold,
+                        border: `1px solid ${T.gold}`,
+                        color: T.bg,
+                        padding: "8px 14px",
+                        fontSize: 11,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                        fontFamily: FONT_BODY,
+                        fontWeight: 600,
+                        cursor: inviteBusy ? "wait" : "pointer",
+                        opacity: inviteBusy || !inviteEmail.trim() ? 0.5 : 1,
+                        borderRadius: 2,
+                      }}
+                    >
+                      {inviteBusy ? "..." : "Invite"}
+                    </button>
+                  </div>
+
+                  {usersError && (
+                    <div
+                      style={{
+                        color: T.red,
+                        fontSize: 11,
+                        fontFamily: FONT_MONO,
+                        marginBottom: 10,
+                      }}
+                    >
+                      {usersError}
+                    </div>
+                  )}
+
+                  {usersLoading ? (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: T.textDim,
+                        fontFamily: FONT_MONO,
+                      }}
+                    >
+                      Loading users…
+                    </div>
+                  ) : usersList.length === 0 ? (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: T.textFaint,
+                        fontFamily: FONT_MONO,
+                      }}
+                    >
+                      No users yet.
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      {usersList.map((u) => {
+                        const roleLabel =
+                          u.role === "admin"
+                            ? "Admin"
+                            : u.role === "env"
+                            ? "Env"
+                            : "Invited";
+                        const roleColor =
+                          u.role === "admin"
+                            ? T.gold
+                            : u.role === "env"
+                            ? T.textDim
+                            : T.green;
+                        const removable = u.role === "invited";
+                        return (
+                          <div
+                            key={u.email}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "8px 10px",
+                              background: T.cardElev,
+                              border: `1px solid ${T.borderSoft}`,
+                              borderRadius: 2,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                                minWidth: 0,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 11,
+                                  color: roleColor,
+                                  border: `1px solid ${roleColor}`,
+                                  padding: "1px 6px",
+                                  borderRadius: 2,
+                                  letterSpacing: "0.05em",
+                                  textTransform: "uppercase",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {roleLabel}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  color: T.text,
+                                  fontFamily: FONT_MONO,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {u.email}
+                              </span>
+                            </div>
+                            {removable ? (
+                              <button
+                                onClick={() => handleRemoveUser(u.email)}
+                                title={`Remove ${u.email}`}
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: T.textDim,
+                                  padding: 4,
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            ) : (
+                              <span style={{ width: 20 }} />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           <footer
             style={{
