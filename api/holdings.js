@@ -1,99 +1,69 @@
-// Vercel serverless function — server-side holdings storage backed by Redis (via ioredis TCP).
-// Works with the Vercel Marketplace "Redis" integration that provides REDIS_URL.
-//
-// GET  /api/holdings → loads the current holdings array (or null if never saved)
-// PUT  /api/holdings → saves the entire holdings array (body: { holdings: [...] })
-//
-// Auth: Google ID token (x-google-token header) OR APP_PASSWORD (x-app-password header).
-// Storage key: derived from the authenticated user identity (per-email isolation when Google).
-//
-// Required env vars:
-// - APP_PASSWORD (legacy backup auth)
-// - GOOGLE_CLIENT_ID (for Google ID token verification)
-// - ALLOWED_EMAILS (comma-separated, optional but recommended)
-// - REDIS_URL (auto-set by Vercel Marketplace integration)
+// api/holdings.js
+// GET: { exists, holdings, savedAt, method, email, admin }
+// PUT { holdings }: { ok, savedAt }
+// Auth required (x-google-token or x-app-password).
 
-import Redis from "ioredis";
-import { authenticate } from "../lib/auth.js";
-
-// Singleton Redis client across warm function invocations.
-let redisClient = null;
-function getRedis() {
-  if (redisClient) return redisClient;
-  const url = process.env.REDIS_URL;
-  if (!url) return null;
-  redisClient = new Redis(url, {
-    maxRetriesPerRequest: 2,
-    enableReadyCheck: true,
-    connectTimeout: 5000,
-    lazyConnect: false,
-  });
-  redisClient.on("error", (err) => {
-    console.error("[redis] error:", err.message);
-  });
-  return redisClient;
-}
-
-function storageKey(userKey) {
-  return `portfolio:${userKey}:holdings`;
-}
+import { getRedis } from '../lib/redis.js';
+import { authenticate } from '../lib/auth.js';
 
 export default async function handler(req, res) {
-  const auth = await authenticate(req, res);
-  if (!auth) return; // authenticate() already sent response
-
-  const redis = getRedis();
-  if (!redis) {
-    return res.status(503).json({
-      error: "Redis not configured. Add the Redis integration in Vercel Marketplace.",
-    });
+  const auth = await authenticate(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error });
   }
 
-  const key = storageKey(auth.userKey);
+  let redis;
+  try {
+    redis = getRedis();
+  } catch (err) {
+    return res.status(503).json({ error: `Storage unavailable: ${err.message}` });
+  }
 
   try {
-    if (req.method === "GET") {
-      const raw = await redis.get(key);
-      if (raw == null) {
-        return res.status(200).json({ holdings: null, exists: false });
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        return res.status(500).json({ error: "Stored data is not valid JSON" });
-      }
-      const wrapped =
-        Array.isArray(parsed)
-          ? { holdings: parsed }
-          : (parsed && typeof parsed === "object" ? parsed : { holdings: null });
-      return res.status(200).json({ ...wrapped, exists: true });
-    }
-
-    if (req.method === "PUT" || req.method === "POST") {
-      let body = req.body;
-      if (typeof body === "string") {
+    if (req.method === 'GET') {
+      const raw = await redis.get(auth.storageKey);
+      let holdings = null;
+      let savedAt = null;
+      let exists = false;
+      if (raw) {
         try {
-          body = JSON.parse(body);
-        } catch (e) {
-          return res.status(400).json({ error: "Invalid JSON body" });
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            holdings = parsed;
+          } else if (parsed && Array.isArray(parsed.holdings)) {
+            holdings = parsed.holdings;
+            savedAt = parsed.savedAt || null;
+          }
+          exists = Array.isArray(holdings);
+        } catch {
+          exists = false;
         }
       }
-      const holdings = body?.holdings;
-      if (!Array.isArray(holdings)) {
-        return res.status(400).json({ error: "Body must contain `holdings` array" });
-      }
-      if (holdings.length > 500) {
-        return res.status(413).json({ error: "Too many holdings (max 500)" });
-      }
-      const payload = { holdings, savedAt: new Date().toISOString() };
-      await redis.set(key, JSON.stringify(payload));
-      return res.status(200).json({ ok: true, savedAt: payload.savedAt, count: holdings.length });
+      return res.status(200).json({
+        exists,
+        holdings,
+        savedAt,
+        method: auth.method,
+        email: auth.email,
+        admin: auth.admin,
+      });
     }
 
-    res.setHeader("Allow", "GET, PUT");
-    return res.status(405).json({ error: "Method not allowed" });
-  } catch (e) {
-    return res.status(500).json({ error: e.message || "Storage error" });
+    if (req.method === 'PUT') {
+      const body = req.body || {};
+      const holdings = body.holdings;
+      if (!Array.isArray(holdings)) {
+        return res.status(400).json({ error: 'holdings array required' });
+      }
+      const savedAt = new Date().toISOString();
+      const payload = JSON.stringify({ holdings, savedAt });
+      await redis.set(auth.storageKey, payload);
+      return res.status(200).json({ ok: true, savedAt });
+    }
+
+    return res.status(405).json({ error: 'Method not allowed' });
+  } catch (err) {
+    console.error('holdings handler error:', err);
+    return res.status(500).json({ error: err.message });
   }
 }
