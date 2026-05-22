@@ -385,6 +385,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const importJsonRef = useRef(null);
 
   // Manual asset form state
+  const [showAddForm, setShowAddForm] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
   const [manualName, setManualName] = useState("");
   const [manualMode, setManualMode] = useState("value"); // "value" | "qty_price"
@@ -1945,6 +1946,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               {/* Filters & Sort — own card */}
               <section
                 style={{
+                  marginTop: 18,
                   background: T.card,
                   border: `1px solid ${T.borderSoft}`,
                   borderRadius: 4,
@@ -2176,25 +2178,53 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           {/* Add form */}
           <section
             style={{
+              marginTop: 18,
               background: T.card,
               border: `1px solid ${T.borderSoft}`,
               borderRadius: 4,
-              padding: 16,
-              marginBottom: 28,
+              padding: 14,
             }}
           >
-            <div
+            <button
+              onClick={() => setShowAddForm(!showAddForm)}
               style={{
-                fontFamily: FONT_MONO,
-                fontSize: 10,
-                letterSpacing: "0.18em",
-                color: T.textDim,
-                textTransform: "uppercase",
-                marginBottom: 12,
+                background: "transparent",
+                border: "none",
+                color: T.text,
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: 0,
               }}
             >
-              Add Position
-            </div>
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: T.gold,
+                }}
+              >
+                <Plus size={12} />
+                Add Live Asset
+              </span>
+              <ChevronDown
+                size={14}
+                style={{
+                  color: T.textDim,
+                  transform: showAddForm ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                }}
+              />
+            </button>
+
+            {showAddForm && (
+              <div style={{ marginTop: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
               <Input
                 placeholder="Ticker"
@@ -2365,6 +2395,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 {csvStatus.kind === "success" && <CheckCircle2 size={12} />}
                 {csvStatus.kind === "parsing" && <RefreshCw size={12} className="spin" />}
                 {csvStatus.message}
+              </div>
+            )}
               </div>
             )}
           </section>
