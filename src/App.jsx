@@ -1460,7 +1460,22 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   textTransform: "uppercase",
                 }}
               >
-                Portfolio · {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                Last Refreshed · {(() => {
+                  const times = holdings
+                    .map((h) => h.lastUpdated)
+                    .filter(Boolean)
+                    .map((t) => new Date(t).getTime())
+                    .filter((n) => !isNaN(n));
+                  if (times.length === 0) return "—";
+                  const d = new Date(Math.max(...times));
+                  return d.toLocaleString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  });
+                })()}
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button
@@ -2435,7 +2450,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   color: T.gold,
                 }}
               >
-                <Wallet size={12} />
+                <Plus size={12} />
                 Add Manual Asset
               </span>
               <ChevronDown
@@ -4322,8 +4337,35 @@ function DonutChart({ slices, centerLabel, centerValue }) {
   const rOuter = 60;
   const rInner = 38;
 
+  const [hoveredKey, setHoveredKey] = useState(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const containerRef = useRef(null);
+
   const total = slices.reduce((s, sl) => s + sl.pct, 0);
   let cumulative = 0;
+
+  function handleEnter(key, e) {
+    setHoveredKey(key);
+    updateTooltipPos(e);
+  }
+
+  function updateTooltipPos(e) {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    let clientX, clientY;
+    if (e.touches && e.touches[0]) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+    setTooltipPos({ x: clientX - rect.left, y: clientY - rect.top });
+  }
+
+  function handleLeave() {
+    setHoveredKey(null);
+  }
 
   // Generate SVG arc path for one segment
   function arcPath(startPct, endPct) {
@@ -4346,6 +4388,9 @@ function DonutChart({ slices, centerLabel, centerValue }) {
   // Special case: single slice = 100% = full ring (need different rendering, can't draw a full arc)
   const isFullCircle = slices.length === 1 && Math.abs(slices[0].pct - 100) < 0.5;
 
+  // Hovered slice for tooltip
+  const hoveredSlice = hoveredKey ? slices.find((s) => s.key === hoveredKey) : null;
+
   return (
     <div
       style={{
@@ -4354,7 +4399,7 @@ function DonutChart({ slices, centerLabel, centerValue }) {
         alignItems: "center",
       }}
     >
-      <div style={{ position: "relative", width: size, height: size }}>
+      <div ref={containerRef} style={{ position: "relative", width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
           {/* Background ring (visible if no slices) */}
           {slices.length === 0 && (
@@ -4369,8 +4414,20 @@ function DonutChart({ slices, centerLabel, centerValue }) {
           )}
           {isFullCircle ? (
             <>
-              <circle cx={cx} cy={cy} r={rOuter} fill={slices[0].color} />
-              <circle cx={cx} cy={cy} r={rInner} fill={T.card} />
+              <circle
+                cx={cx}
+                cy={cy}
+                r={rOuter}
+                fill={slices[0].color}
+                onMouseEnter={(e) => handleEnter(slices[0].key, e)}
+                onMouseMove={updateTooltipPos}
+                onMouseLeave={handleLeave}
+                onTouchStart={(e) => handleEnter(slices[0].key, e)}
+                onTouchMove={updateTooltipPos}
+                onTouchEnd={handleLeave}
+                style={{ cursor: "pointer" }}
+              />
+              <circle cx={cx} cy={cy} r={rInner} fill={T.card} style={{ pointerEvents: "none" }} />
             </>
           ) : (
             slices.map((sl, i) => {
@@ -4378,6 +4435,7 @@ function DonutChart({ slices, centerLabel, centerValue }) {
               cumulative += sl.pct;
               const endPct = cumulative;
               if (sl.pct < 0.01) return null;
+              const isDim = hoveredKey != null && hoveredKey !== sl.key;
               return (
                 <path
                   key={sl.key}
@@ -4385,6 +4443,14 @@ function DonutChart({ slices, centerLabel, centerValue }) {
                   fill={sl.color}
                   stroke={T.card}
                   strokeWidth="0.5"
+                  opacity={isDim ? 0.35 : 1}
+                  onMouseEnter={(e) => handleEnter(sl.key, e)}
+                  onMouseMove={updateTooltipPos}
+                  onMouseLeave={handleLeave}
+                  onTouchStart={(e) => handleEnter(sl.key, e)}
+                  onTouchMove={updateTooltipPos}
+                  onTouchEnd={handleLeave}
+                  style={{ cursor: "pointer", transition: "opacity 0.15s" }}
                 />
               );
             })
@@ -4429,6 +4495,55 @@ function DonutChart({ slices, centerLabel, centerValue }) {
             {centerValue}
           </div>
         </div>
+        {/* Floating tooltip near cursor / tap */}
+        {hoveredSlice && (
+          <div
+            style={{
+              position: "absolute",
+              left: Math.max(4, Math.min(size - 4, tooltipPos.x)) + 10,
+              top: Math.max(4, Math.min(size - 4, tooltipPos.y)) - 10,
+              transform: tooltipPos.x > size / 2 ? "translateX(-100%) translateX(-20px)" : "none",
+              background: T.cardElev,
+              border: `1px solid ${hoveredSlice.color}`,
+              borderRadius: 3,
+              padding: "5px 8px",
+              pointerEvents: "none",
+              zIndex: 10,
+              whiteSpace: "nowrap",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 9,
+                color: hoveredSlice.color,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                marginBottom: 2,
+              }}
+            >
+              {hoveredSlice.key}
+            </div>
+            <div
+              style={{
+                fontFamily: FONT_DISPLAY,
+                fontSize: 13,
+                fontWeight: 500,
+                color: T.text,
+                letterSpacing: "-0.01em",
+                lineHeight: 1.1,
+              }}
+            >
+              {fmtPct(hoveredSlice.pct)}
+              {hoveredSlice.value != null && (
+                <span style={{ color: T.textDim, marginLeft: 6, fontSize: 11 }}>
+                  · {fmtMoney(hoveredSlice.value, { short: true })}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
