@@ -41,6 +41,32 @@ const UNALLOCATED_COLOR = "#3a3f48";
 // Rebalance: per-asset purchase cap in dollars
 const PER_ASSET_CAP = 1000;
 
+// Permanent Cash account — cannot be deleted, only value and target editable
+const CASH_ID = "cash-permanent";
+
+function ensureCashAccount(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const hasCash = arr.some((h) => h && h.id === CASH_ID);
+  if (hasCash) return arr;
+  return [
+    ...arr,
+    {
+      id: CASH_ID,
+      type: "manual",
+      manualMode: "value",
+      ticker: "CASH",
+      name: "Cash Account",
+      assetClass: "Cash",
+      assetClassOverride: "Cash",
+      qty: 0,
+      price: 1,
+      manualValue: 0,
+      manualPrice: 1,
+      target: 0,
+    },
+  ];
+}
+
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -344,7 +370,7 @@ export default function App() {
 }
 
 function PortfolioTracker({ auth, onLogout, onAuthFail }) {
-  const [holdings, setHoldings] = useState([]);
+  const [holdings, setHoldings] = useState(() => ensureCashAccount([]));
   const [loaded, setLoaded] = useState(false);
   const [ticker, setTicker] = useState("");
   const [qty, setQty] = useState("");
@@ -526,16 +552,18 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
         if (result.exists && Array.isArray(result.holdings)) {
           // Server has data → use it
-          setHoldings(result.holdings);
+          const withCash = ensureCashAccount(result.holdings);
+          setHoldings(withCash);
           try {
-            localStorage.setItem("holdings", JSON.stringify(result.holdings));
+            localStorage.setItem("holdings", JSON.stringify(withCash));
           } catch (e) {}
           setSyncState("synced");
         } else if (localData && Array.isArray(localData) && localData.length > 0) {
           // Server empty but local has data → migrate up
-          setHoldings(localData);
+          const withCash = ensureCashAccount(localData);
+          setHoldings(withCash);
           try {
-            const saveResult = await saveHoldingsToServer(auth, localData);
+            const saveResult = await saveHoldingsToServer(auth, withCash);
             if (!cancelled) {
               setLastSavedAt(saveResult.savedAt);
               setSyncState("synced");
@@ -544,7 +572,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             if (!cancelled) setSyncState("offline");
           }
         } else {
-          // Both empty → fresh start
+          // Both empty → fresh start, but cash always present
+          setHoldings(ensureCashAccount([]));
           setSyncState("synced");
         }
       } catch (e) {
@@ -555,7 +584,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         }
         // Server unreachable or Redis not configured → use local cache
         if (localData && Array.isArray(localData)) {
-          setHoldings(localData);
+          setHoldings(ensureCashAccount(localData));
+        } else {
+          setHoldings(ensureCashAccount([]));
         }
         setSyncState(e.code === 503 ? "local-only" : "offline");
       } finally {
@@ -804,6 +835,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   }
 
   function removeHolding(id) {
+    if (id === CASH_ID) return; // cash account is permanent
     setHoldings((prev) => prev.filter((h) => h.id !== id));
   }
 
@@ -916,7 +948,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const incoming = Array.isArray(parsed) ? parsed : parsed.holdings;
         if (!Array.isArray(incoming)) throw new Error("Invalid format");
         if (!confirm(`Replace your current ${holdings.length} holdings with ${incoming.length} from backup?`)) return;
-        setHoldings(incoming);
+        setHoldings(ensureCashAccount(incoming));
       } catch (err) {
         alert(`Import failed: ${err.message}`);
       }
@@ -1910,14 +1942,38 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           ) : (
             <>
-              {/* Filter / sort bar */}
-              <div
+              {/* Filters & Sort — own card */}
+              <section
                 style={{
-                  display: "flex",
-                  gap: 6,
-                  marginBottom: 10,
-                  flexWrap: "wrap",
+                  background: T.card,
+                  border: `1px solid ${T.borderSoft}`,
+                  borderRadius: 4,
+                  padding: 12,
+                  marginBottom: 16,
                 }}
+              >
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: T.textDim,
+                    marginBottom: 10,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Search size={11} />
+                  Filters & Sort
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    flexWrap: "wrap",
+                  }}
               >
                 <div
                   style={{
@@ -2018,7 +2074,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     <X size={12} />
                   </button>
                 )}
-              </div>
+                </div>
+              </section>
 
               {/* Consolidated holdings (auto + manual non-cash) */}
               {filteredHoldings.length > 0 && (
@@ -2073,36 +2130,33 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </>
               )}
 
-              {/* Cash accounts — separate, excluded from rebalance and sort */}
-              {cashAccounts.length > 0 && (
-                <>
-                  <SectionLabel
-                    label="Cash"
-                    count={cashAccounts.length}
-                    icon={<Wallet size={11} />}
-                    collapsible
-                    collapsed={cashCollapsed}
-                    onToggle={() => setCashCollapsed(!cashCollapsed)}
-                  />
-                  {!cashCollapsed && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {cashAccounts.map((h) => (
-                        <ManualHoldingRow
-                          key={h.id}
-                          holding={h}
-                          totalValue={totalValue}
-                          valuesHidden={valuesHidden}
-                          onUpdate={(patch) => updateManualHolding(h.id, patch)}
-                          onRemove={() => removeHolding(h.id)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </>
+              {/* Cash accounts — always visible; permanent Cash row is locked */}
+              <SectionLabel
+                label="Cash"
+                count={cashAccounts.length}
+                icon={<Wallet size={11} />}
+                collapsible
+                collapsed={cashCollapsed}
+                onToggle={() => setCashCollapsed(!cashCollapsed)}
+              />
+              {!cashCollapsed && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {cashAccounts.map((h) => (
+                    <ManualHoldingRow
+                      key={h.id}
+                      holding={h}
+                      totalValue={totalValue}
+                      valuesHidden={valuesHidden}
+                      onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                      onRemove={() => removeHolding(h.id)}
+                      locked={h.id === CASH_ID}
+                    />
+                  ))}
+                </div>
               )}
 
               {/* No results from filter */}
-              {filteredHoldings.length === 0 && cashAccounts.length === 0 && (
+              {filteredHoldings.length === 0 && cashAccounts.filter((c) => c.id !== CASH_ID).length === 0 && (
                 <div
                   style={{
                     textAlign: "center",
@@ -3874,7 +3928,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemove }) {
+function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemove, locked }) {
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
@@ -3906,9 +3960,11 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
   function saveEdit() {
     const patch = {
       target: draftTarget === "" ? 0 : parseFloat(draftTarget) || 0,
-      assetClass: draftClass.trim() || "Manual",
-      assetClassOverride: draftClass.trim() || null,
     };
+    if (!locked) {
+      patch.assetClass = draftClass.trim() || "Manual";
+      patch.assetClassOverride = draftClass.trim() || null;
+    }
     if (holding.manualMode === "value") {
       const v = parseFloat(draftValue);
       patch.manualValue = isNaN(v) ? 0 : v;
@@ -4054,18 +4110,20 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
               />
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: locked ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <Input
               placeholder="Target %"
               value={draftTarget}
               onChange={(e) => setDraftTarget(e.target.value)}
               inputMode="decimal"
             />
-            <Input
-              placeholder="Class"
-              value={draftClass}
-              onChange={(e) => setDraftClass(e.target.value)}
-            />
+            {!locked && (
+              <Input
+                placeholder="Class"
+                value={draftClass}
+                onChange={(e) => setDraftClass(e.target.value)}
+              />
+            )}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
@@ -4192,9 +4250,11 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={13} />
           </IconButton>
-          <IconButton onClick={onRemove} label="Remove" danger>
-            <Trash2 size={13} />
-          </IconButton>
+          {!locked && (
+            <IconButton onClick={onRemove} label="Remove" danger>
+              <Trash2 size={13} />
+            </IconButton>
+          )}
         </div>
       </div>
     </div>
