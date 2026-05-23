@@ -1600,7 +1600,18 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           </header>
 
           {activeView === "transactions" && (
-            <TransactionsView auth={auth} onAuthFail={onAuthFail} />
+            <TransactionsView
+              auth={auth}
+              onAuthFail={onAuthFail}
+              knownTickers={Array.from(
+                new Set(
+                  holdings
+                    .map((h) => h && h.ticker)
+                    .filter(Boolean)
+                    .map((t) => String(t).toUpperCase())
+                )
+              ).sort()}
+            />
           )}
 
           {activeView === "dashboard" && (
