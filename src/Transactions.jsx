@@ -3,7 +3,8 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Search } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Search, Upload, Download } from "lucide-react";
+import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -672,6 +673,891 @@ function TxRow({ tx, onEdit, onDelete, busy }) {
   );
 }
 
+// --- Bulk import parsing helpers -------------------------------------------
+
+// Date parsing — accepts YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY.
+// Ambiguous slash dates (e.g. 03/04/2024) default to DMY since user is BR-based.
+function isValidYMD(y, m, d) {
+  const yi = parseInt(y, 10);
+  const mi = parseInt(m, 10);
+  const di = parseInt(d, 10);
+  if (!isFinite(yi) || !isFinite(mi) || !isFinite(di)) return false;
+  if (yi < 1900 || yi > 2100) return false;
+  if (mi < 1 || mi > 12) return false;
+  if (di < 1 || di > 31) return false;
+  // Check actual date (catches Feb 30, etc.)
+  const dt = new Date(yi, mi - 1, di);
+  return (
+    dt.getFullYear() === yi &&
+    dt.getMonth() === mi - 1 &&
+    dt.getDate() === di
+  );
+}
+
+function parseDate(raw) {
+  if (!raw) return { value: null, error: "missing" };
+  const s = String(raw).trim();
+  // ISO YYYY-MM-DD or YYYY/MM/DD
+  let m = s.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
+  if (m) {
+    const [, y, mo, d] = m;
+    const mm = mo.padStart(2, "0");
+    const dd = d.padStart(2, "0");
+    if (!isValidYMD(y, mm, dd)) return { value: null, error: "bad date" };
+    return { value: `${y}-${mm}-${dd}`, error: null };
+  }
+  // DD/MM/YYYY or DD-MM-YYYY (BR default for ambiguous)
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    d = d.padStart(2, "0");
+    mo = mo.padStart(2, "0");
+    // If month > 12 but day <= 12, swap (it was MDY).
+    if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
+      [d, mo] = [mo, d];
+    }
+    if (!isValidYMD(y, mo, d)) return { value: null, error: "bad date" };
+    return { value: `${y}-${mo}-${d}`, error: null };
+  }
+  return { value: null, error: "bad date" };
+}
+
+function parseSide(raw) {
+  if (!raw) return { value: null, error: "missing" };
+  const s = String(raw).trim().toLowerCase();
+  if (["buy", "compra", "b", "c"].includes(s)) return { value: "buy", error: null };
+  if (["sell", "venda", "s", "v"].includes(s)) return { value: "sell", error: null };
+  return { value: null, error: "bad side" };
+}
+
+function parseCurrency(raw) {
+  if (!raw) return { value: "USD", error: null };
+  const s = String(raw).trim().toUpperCase();
+  if (s === "USD" || s === "$" || s === "US$") return { value: "USD", error: null };
+  if (s === "BRL" || s === "R$" || s === "BR") return { value: "BRL", error: null };
+  return { value: null, error: "bad currency" };
+}
+
+// Number parsing — returns {value, ambiguous}
+// ambiguous=true if the string has a comma that could be decimal.
+// Default rule: dot is decimal. Comma is treated as thousands separator if both
+// present; if only comma, value is parsed without commas (will look wrong if
+// it was meant as decimal — flagged ambiguous).
+function parseNumberLoose(raw) {
+  if (raw === null || raw === undefined || raw === "") {
+    return { value: null, ambiguous: false, error: "missing" };
+  }
+  const s = String(raw).trim().replace(/[$R\s]/g, "");
+  if (!s) return { value: null, ambiguous: false, error: "missing" };
+
+  const hasDot = s.includes(".");
+  const hasComma = s.includes(",");
+  let cleaned;
+  let ambiguous = false;
+  if (hasDot && hasComma) {
+    // Both present — assume comma = thousands, dot = decimal.
+    cleaned = s.replace(/,/g, "");
+  } else if (hasComma && !hasDot) {
+    // Only comma — ambiguous: could be 1,500 (thousands) or 1,5 (decimal BR).
+    cleaned = s.replace(/,/g, "");
+    ambiguous = true;
+  } else {
+    cleaned = s;
+  }
+  const n = parseFloat(cleaned);
+  if (!isFinite(n)) return { value: null, ambiguous, error: "not a number" };
+  return { value: n, ambiguous, error: null };
+}
+
+// Re-parse with comma-as-decimal applied (used after user confirms in modal).
+function parseNumberCommaDecimal(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const s = String(raw).trim().replace(/[$R\s]/g, "");
+  if (!s) return null;
+  // Replace last comma with dot, strip dots and other commas as thousands sep.
+  const lastComma = s.lastIndexOf(",");
+  if (lastComma === -1) {
+    // No comma — strip thousands dots if pattern like "1.500" with no decimal,
+    // but leave normal "175.50" alone. Heuristic: dots followed by exactly 3
+    // digits and nothing after suggest thousands.
+    const looksLikeThousands = /^\d{1,3}(\.\d{3})+$/.test(s);
+    const cleaned = looksLikeThousands ? s.replace(/\./g, "") : s;
+    const n = parseFloat(cleaned);
+    return isFinite(n) ? n : null;
+  }
+  const before = s.slice(0, lastComma).replace(/[,.]/g, "");
+  const after = s.slice(lastComma + 1);
+  const n = parseFloat(`${before}.${after}`);
+  return isFinite(n) ? n : null;
+}
+
+// Parse a single row (object from PapaParse OR from paste-detected schema).
+// Returns { ok, tx, errors, ambiguous, rawNumbers }
+function parseRow(row, defaultCurrency = "USD") {
+  const errors = [];
+  const rawNumbers = {
+    qty: row.qty,
+    price: row.price,
+    fee: row.fee,
+  };
+
+  const d = parseDate(row.date);
+  if (d.error) errors.push(`date: ${d.error}`);
+
+  const sd = parseSide(row.side);
+  if (sd.error) errors.push(`side: ${sd.error}`);
+
+  const ticker = String(row.ticker || "").trim().toUpperCase();
+  if (!ticker) errors.push("ticker: missing");
+
+  const qty = parseNumberLoose(row.qty);
+  if (qty.error) errors.push(`qty: ${qty.error}`);
+  else if (qty.value <= 0) errors.push("qty: must be > 0");
+
+  const price = parseNumberLoose(row.price);
+  if (price.error) errors.push(`price: ${price.error}`);
+  else if (price.value < 0) errors.push("price: must be >= 0");
+
+  let fee = { value: 0, ambiguous: false, error: null };
+  if (row.fee !== undefined && row.fee !== "" && row.fee !== null) {
+    fee = parseNumberLoose(row.fee);
+    if (fee.error) errors.push(`fee: ${fee.error}`);
+  }
+
+  let cur = { value: defaultCurrency, error: null };
+  if (row.currency) {
+    cur = parseCurrency(row.currency);
+    if (cur.error) errors.push(`currency: ${cur.error}`);
+  }
+
+  const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
+
+  if (errors.length > 0) {
+    return { ok: false, tx: null, errors, ambiguous, rawNumbers };
+  }
+
+  return {
+    ok: true,
+    errors: [],
+    ambiguous,
+    rawNumbers,
+    tx: {
+      id: newId(),
+      date: d.value,
+      side: sd.value,
+      ticker,
+      qty: qty.value,
+      price: price.value,
+      currency: cur.value,
+      fee: fee.value || 0,
+      notes: String(row.notes || "").trim(),
+      createdAt: new Date().toISOString(),
+    },
+  };
+}
+
+// Re-parse rows treating comma as decimal in numeric fields.
+function reparseWithCommaDecimal(rows, defaultCurrency = "USD") {
+  return rows.map((row) => {
+    const patched = {
+      ...row,
+      qty: parseNumberCommaDecimal(row.qty),
+      price: parseNumberCommaDecimal(row.price),
+      fee:
+        row.fee === undefined || row.fee === null || row.fee === ""
+          ? row.fee
+          : parseNumberCommaDecimal(row.fee),
+    };
+    return parseRow(patched, defaultCurrency);
+  });
+}
+
+// Detect headers from a paste/CSV first row. Returns null if no recognizable
+// headers — caller should treat input as headerless and require column order.
+const HEADER_ALIASES = {
+  date: ["date", "data", "dt"],
+  side: ["side", "tipo", "operacao", "operation", "type"],
+  ticker: ["ticker", "symbol", "ativo", "asset", "papel"],
+  qty: ["qty", "quantity", "quantidade", "qtd", "shares"],
+  price: ["price", "preco", "preço", "cotacao", "cotação", "value", "valor"],
+  currency: ["currency", "moeda", "ccy"],
+  fee: ["fee", "fees", "taxa", "tarifa", "corretagem"],
+  notes: ["notes", "note", "obs", "observacao", "observação", "memo"],
+};
+
+function detectHeaderMap(firstRow) {
+  const map = {};
+  const seen = new Set();
+  for (const h of firstRow) {
+    const key = String(h || "").trim().toLowerCase();
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      if (aliases.includes(key) && !seen.has(field)) {
+        map[h] = field;
+        seen.add(field);
+        break;
+      }
+    }
+  }
+  // Need at least date, side, ticker, qty, price to be confident.
+  const required = ["date", "side", "ticker", "qty", "price"];
+  const present = new Set(Object.values(map));
+  if (required.every((r) => present.has(r))) return map;
+  return null;
+}
+
+// Parse paste text or CSV string into {rows, hadHeader, rawRows}
+function parseCSVOrPaste(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return { rows: [], hadHeader: false, rawRows: [] };
+  // PapaParse handles both comma and semicolon, quoted fields, newlines.
+  const result = Papa.parse(trimmed, {
+    skipEmptyLines: true,
+    delimitersToGuess: [",", ";", "\t", "|"],
+  });
+  if (!result.data || result.data.length === 0) {
+    return { rows: [], hadHeader: false, rawRows: [] };
+  }
+  const allRows = result.data;
+  const headerMap = detectHeaderMap(allRows[0]);
+  const dataRows = headerMap ? allRows.slice(1) : allRows;
+  const hadHeader = !!headerMap;
+
+  const FIELD_ORDER = ["date", "side", "ticker", "qty", "price", "currency", "fee", "notes"];
+
+  const rows = dataRows.map((arr) => {
+    const obj = {};
+    if (headerMap) {
+      allRows[0].forEach((h, i) => {
+        const field = headerMap[h];
+        if (field) obj[field] = arr[i];
+      });
+    } else {
+      FIELD_ORDER.forEach((field, i) => {
+        if (arr[i] !== undefined) obj[field] = arr[i];
+      });
+    }
+    return obj;
+  });
+
+  return { rows, hadHeader, rawRows: allRows };
+}
+
+// CSV export
+function transactionsToCSV(transactions) {
+  const headers = ["date", "side", "ticker", "qty", "price", "currency", "fee", "notes"];
+  const lines = [headers.join(",")];
+  for (const t of transactions) {
+    const row = headers.map((h) => {
+      const v = t[h];
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    });
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+}
+
+function downloadCSV(filename, content) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// --- Import Modal ----------------------------------------------------------
+
+const SAMPLE_CSV = `date,side,ticker,qty,price,currency,fee,notes
+2024-03-15,buy,AAPL,10,175.50,USD,0,
+2024-03-20,buy,BBSE3,100,38.20,BRL,,monthly buy`;
+
+function ImportModal({ open, onClose, onConfirm, existingCount }) {
+  const [tab, setTab] = useState("paste"); // paste | upload
+  const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null); // { results, hadHeader }
+  const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
+  const [mode, setMode] = useState("append"); // append | replace
+  const [fileError, setFileError] = useState("");
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) {
+      setText("");
+      setParsed(null);
+      setDecimalPrompt(false);
+      setMode("append");
+      setFileError("");
+      setTab("paste");
+    }
+  }, [open]);
+
+  function doParse(rawText) {
+    const { rows, hadHeader } = parseCSVOrPaste(rawText);
+    if (rows.length === 0) {
+      setFileError("No rows detected");
+      setParsed(null);
+      return;
+    }
+    const results = rows.map((r) => parseRow(r));
+    const ambiguousCount = results.filter((r) => r.ambiguous).length;
+    setParsed({ results, hadHeader, rawRows: rows });
+    setDecimalPrompt(ambiguousCount > 0);
+    setFileError("");
+  }
+
+  function applyCommaDecimal(useComma) {
+    if (!parsed) return;
+    if (useComma) {
+      const next = reparseWithCommaDecimal(parsed.rawRows);
+      setParsed({ ...parsed, results: next });
+    }
+    setDecimalPrompt(false);
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const content = String(ev.target?.result || "");
+      setText(content);
+      doParse(content);
+    };
+    reader.onerror = () => setFileError("Failed to read file");
+    reader.readAsText(file);
+  }
+
+  function handleConfirm() {
+    if (!parsed) return;
+    const validTx = parsed.results.filter((r) => r.ok).map((r) => r.tx);
+    if (validTx.length === 0) return;
+    onConfirm(validTx, mode);
+  }
+
+  if (!open) return null;
+
+  const validCount = parsed ? parsed.results.filter((r) => r.ok).length : 0;
+  const errorCount = parsed ? parsed.results.filter((r) => !r.ok).length : 0;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        zIndex: 100,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: 20,
+        overflowY: "auto",
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: T.cardElev,
+          border: `1px solid ${T.border}`,
+          maxWidth: 720,
+          width: "100%",
+          marginTop: 20,
+          marginBottom: 40,
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${T.border}`,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              letterSpacing: "0.2em",
+              color: T.gold,
+              textTransform: "uppercase",
+            }}
+          >
+            Import Transactions
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: T.textDim,
+              cursor: "pointer",
+              padding: 4,
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Decimal handling prompt */}
+        {decimalPrompt && (
+          <div
+            style={{
+              padding: 16,
+              background: "rgba(201, 169, 97, 0.08)",
+              borderBottom: `1px solid ${T.border}`,
+            }}
+          >
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 12,
+                color: T.gold,
+                marginBottom: 8,
+                lineHeight: 1.5,
+              }}
+            >
+              Detected commas in numeric fields. Convert ',' to '.' as decimal
+              separator?
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => applyCommaDecimal(true)}
+                style={{
+                  background: T.gold,
+                  border: "none",
+                  color: "#0b0d10",
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                Yes, convert
+              </button>
+              <button
+                onClick={() => applyCommaDecimal(false)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  color: T.textDim,
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                No, keep
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Body */}
+        <div style={{ padding: 20 }}>
+          {!parsed && (
+            <>
+              {/* Tabs */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 14,
+                  borderBottom: `1px solid ${T.border}`,
+                  marginBottom: 16,
+                }}
+              >
+                {[
+                  { id: "paste", label: "Paste" },
+                  { id: "upload", label: "Upload CSV" },
+                ].map((t) => {
+                  const active = tab === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => setTab(t.id)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        padding: "8px 0",
+                        cursor: "pointer",
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        letterSpacing: "0.18em",
+                        textTransform: "uppercase",
+                        color: active ? T.gold : T.textDim,
+                        borderBottom: active
+                          ? `1px solid ${T.gold}`
+                          : "1px solid transparent",
+                        marginBottom: -1,
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {tab === "paste" && (
+                <div>
+                  <Label>Paste CSV or tab-separated data</Label>
+                  <textarea
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    placeholder={SAMPLE_CSV}
+                    rows={10}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      background: T.card,
+                      border: `1px solid ${T.border}`,
+                      color: T.text,
+                      padding: 12,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      resize: "vertical",
+                      outline: "none",
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      color: T.textFaint,
+                      marginTop: 8,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Columns: date, side, ticker, qty, price, currency, fee,
+                    notes. First row may be a header. Sides: buy/sell or
+                    compra/venda.
+                  </div>
+                  <button
+                    onClick={() => doParse(text)}
+                    disabled={!text.trim()}
+                    style={{
+                      marginTop: 12,
+                      background: T.gold,
+                      border: "none",
+                      color: "#0b0d10",
+                      padding: "10px 16px",
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.15em",
+                      textTransform: "uppercase",
+                      cursor: text.trim() ? "pointer" : "default",
+                      opacity: text.trim() ? 1 : 0.4,
+                    }}
+                  >
+                    Parse
+                  </button>
+                </div>
+              )}
+
+              {tab === "upload" && (
+                <div>
+                  <Label>Select a CSV file</Label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,text/csv,text/plain"
+                    onChange={handleFile}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: 12,
+                      background: T.card,
+                      border: `1px dashed ${T.border}`,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      color: T.textFaint,
+                      marginTop: 8,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Same columns as paste. Header row recommended.
+                  </div>
+                  {fileError && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        color: T.red,
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                      }}
+                    >
+                      {fileError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {parsed && (
+            <>
+              {/* Summary */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 16,
+                  marginBottom: 14,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.green,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {validCount} valid
+                </div>
+                {errorCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.red,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {errorCount} with errors
+                  </div>
+                )}
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.textDim,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {parsed.hadHeader ? "header detected" : "no header"}
+                </div>
+              </div>
+
+              {/* Preview table */}
+              <div
+                style={{
+                  maxHeight: 320,
+                  overflowY: "auto",
+                  border: `1px solid ${T.border}`,
+                  marginBottom: 14,
+                }}
+              >
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                  }}
+                >
+                  <thead>
+                    <tr style={{ background: T.card }}>
+                      {["#", "date", "side", "ticker", "qty", "price", "cur", ""].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            textAlign: "left",
+                            padding: "8px 10px",
+                            color: T.textDim,
+                            fontWeight: 400,
+                            letterSpacing: "0.1em",
+                            textTransform: "uppercase",
+                            fontSize: 10,
+                            borderBottom: `1px solid ${T.border}`,
+                            position: "sticky",
+                            top: 0,
+                            background: T.card,
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsed.results.map((r, idx) => (
+                      <tr
+                        key={idx}
+                        style={{
+                          background: r.ok ? "transparent" : "rgba(232, 140, 140, 0.05)",
+                          borderBottom: `1px solid ${T.borderSoft}`,
+                        }}
+                      >
+                        <td style={{ padding: "6px 10px", color: T.textFaint }}>
+                          {idx + 1}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.text }}>
+                          {r.ok ? r.tx.date : "—"}
+                        </td>
+                        <td
+                          style={{
+                            padding: "6px 10px",
+                            color: r.ok
+                              ? r.tx.side === "buy"
+                                ? T.green
+                                : T.red
+                              : T.textDim,
+                          }}
+                        >
+                          {r.ok ? r.tx.side : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.text }}>
+                          {r.ok ? r.tx.ticker : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.text }}>
+                          {r.ok ? fmtNum(r.tx.qty) : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.text }}>
+                          {r.ok ? fmtNum(r.tx.price, 2) : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.textDim }}>
+                          {r.ok ? r.tx.currency : "—"}
+                        </td>
+                        <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
+                          {!r.ok && r.errors.join("; ")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mode toggle */}
+              <Label>How to apply</Label>
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                {[
+                  { id: "append", label: `Append (keep ${existingCount} existing)` },
+                  { id: "replace", label: `Replace all ${existingCount}` },
+                ].map((m) => {
+                  const active = mode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setMode(m.id)}
+                      style={{
+                        flex: 1,
+                        background: active
+                          ? m.id === "replace"
+                            ? "rgba(232, 140, 140, 0.12)"
+                            : "rgba(125, 211, 164, 0.12)"
+                          : "transparent",
+                        border: `1px solid ${
+                          active ? (m.id === "replace" ? T.red : T.green) : T.border
+                        }`,
+                        color: active
+                          ? m.id === "replace"
+                            ? T.red
+                            : T.green
+                          : T.textDim,
+                        padding: "10px 12px",
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {mode === "replace" && existingCount > 0 && (
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.red,
+                    marginBottom: 14,
+                    padding: 10,
+                    border: `1px solid ${T.red}`,
+                    background: "rgba(232, 140, 140, 0.05)",
+                  }}
+                >
+                  Warning: replacing will delete all {existingCount} existing
+                  transactions.
+                </div>
+              )}
+
+              {/* Actions */}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={handleConfirm}
+                  disabled={validCount === 0}
+                  style={{
+                    background: T.gold,
+                    border: "none",
+                    color: "#0b0d10",
+                    padding: "10px 16px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.15em",
+                    textTransform: "uppercase",
+                    cursor: validCount > 0 ? "pointer" : "default",
+                    opacity: validCount > 0 ? 1 : 0.4,
+                  }}
+                >
+                  Import {validCount}
+                </button>
+                <button
+                  onClick={() => {
+                    setParsed(null);
+                    setDecimalPrompt(false);
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: `1px solid ${T.border}`,
+                    color: T.textDim,
+                    padding: "10px 16px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.15em",
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  Back
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Main view -------------------------------------------------------------
 
 export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }) {
@@ -681,6 +1567,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
   const [saving, setSaving] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
+  const [importOpen, setImportOpen] = useState(false);
   const [filters, setFilters] = useState({
     text: "",
     side: "all",
@@ -744,6 +1631,18 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
   async function handleDelete(tx) {
     const next = transactions.filter((t) => t.id !== tx.id);
     await persist(next);
+  }
+
+  async function handleImport(newTxs, mode) {
+    const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
+    await persist(next);
+    setImportOpen(false);
+  }
+
+  function handleExport() {
+    const csv = transactionsToCSV(transactions);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCSV(`transactions-${stamp}.csv`, csv);
   }
 
   // Filter + sort (date desc, then createdAt desc as tiebreaker)
@@ -844,26 +1743,72 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
           {saving && " - saving..."}
         </div>
         {!formOpen && !editing && (
-          <button
-            onClick={() => setFormOpen(true)}
-            style={{
-              background: T.gold,
-              border: "none",
-              color: "#0b0d10",
-              padding: "8px 14px",
-              fontFamily: FONT_MONO,
-              fontSize: 11,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <Plus size={12} />
-            New
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => setImportOpen(true)}
+              title="Import from CSV or paste"
+              style={{
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.textDim,
+                padding: "8px 12px",
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.15em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Upload size={12} />
+              Import
+            </button>
+            {transactions.length > 0 && (
+              <button
+                onClick={handleExport}
+                title="Export to CSV"
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  color: T.textDim,
+                  padding: "8px 12px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Download size={12} />
+                Export
+              </button>
+            )}
+            <button
+              onClick={() => setFormOpen(true)}
+              style={{
+                background: T.gold,
+                border: "none",
+                color: "#0b0d10",
+                padding: "8px 14px",
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.15em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Plus size={12} />
+              New
+            </button>
+          </div>
         )}
       </div>
 
@@ -923,6 +1868,13 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
           ))}
         </div>
       )}
+
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onConfirm={handleImport}
+        existingCount={transactions.length}
+      />
     </div>
   );
 }
