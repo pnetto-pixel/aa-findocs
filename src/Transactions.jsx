@@ -906,22 +906,86 @@ function detectHeaderMap(firstRow) {
   return null;
 }
 
-// Parse paste text or CSV string into {rows, hadHeader, rawRows}
-function parseCSVOrPaste(text) {
+// Try to fix a row where comma-as-decimal broke the CSV structure.
+// Strategy: anchor by the currency cell (USD/BRL) and merge digit pairs
+// around it. Only attempts when exactly 1 extra column is detected; multiple
+// broken fields per row return { ok: false } and the user is told to fix the
+// source.
+const CURRENCY_RX = /^(USD|BRL|US\$|R\$|\$)$/i;
+function fixBRSplitRow(arr, expectedLen) {
+  if (!Array.isArray(arr) || arr.length <= expectedLen) {
+    return { ok: true, arr };
+  }
+  const extra = arr.length - expectedLen;
+  if (extra > 1) return { ok: false, arr }; // too ambiguous
+
+  let currIdx = -1;
+  for (let i = 0; i < arr.length; i++) {
+    if (CURRENCY_RX.test(String(arr[i] ?? "").trim())) {
+      currIdx = i;
+      break;
+    }
+  }
+  if (currIdx === -1) return { ok: false, arr };
+
+  // Case 1: currency pushed one to the right (price split into two cells)
+  if (currIdx === 6) {
+    const a = String(arr[4] ?? "");
+    const b = String(arr[5] ?? "");
+    if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+      const merged = [...arr];
+      merged.splice(4, 2, `${a}.${b}`);
+      return { ok: true, arr: merged };
+    }
+  }
+  // Case 2: currency in place but fee split into two cells
+  if (currIdx === 5 && arr.length >= 8) {
+    const a = String(arr[6] ?? "");
+    const b = String(arr[7] ?? "");
+    if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+      const merged = [...arr];
+      merged.splice(6, 2, `${a}.${b}`);
+      return { ok: true, arr: merged };
+    }
+  }
+  return { ok: false, arr };
+}
+
+// Parse paste text or CSV string into {rows, hadHeader, rawRows, structuralBreak, ...}
+// When `autoFixBR` is true, applies fixBRSplitRow to data rows.
+function parseCSVOrPaste(text, opts = {}) {
   const trimmed = text.trim();
-  if (!trimmed) return { rows: [], hadHeader: false, rawRows: [] };
-  // PapaParse handles both comma and semicolon, quoted fields, newlines.
+  if (!trimmed) {
+    return { rows: [], hadHeader: false, rawRows: [], structuralBreak: false, delimiter: "," };
+  }
   const result = Papa.parse(trimmed, {
     skipEmptyLines: true,
     delimitersToGuess: [",", ";", "\t", "|"],
   });
   if (!result.data || result.data.length === 0) {
-    return { rows: [], hadHeader: false, rawRows: [] };
+    return { rows: [], hadHeader: false, rawRows: [], structuralBreak: false, delimiter: "," };
   }
   const allRows = result.data;
+  const delimiter = result.meta?.delimiter || ",";
   const headerMap = detectHeaderMap(allRows[0]);
-  const dataRows = headerMap ? allRows.slice(1) : allRows;
+  let dataRows = headerMap ? allRows.slice(1) : allRows;
   const hadHeader = !!headerMap;
+
+  const refLen = allRows[0].length;
+  const structuralBreak =
+    dataRows.length > 0 && dataRows.some((r) => r.length > refLen);
+
+  let fixedRows = 0;
+  let unfixableRows = 0;
+  if (opts.autoFixBR && structuralBreak) {
+    dataRows = dataRows.map((arr) => {
+      if (arr.length <= refLen) return arr;
+      const fix = fixBRSplitRow(arr, refLen);
+      if (fix.ok) fixedRows++;
+      else unfixableRows++;
+      return fix.arr;
+    });
+  }
 
   const FIELD_ORDER = ["date", "side", "ticker", "qty", "price", "currency", "fee", "notes"];
 
@@ -940,7 +1004,15 @@ function parseCSVOrPaste(text) {
     return obj;
   });
 
-  return { rows, hadHeader, rawRows: allRows };
+  return {
+    rows,
+    hadHeader,
+    rawRows: allRows,
+    structuralBreak,
+    delimiter,
+    fixedRows,
+    unfixableRows,
+  };
 }
 
 // CSV export
@@ -985,6 +1057,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
+  const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
   const [fileError, setFileError] = useState("");
   const fileInputRef = useRef(null);
@@ -994,6 +1067,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setText("");
       setParsed(null);
       setDecimalPrompt(false);
+      setStructuralPrompt(false);
       setMode("append");
       setFileError("");
       setTab("paste");
@@ -1001,17 +1075,54 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   }, [open]);
 
   function doParse(rawText) {
-    const { rows, hadHeader } = parseCSVOrPaste(rawText);
-    if (rows.length === 0) {
+    const out = parseCSVOrPaste(rawText);
+    if (out.rows.length === 0) {
       setFileError("No rows detected");
       setParsed(null);
       return;
     }
-    const results = rows.map((r) => parseRow(r));
+    // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
+    if (out.structuralBreak && out.delimiter === ",") {
+      // Hold the parse result; show prompt offering BR auto-fix.
+      const results = out.rows.map((r) => parseRow(r));
+      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+      setStructuralPrompt(true);
+      setDecimalPrompt(false);
+      setFileError("");
+      return;
+    }
+    const results = out.rows.map((r) => parseRow(r));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
-    setParsed({ results, hadHeader, rawRows: rows });
+    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
     setDecimalPrompt(ambiguousCount > 0);
+    setStructuralPrompt(false);
     setFileError("");
+  }
+
+  function applyBRReparse(yes) {
+    if (!parsed) return;
+    setStructuralPrompt(false);
+    if (!yes) return;
+    // Re-run parse with positional auto-fix enabled.
+    const out = parseCSVOrPaste(parsed.sourceText, { autoFixBR: true });
+    if (out.rows.length === 0) {
+      setFileError("Reparse produced no rows");
+      setParsed(null);
+      return;
+    }
+    const results = out.rows.map((r) => parseRow(r));
+    const ambiguousCount = results.filter((r) => r.ambiguous).length;
+    setParsed({
+      results,
+      hadHeader: out.hadHeader,
+      rawRows: out.rows,
+      sourceText: parsed.sourceText,
+      reparseNote:
+        out.unfixableRows > 0
+          ? `${out.fixedRows} row(s) fixed, ${out.unfixableRows} could not be auto-fixed.`
+          : null,
+    });
+    setDecimalPrompt(ambiguousCount > 0);
   }
 
   function applyCommaDecimal(useComma) {
@@ -1108,6 +1219,65 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
             <X size={16} />
           </button>
         </div>
+
+        {/* Structural break prompt (BR decimal in comma-CSV) */}
+        {structuralPrompt && (
+          <div
+            style={{
+              padding: 16,
+              background: "rgba(232, 140, 140, 0.08)",
+              borderBottom: `1px solid ${T.border}`,
+            }}
+          >
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 12,
+                color: T.red,
+                marginBottom: 8,
+                lineHeight: 1.5,
+              }}
+            >
+              Column mismatch detected. Likely cause: commas used as decimal
+              separator in a comma-delimited file (e.g. "175,50"). Replace
+              inline commas with dots and reparse?
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => applyBRReparse(true)}
+                style={{
+                  background: T.gold,
+                  border: "none",
+                  color: "#0b0d10",
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                Yes, reparse
+              </button>
+              <button
+                onClick={() => applyBRReparse(false)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  color: T.textDim,
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                No, keep
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Decimal handling prompt */}
         {decimalPrompt && (
@@ -1363,6 +1533,22 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 </div>
               </div>
 
+              {parsed.reparseNote && (
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.gold,
+                    marginBottom: 14,
+                    padding: 10,
+                    border: `1px solid ${T.gold}`,
+                    background: "rgba(201, 169, 97, 0.05)",
+                  }}
+                >
+                  {parsed.reparseNote}
+                </div>
+              )}
+
               {/* Preview table */}
               <div
                 style={{
@@ -1452,46 +1638,50 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 </table>
               </div>
 
-              {/* Mode toggle */}
-              <Label>How to apply</Label>
-              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-                {[
-                  { id: "append", label: `Append (keep ${existingCount} existing)` },
-                  { id: "replace", label: `Replace all ${existingCount}` },
-                ].map((m) => {
-                  const active = mode === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => setMode(m.id)}
-                      style={{
-                        flex: 1,
-                        background: active
-                          ? m.id === "replace"
-                            ? "rgba(232, 140, 140, 0.12)"
-                            : "rgba(125, 211, 164, 0.12)"
-                          : "transparent",
-                        border: `1px solid ${
-                          active ? (m.id === "replace" ? T.red : T.green) : T.border
-                        }`,
-                        color: active
-                          ? m.id === "replace"
-                            ? T.red
-                            : T.green
-                          : T.textDim,
-                        padding: "10px 12px",
-                        fontFamily: FONT_MONO,
-                        fontSize: 10,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {m.label}
-                    </button>
-                  );
-                })}
-              </div>
+              {/* Mode toggle — only meaningful when there's existing data */}
+              {existingCount > 0 && (
+                <>
+                  <Label>How to apply</Label>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                    {[
+                      { id: "append", label: `Append (keep ${existingCount} existing)` },
+                      { id: "replace", label: `Replace all ${existingCount}` },
+                    ].map((m) => {
+                      const active = mode === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => setMode(m.id)}
+                          style={{
+                            flex: 1,
+                            background: active
+                              ? m.id === "replace"
+                                ? "rgba(232, 140, 140, 0.12)"
+                                : "rgba(125, 211, 164, 0.12)"
+                              : "transparent",
+                            border: `1px solid ${
+                              active ? (m.id === "replace" ? T.red : T.green) : T.border
+                            }`,
+                            color: active
+                              ? m.id === "replace"
+                                ? T.red
+                                : T.green
+                              : T.textDim,
+                            padding: "10px 12px",
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            letterSpacing: "0.1em",
+                            textTransform: "uppercase",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
 
               {mode === "replace" && existingCount > 0 && (
                 <div
