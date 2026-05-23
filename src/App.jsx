@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
 import Papa from "papaparse";
+import TransactionsView from "./Transactions.jsx";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
 
@@ -370,6 +371,9 @@ export default function App() {
 }
 
 function PortfolioTracker({ auth, onLogout, onAuthFail }) {
+  // View switcher (Dashboard | Transactions). Lazy-loaded.
+  const [activeView, setActiveView] = useState("dashboard");
+
   const [holdings, setHoldings] = useState(() => ensureCashAccount([]));
   const [loaded, setLoaded] = useState(false);
   const [ticker, setTicker] = useState("");
@@ -1552,17 +1556,55 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 fontStyle: "italic",
               }}
             >
-              Holdings
+              {activeView === "transactions" ? "Transactions" : "Holdings"}
             </h1>
+            {/* View switcher */}
             <div
               style={{
-                height: 1,
-                background: `linear-gradient(to right, ${T.gold}, ${T.border} 30%, transparent)`,
+                display: "flex",
+                gap: 18,
                 marginTop: 14,
+                borderBottom: `1px solid ${T.border}`,
               }}
-            />
+            >
+              {[
+                { id: "dashboard", label: "Dashboard" },
+                { id: "transactions", label: "Transactions" },
+              ].map((tab) => {
+                const active = activeView === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveView(tab.id)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      padding: "8px 0",
+                      cursor: "pointer",
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.18em",
+                      textTransform: "uppercase",
+                      color: active ? T.gold : T.textDim,
+                      borderBottom: active
+                        ? `1px solid ${T.gold}`
+                        : "1px solid transparent",
+                      marginBottom: -1,
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
           </header>
 
+          {activeView === "transactions" && (
+            <TransactionsView auth={auth} onAuthFail={onAuthFail} />
+          )}
+
+          {activeView === "dashboard" && (
+          <>
           {/* Total value card */}
           <section
             style={{
@@ -2880,6 +2922,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               )}
             </section>
+          )}
+
+          </>
           )}
 
           <footer
