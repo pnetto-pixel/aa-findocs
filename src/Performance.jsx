@@ -172,6 +172,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
   const [chartData, setChartData] = useState([]);
   const [lastPortfolio, setLastPortfolio] = useState(null);
   const [lastSpy, setLastSpy] = useState(null);
+  const [meta, setMeta] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,9 +182,12 @@ export default function PerformanceView({ auth, onAuthFail }) {
     (async () => {
       try {
         const transactions = await loadTransactions(auth);
-        const { dates, portfolio, spy } = await loadPerfHistory(auth, transactions);
+        const result = await loadPerfHistory(auth, transactions);
+        const { dates, portfolio, spy, meta: respMeta } = result;
 
         if (cancelled) return;
+
+        setMeta(respMeta || null);
 
         if (!dates?.length) {
           setState("done");
@@ -300,14 +304,51 @@ export default function PerformanceView({ auth, onAuthFail }) {
       {state === "done" && chartData.length === 0 && (
         <div
           style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderRadius: 4,
+            padding: "20px 24px",
             fontFamily: FONT_MONO,
             fontSize: 13,
             color: T.textDim,
-            padding: "40px 0",
-            textAlign: "center",
           }}
         >
-          No eligible transactions found. Add equity transactions to see performance.
+          <div style={{ marginBottom: 12 }}>
+            {meta?.reason === "no-eligible-transactions"
+              ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate)."
+              : meta?.reason === "no-priced-days"
+              ? "Could not fetch enough historical price data to build a chart."
+              : "No performance data available."}
+          </div>
+          {meta && (
+            <details style={{ marginTop: 8 }}>
+              <summary
+                style={{
+                  cursor: "pointer",
+                  color: T.textFaint,
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Diagnostics
+              </summary>
+              <pre
+                style={{
+                  marginTop: 10,
+                  fontSize: 11,
+                  color: T.textFaint,
+                  background: T.bg,
+                  padding: 12,
+                  borderRadius: 4,
+                  overflow: "auto",
+                  maxHeight: 240,
+                }}
+              >
+                {JSON.stringify(meta, null, 2)}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
