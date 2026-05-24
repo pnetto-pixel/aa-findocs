@@ -1,7 +1,7 @@
 // src/Performance.jsx — Performance (TEST ONLY) view
 // Lazy-loaded. Shows portfolio vs SPY total return chart since first transaction.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   LineChart,
   Line,
@@ -102,6 +102,57 @@ function kpiColor(n) {
   if (n > 0) return T.green;
   if (n < 0) return T.red;
   return T.textDim;
+}
+
+const PERIODS = [
+  { label: "1M", days: 30 },
+  { label: "3M", days: 91 },
+  { label: "6M", days: 182 },
+  { label: "YTD", ytd: true },
+  { label: "1Y", days: 365 },
+  { label: "3Y", days: 1095 },
+  { label: "5Y", days: 1825 },
+  { label: "MAX", days: Infinity },
+];
+
+function getWindowData(chartData, period) {
+  if (!chartData.length) return { data: [], lastPortfolio: null, lastSpy: null };
+
+  const p = PERIODS.find((x) => x.label === period) || PERIODS.find((x) => x.label === "1Y");
+  let cutoff = null;
+  if (p.ytd) {
+    cutoff = `${new Date().getFullYear()}-01-01`;
+  } else if (p.days !== Infinity) {
+    const d = new Date(Date.now() - p.days * 86400 * 1000);
+    cutoff = d.toISOString().slice(0, 10);
+  }
+
+  let startIdx = 0;
+  if (cutoff) {
+    const found = chartData.findIndex((d) => d.date >= cutoff);
+    startIdx = found >= 0 ? found : chartData.length - 1;
+  }
+
+  const slice = chartData.slice(startIdx);
+  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null };
+
+  const baseP = slice[0].portfolio;
+  const baseS = slice[0].spy;
+  const toWin = (v, base) => +((((1 + v / 100) / (1 + base / 100) - 1) * 100).toFixed(2));
+
+  const step = Math.max(1, Math.floor(slice.length / 10));
+  const data = slice.map((d, i) => ({
+    date: d.date,
+    label: i % step === 0 ? fmtDate(d.date) : "",
+    portfolio: toWin(d.portfolio, baseP),
+    spy: toWin(d.spy, baseS),
+  }));
+
+  return {
+    data,
+    lastPortfolio: data[data.length - 1].portfolio,
+    lastSpy: data[data.length - 1].spy,
+  };
 }
 
 function KpiCard({ label, value, color }) {
@@ -234,10 +285,9 @@ function DiagnosticsPanel({ meta }) {
 export default function PerformanceView({ auth, onAuthFail }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
-  const [chartData, setChartData] = useState([]);
-  const [lastPortfolio, setLastPortfolio] = useState(null);
-  const [lastSpy, setLastSpy] = useState(null);
+  const [rawData, setRawData] = useState([]); // all dates, unfiltered
   const [meta, setMeta] = useState(null);
+  const [period, setPeriod] = useState("1Y");
 
   useEffect(() => {
     let cancelled = false;
@@ -256,22 +306,11 @@ export default function PerformanceView({ auth, onAuthFail }) {
 
         if (!dates?.length) {
           setState("done");
-          setChartData([]);
+          setRawData([]);
           return;
         }
 
-        // Subsample dates for the X-axis label readability (show ~12 labels max)
-        const step = Math.max(1, Math.floor(dates.length / 12));
-        const data = dates.map((d, i) => ({
-          date: d,
-          label: i % step === 0 ? fmtDate(d) : "",
-          portfolio: portfolio[i],
-          spy: spy[i],
-        }));
-
-        setChartData(data);
-        setLastPortfolio(portfolio[portfolio.length - 1]);
-        setLastSpy(spy[spy.length - 1]);
+        setRawData(dates.map((d, i) => ({ date: d, portfolio: portfolio[i], spy: spy[i] })));
         setState("done");
       } catch (err) {
         if (cancelled) return;
@@ -286,6 +325,11 @@ export default function PerformanceView({ auth, onAuthFail }) {
 
     return () => { cancelled = true; };
   }, [auth]);
+
+  const { data: chartData, lastPortfolio, lastSpy } = useMemo(
+    () => getWindowData(rawData, period),
+    [rawData, period]
+  );
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -366,7 +410,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
         </div>
       )}
 
-      {state === "done" && chartData.length === 0 && (
+      {state === "done" && rawData.length === 0 && (
         <div
           style={{
             background: T.card,
@@ -391,8 +435,35 @@ export default function PerformanceView({ auth, onAuthFail }) {
         </div>
       )}
 
-      {state === "done" && chartData.length > 0 && (
+      {state === "done" && rawData.length > 0 && (
         <>
+          {/* Period selector */}
+          <div style={{ display: "flex", gap: 2, marginBottom: 16 }}>
+            {PERIODS.map(({ label }) => {
+              const active = period === label;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setPeriod(label)}
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.08em",
+                    padding: "5px 10px",
+                    border: `1px solid ${active ? T.blue + "66" : T.border}`,
+                    borderRadius: 3,
+                    background: active ? T.blue + "18" : "transparent",
+                    color: active ? T.blue : T.textDim,
+                    cursor: "pointer",
+                    transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
           {/* KPI cards */}
           <div
             style={{
@@ -403,12 +474,12 @@ export default function PerformanceView({ auth, onAuthFail }) {
             }}
           >
             <KpiCard
-              label="Portfolio total return"
+              label={`Portfolio ${period}`}
               value={fmt(lastPortfolio)}
               color={kpiColor(lastPortfolio)}
             />
             <KpiCard
-              label="S&P 500 same period"
+              label={`S&P 500 ${period}`}
               value={fmt(lastSpy)}
               color={kpiColor(lastSpy)}
             />
