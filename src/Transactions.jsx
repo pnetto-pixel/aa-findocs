@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Search, Upload, Download } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -159,10 +159,26 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
   const [qty, setQty] = useState(initial ? String(initial.qty) : "");
   const [price, setPrice] = useState(initial ? String(initial.price) : "");
   const [currency, setCurrency] = useState(initial?.currency || "USD");
+  const [currencyTouched, setCurrencyTouched] = useState(!!initial);
   const [fee, setFee] = useState(initial?.fee ? String(initial.fee) : "");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [error, setError] = useState("");
   const [showTickerList, setShowTickerList] = useState(false);
+
+  // Auto-infer currency from ticker unless user picked manually.
+  useEffect(() => {
+    if (currencyTouched) return;
+    const inferred = inferCurrency(ticker);
+    if (inferred && inferred !== currency) {
+      setCurrency(inferred);
+    }
+  }, [ticker, currencyTouched, currency]);
+
+  const tickerInferenceAmbiguous = useMemo(() => {
+    const t = ticker.trim();
+    if (!t) return false;
+    return inferCurrency(t) === null;
+  }, [ticker]);
 
   const tickerSuggestions = useMemo(() => {
     const q = ticker.trim().toUpperCase();
@@ -346,14 +362,29 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
         </div>
 
         <div>
-          <Label>Currency</Label>
+          <Label>
+            Currency
+            {!currencyTouched && ticker.trim() && !tickerInferenceAmbiguous && (
+              <span style={{ color: T.gold, marginLeft: 6, letterSpacing: 0 }}>
+                (auto)
+              </span>
+            )}
+            {tickerInferenceAmbiguous && (
+              <span style={{ color: T.red, marginLeft: 6, letterSpacing: 0 }}>
+                (pick manually)
+              </span>
+            )}
+          </Label>
           <div style={{ display: "flex", gap: 6 }}>
             {["USD", "BRL"].map((c) => {
               const active = currency === c;
               return (
                 <button
                   key={c}
-                  onClick={() => setCurrency(c)}
+                  onClick={() => {
+                    setCurrency(c);
+                    setCurrencyTouched(true);
+                  }}
                   style={{
                     flex: 1,
                     background: active ? "rgba(201, 169, 97, 0.12)" : "transparent",
@@ -451,227 +482,548 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
   );
 }
 
-// --- Filters ---------------------------------------------------------------
+// --- Helpers: currency inference + table sort/filter -----------------------
 
-function FiltersBar({ filters, setFilters }) {
+// B3 ticker pattern: 4 letters + 1-2 digits (BBSE3, TAEE11, XPLG11, BOVA11).
+const B3_RX = /^[A-Z]{4}\d{1,2}$/;
+
+// Infer currency from ticker. Returns "USD" | "BRL" | null (ambiguous).
+// Cash/Tesouro/CD style tickers (with hyphen or non-standard format) -> null.
+function inferCurrency(ticker) {
+  if (!ticker) return null;
+  const t = String(ticker).trim().toUpperCase();
+  if (!t) return null;
+  if (B3_RX.test(t)) return "BRL";
+  // Pure A-Z 1-5 chars looks like a US ticker (AAPL, SPY, BRK).
+  if (/^[A-Z]{1,5}$/.test(t)) return "USD";
+  return null;
+}
+
+// --- Filter dropdown popover ----------------------------------------------
+
+function FilterPopover({
+  anchor,
+  options,
+  selected,
+  onChange,
+  onClose,
+  dateRange,
+  setDateRange,
+}) {
+  const ref = useRef(null);
+  useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [onClose]);
+
+  // Position popover below anchor.
+  const rect = anchor?.getBoundingClientRect();
+  const style = rect
+    ? {
+        position: "fixed",
+        top: rect.bottom + 4,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)),
+        zIndex: 50,
+        width: 220,
+      }
+    : { display: "none" };
+
   return (
     <div
+      ref={ref}
       style={{
-        background: T.card,
-        border: `1px solid ${T.borderSoft}`,
-        padding: 16,
-        marginBottom: 12,
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 12,
+        ...style,
+        background: T.cardElev,
+        border: `1px solid ${T.border}`,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+        padding: 12,
+        maxHeight: 320,
+        overflowY: "auto",
       }}
     >
-      <div style={{ gridColumn: "1 / -1", position: "relative" }}>
-        <Label>Search ticker / notes</Label>
-        <div style={{ position: "relative" }}>
-          <Search
-            size={12}
-            style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: T.textFaint,
-              pointerEvents: "none",
-            }}
-          />
+      {dateRange ? (
+        <div>
+          <Label>From</Label>
           <Input
-            value={filters.text}
-            onChange={(e) => setFilters({ ...filters, text: e.target.value })}
-            placeholder="AAPL, dividend, ..."
-            style={{ paddingLeft: 34 }}
+            type="date"
+            value={dateRange.from}
+            onChange={(e) => setDateRange({ ...dateRange, from: e.target.value })}
+            style={{ marginBottom: 8 }}
           />
+          <Label>To</Label>
+          <Input
+            type="date"
+            value={dateRange.to}
+            onChange={(e) => setDateRange({ ...dateRange, to: e.target.value })}
+            style={{ marginBottom: 8 }}
+          />
+          <button
+            onClick={() => setDateRange({ from: "", to: "" })}
+            style={{
+              background: "transparent",
+              border: `1px solid ${T.border}`,
+              color: T.textDim,
+              padding: "6px 10px",
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              width: "100%",
+            }}
+          >
+            Clear
+          </button>
         </div>
-      </div>
-      <div>
-        <Label>Side</Label>
-        <div style={{ display: "flex", gap: 6 }}>
-          {["all", "buy", "sell"].map((s) => {
-            const active = filters.side === s;
+      ) : (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <button
+              onClick={() => onChange(new Set(options))}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.gold,
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.15em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              All
+            </button>
+            <button
+              onClick={() => onChange(new Set())}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.textDim,
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.15em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              None
+            </button>
+          </div>
+          {options.length === 0 && (
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                color: T.textFaint,
+                padding: 8,
+              }}
+            >
+              No values
+            </div>
+          )}
+          {options.map((opt) => {
+            const checked = selected.has(opt);
             return (
-              <button
-                key={s}
-                onClick={() => setFilters({ ...filters, side: s })}
+              <label
+                key={opt}
                 style={{
-                  flex: 1,
-                  background: active ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                  border: `1px solid ${active ? T.gold : T.border}`,
-                  color: active ? T.gold : T.textDim,
-                  padding: "8px 6px",
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.15em",
-                  textTransform: "uppercase",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 4px",
                   cursor: "pointer",
+                  fontFamily: FONT_MONO,
+                  fontSize: 12,
+                  color: T.text,
                 }}
               >
-                {s}
-              </button>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => {
+                    const next = new Set(selected);
+                    if (checked) next.delete(opt);
+                    else next.add(opt);
+                    onChange(next);
+                  }}
+                  style={{ accentColor: T.gold }}
+                />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {opt}
+                </span>
+              </label>
             );
           })}
-        </div>
-      </div>
-      <div>
-        <Label>Currency</Label>
-        <div style={{ display: "flex", gap: 6 }}>
-          {["all", "USD", "BRL"].map((c) => {
-            const active = filters.currency === c;
-            return (
-              <button
-                key={c}
-                onClick={() => setFilters({ ...filters, currency: c })}
-                style={{
-                  flex: 1,
-                  background: active ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                  border: `1px solid ${active ? T.gold : T.border}`,
-                  color: active ? T.gold : T.textDim,
-                  padding: "8px 6px",
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.15em",
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                }}
-              >
-                {c}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      <div>
-        <Label>From</Label>
-        <Input
-          type="date"
-          value={filters.from}
-          onChange={(e) => setFilters({ ...filters, from: e.target.value })}
-        />
-      </div>
-      <div>
-        <Label>To</Label>
-        <Input
-          type="date"
-          value={filters.to}
-          onChange={(e) => setFilters({ ...filters, to: e.target.value })}
-        />
-      </div>
+        </>
+      )}
     </div>
   );
 }
 
-// --- Transaction row -------------------------------------------------------
+// --- TransactionTable ------------------------------------------------------
 
-function TxRow({ tx, onEdit, onDelete, busy }) {
-  const isBuy = tx.side === "buy";
-  const total = (Number(tx.qty) || 0) * (Number(tx.price) || 0);
-  return (
-    <div
-      style={{
-        background: T.card,
-        border: `1px solid ${T.borderSoft}`,
-        padding: 14,
-        marginBottom: 8,
-        display: "grid",
-        gridTemplateColumns: "auto 1fr auto",
-        gap: 12,
-        alignItems: "center",
-      }}
-    >
-      <div
+function TransactionTable({ transactions, onEdit, onDelete, busy }) {
+  const [openCol, setOpenCol] = useState(null); // column key for popover
+  const [anchor, setAnchor] = useState(null);
+  // Each filter: Set of allowed values; if empty, treat as "all" (no filter).
+  // Defaults are computed lazily from the data.
+  const allValues = useMemo(() => {
+    const u = new Set();
+    const s = new Set();
+    const t = new Set();
+    const c = new Set();
+    for (const tx of transactions) {
+      u.add(tx.date);
+      s.add(tx.side);
+      t.add(tx.ticker);
+      c.add(tx.currency);
+    }
+    return {
+      side: Array.from(s).sort(),
+      ticker: Array.from(t).sort(),
+      currency: Array.from(c).sort(),
+    };
+  }, [transactions]);
+
+  const [filters, setFilters] = useState({
+    side: new Set(),
+    ticker: new Set(),
+    currency: new Set(),
+    dateFrom: "",
+    dateTo: "",
+  });
+
+  const [sort, setSort] = useState({ col: "date", dir: "desc" });
+
+  function isFiltered(col) {
+    if (col === "date") return !!(filters.dateFrom || filters.dateTo);
+    const f = filters[col];
+    if (!f) return false;
+    return f.size > 0 && f.size < allValues[col].length;
+  }
+
+  const visible = useMemo(() => {
+    let list = transactions.filter((t) => {
+      if (filters.side.size > 0 && !filters.side.has(t.side)) return false;
+      if (filters.ticker.size > 0 && !filters.ticker.has(t.ticker)) return false;
+      if (filters.currency.size > 0 && !filters.currency.has(t.currency)) return false;
+      if (filters.dateFrom && t.date < filters.dateFrom) return false;
+      if (filters.dateTo && t.date > filters.dateTo) return false;
+      return true;
+    });
+    const dir = sort.dir === "asc" ? 1 : -1;
+    list.sort((a, b) => {
+      const ka = a[sort.col];
+      const kb = b[sort.col];
+      if (sort.col === "qty" || sort.col === "price" || sort.col === "fee") {
+        return ((Number(ka) || 0) - (Number(kb) || 0)) * dir;
+      }
+      const sa = String(ka ?? "");
+      const sb = String(kb ?? "");
+      if (sa === sb) return 0;
+      return (sa < sb ? -1 : 1) * dir;
+    });
+    return list;
+  }, [transactions, filters, sort]);
+
+  function toggleSort(col) {
+    setSort((cur) => {
+      if (cur.col === col) return { col, dir: cur.dir === "asc" ? "desc" : "asc" };
+      return { col, dir: col === "date" ? "desc" : "asc" };
+    });
+  }
+
+  function HeaderCell({ col, label, align = "left", width }) {
+    const filtered = isFiltered(col);
+    const sorted = sort.col === col;
+    return (
+      <th
         style={{
-          fontFamily: FONT_MONO,
-          fontSize: 9,
-          letterSpacing: "0.15em",
-          textTransform: "uppercase",
-          padding: "4px 8px",
-          background: isBuy ? "rgba(125, 211, 164, 0.1)" : "rgba(232, 140, 140, 0.1)",
-          color: isBuy ? T.green : T.red,
-          border: `1px solid ${isBuy ? T.green : T.red}`,
+          padding: 0,
+          textAlign: align,
+          borderBottom: `1px solid ${T.border}`,
+          background: T.card,
+          width,
+          position: "sticky",
+          top: 0,
+          zIndex: 2,
         }}
       >
-        {tx.side}
-      </div>
+        <div style={{ display: "flex", alignItems: "stretch" }}>
+          <button
+            onClick={() => toggleSort(col)}
+            title="Sort"
+            style={{
+              flex: 1,
+              background: "transparent",
+              border: "none",
+              color: sorted ? T.gold : T.textDim,
+              padding: "10px 8px",
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              textAlign: align,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              justifyContent: align === "right" ? "flex-end" : "flex-start",
+            }}
+          >
+            {label}
+            {sorted && (
+              <span style={{ fontSize: 9 }}>{sort.dir === "asc" ? "↑" : "↓"}</span>
+            )}
+          </button>
+          {col !== "fee" && col !== "notes" && col !== "qty" && col !== "price" && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (openCol === col) {
+                  setOpenCol(null);
+                  setAnchor(null);
+                } else {
+                  setOpenCol(col);
+                  setAnchor(e.currentTarget);
+                }
+              }}
+              title="Filter"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: filtered ? T.gold : T.textFaint,
+                padding: "0 8px",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              ▾
+            </button>
+          )}
+        </div>
+      </th>
+    );
+  }
 
-      <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: FONT_DISPLAY,
-            fontSize: 16,
-            fontWeight: 500,
-            marginBottom: 2,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {tx.ticker}
-        </div>
-        <div
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 11,
-            color: T.textDim,
-          }}
-        >
-          {fmtNum(tx.qty)} x {fmtMoney(tx.price, tx.currency)} ={" "}
-          <span style={{ color: T.text }}>{fmtMoney(total, tx.currency)}</span>
-          {tx.fee ? ` - fee ${fmtMoney(tx.fee, tx.currency)}` : ""}
-        </div>
-        <div
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 10,
-            color: T.textFaint,
-            marginTop: 2,
-          }}
-        >
-          {tx.date}
-          {tx.notes ? ` - ${tx.notes}` : ""}
-        </div>
-      </div>
+  function setColFilter(col, next) {
+    setFilters((cur) => ({ ...cur, [col]: next }));
+  }
 
-      <div style={{ display: "flex", gap: 4 }}>
-        <button
-          onClick={() => onEdit(tx)}
-          disabled={busy}
-          title="Edit"
-          style={{
-            background: "transparent",
-            border: `1px solid ${T.border}`,
-            color: T.textDim,
-            padding: "6px 8px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
+  return (
+    <div style={{ position: "relative", overflowX: "auto", border: `1px solid ${T.borderSoft}` }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontFamily: FONT_MONO,
+          fontSize: 12,
+          minWidth: 760,
+        }}
+      >
+        <thead>
+          <tr>
+            <HeaderCell col="date" label="Date" />
+            <HeaderCell col="side" label="Side" />
+            <HeaderCell col="ticker" label="Ticker" />
+            <HeaderCell col="qty" label="Qty" align="right" />
+            <HeaderCell col="price" label="Price" align="right" />
+            <HeaderCell col="currency" label="Cur" />
+            <HeaderCell col="fee" label="Fee" align="right" />
+            <HeaderCell col="notes" label="Notes" />
+            <th
+              style={{
+                padding: "10px 8px",
+                borderBottom: `1px solid ${T.border}`,
+                background: T.card,
+                position: "sticky",
+                top: 0,
+                zIndex: 2,
+                width: 80,
+              }}
+            />
+          </tr>
+        </thead>
+        <tbody>
+          {visible.length === 0 ? (
+            <tr>
+              <td
+                colSpan={9}
+                style={{
+                  padding: 32,
+                  textAlign: "center",
+                  color: T.textDim,
+                  fontFamily: FONT_MONO,
+                  fontSize: 12,
+                }}
+              >
+                {transactions.length === 0
+                  ? "No transactions yet - tap New to add your first."
+                  : "No matches for current filters."}
+              </td>
+            </tr>
+          ) : (
+            visible.map((tx) => {
+              const isBuy = tx.side === "buy";
+              return (
+                <tr
+                  key={tx.id}
+                  style={{ borderBottom: `1px solid ${T.borderSoft}` }}
+                >
+                  <td style={{ padding: "8px", color: T.text, whiteSpace: "nowrap" }}>
+                    {tx.date}
+                  </td>
+                  <td style={{ padding: "8px" }}>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        letterSpacing: "0.15em",
+                        textTransform: "uppercase",
+                        padding: "3px 6px",
+                        background: isBuy
+                          ? "rgba(125, 211, 164, 0.1)"
+                          : "rgba(232, 140, 140, 0.1)",
+                        color: isBuy ? T.green : T.red,
+                        border: `1px solid ${isBuy ? T.green : T.red}`,
+                      }}
+                    >
+                      {tx.side}
+                    </span>
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px",
+                      color: T.text,
+                      fontWeight: 500,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tx.ticker}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px",
+                      color: T.text,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {fmtNum(tx.qty)}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px",
+                      color: T.text,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {fmtNum(tx.price, 2)}
+                  </td>
+                  <td style={{ padding: "8px", color: T.textDim }}>{tx.currency}</td>
+                  <td
+                    style={{
+                      padding: "8px",
+                      color: tx.fee ? T.text : T.textFaint,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tx.fee ? fmtNum(tx.fee, 2) : "—"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px",
+                      color: tx.notes ? T.textDim : T.textFaint,
+                      maxWidth: 180,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={tx.notes || ""}
+                  >
+                    {tx.notes || "—"}
+                  </td>
+                  <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button
+                      onClick={() => onEdit(tx)}
+                      disabled={busy}
+                      title="Edit"
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${T.border}`,
+                        color: T.textDim,
+                        padding: "4px 6px",
+                        marginRight: 4,
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Pencil size={10} />
+                    </button>
+                    <button
+                      onClick={() => onDelete(tx)}
+                      disabled={busy}
+                      title="Delete"
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${T.border}`,
+                        color: T.red,
+                        padding: "4px 6px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+
+      {openCol && openCol !== "date" && (
+        <FilterPopover
+          anchor={anchor}
+          options={allValues[openCol] || []}
+          selected={filters[openCol]}
+          onChange={(next) => setColFilter(openCol, next)}
+          onClose={() => {
+            setOpenCol(null);
+            setAnchor(null);
           }}
-        >
-          <Pencil size={11} />
-        </button>
-        <button
-          onClick={() => onDelete(tx)}
-          disabled={busy}
-          title="Delete"
-          style={{
-            background: "transparent",
-            border: `1px solid ${T.border}`,
-            color: T.red,
-            padding: "6px 8px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
+        />
+      )}
+      {openCol === "date" && (
+        <FilterPopover
+          anchor={anchor}
+          dateRange={{ from: filters.dateFrom, to: filters.dateTo }}
+          setDateRange={(r) =>
+            setFilters((cur) => ({ ...cur, dateFrom: r.from, dateTo: r.to }))
+          }
+          onClose={() => {
+            setOpenCol(null);
+            setAnchor(null);
           }}
-        >
-          <Trash2 size={11} />
-        </button>
-      </div>
+        />
+      )}
     </div>
   );
 }
+
 
 // --- Bulk import parsing helpers -------------------------------------------
 
@@ -825,22 +1177,35 @@ function parseRow(row, defaultCurrency = "USD") {
     if (fee.error) errors.push(`fee: ${fee.error}`);
   }
 
-  let cur = { value: defaultCurrency, error: null };
+  // Currency: explicit field wins; else infer from ticker; else mark needsCurrency.
+  let cur = { value: null, error: null };
+  let needsCurrency = false;
   if (row.currency) {
     cur = parseCurrency(row.currency);
     if (cur.error) errors.push(`currency: ${cur.error}`);
+  } else if (ticker) {
+    const inferred = inferCurrency(ticker);
+    if (inferred) {
+      cur.value = inferred;
+    } else {
+      needsCurrency = true;
+      cur.value = defaultCurrency; // placeholder; user must pick before import
+    }
+  } else {
+    cur.value = defaultCurrency;
   }
 
   const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
 
   if (errors.length > 0) {
-    return { ok: false, tx: null, errors, ambiguous, rawNumbers };
+    return { ok: false, tx: null, errors, ambiguous, needsCurrency, rawNumbers };
   }
 
   return {
-    ok: true,
-    errors: [],
+    ok: !needsCurrency,
+    errors: needsCurrency ? ["currency: pick USD or BRL"] : [],
     ambiguous,
+    needsCurrency,
     rawNumbers,
     tx: {
       id: newId(),
@@ -1134,6 +1499,22 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     setDecimalPrompt(false);
   }
 
+  function pickCurrency(idx, cur) {
+    if (!parsed) return;
+    const next = parsed.results.map((r, i) => {
+      if (i !== idx) return r;
+      if (!r.tx) return r;
+      return {
+        ...r,
+        ok: true,
+        needsCurrency: false,
+        errors: [],
+        tx: { ...r.tx, currency: cur },
+      };
+    });
+    setParsed({ ...parsed, results: next });
+  }
+
   function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1157,7 +1538,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   if (!open) return null;
 
   const validCount = parsed ? parsed.results.filter((r) => r.ok).length : 0;
-  const errorCount = parsed ? parsed.results.filter((r) => !r.ok).length : 0;
+  const errorCount = parsed
+    ? parsed.results.filter((r) => !r.ok && !r.needsCurrency).length
+    : 0;
+  const needsCurrencyCount = parsed
+    ? parsed.results.filter((r) => r.needsCurrency).length
+    : 0;
 
   return (
     <div
@@ -1433,7 +1819,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                       opacity: text.trim() ? 1 : 0.4,
                     }}
                   >
-                    Parse
+                    Import
                   </button>
                 </div>
               )}
@@ -1518,6 +1904,19 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     }}
                   >
                     {errorCount} with errors
+                  </div>
+                )}
+                {needsCurrencyCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.gold,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {needsCurrencyCount} need currency
                   </div>
                 )}
                 <div
@@ -1627,10 +2026,37 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                           {r.ok ? fmtNum(r.tx.price, 2) : "—"}
                         </td>
                         <td style={{ padding: "6px 10px", color: T.textDim }}>
-                          {r.ok ? r.tx.currency : "—"}
+                          {r.needsCurrency ? (
+                            <div style={{ display: "flex", gap: 4 }}>
+                              {["USD", "BRL"].map((c) => (
+                                <button
+                                  key={c}
+                                  onClick={() => pickCurrency(idx, c)}
+                                  style={{
+                                    background: "transparent",
+                                    border: `1px solid ${T.gold}`,
+                                    color: T.gold,
+                                    padding: "2px 6px",
+                                    fontFamily: FONT_MONO,
+                                    fontSize: 9,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  {c}
+                                </button>
+                              ))}
+                            </div>
+                          ) : r.ok ? (
+                            r.tx.currency
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
-                          {!r.ok && r.errors.join("; ")}
+                          {!r.ok && !r.needsCurrency && r.errors.join("; ")}
+                          {r.needsCurrency && (
+                            <span style={{ color: T.gold }}>pick currency</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1758,13 +2184,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
-  const [filters, setFilters] = useState({
-    text: "",
-    side: "all",
-    currency: "all",
-    from: "",
-    to: "",
-  });
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
@@ -1835,29 +2254,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
     downloadCSV(`transactions-${stamp}.csv`, csv);
   }
 
-  // Filter + sort (date desc, then createdAt desc as tiebreaker)
-  const visible = useMemo(() => {
-    const q = filters.text.trim().toLowerCase();
-    let list = transactions.filter((t) => {
-      if (filters.side !== "all" && t.side !== filters.side) return false;
-      if (filters.currency !== "all" && t.currency !== filters.currency) return false;
-      if (filters.from && t.date < filters.from) return false;
-      if (filters.to && t.date > filters.to) return false;
-      if (q) {
-        const hay = `${t.ticker} ${t.notes || ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    list.sort((a, b) => {
-      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
-      const ac = a.createdAt || "";
-      const bc = b.createdAt || "";
-      return ac < bc ? 1 : -1;
-    });
-    return list;
-  }, [transactions, filters]);
-
   if (loading) {
     return (
       <div
@@ -1927,9 +2323,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
             textTransform: "uppercase",
           }}
         >
-          {visible.length === transactions.length
-            ? `${transactions.length} total`
-            : `${visible.length} / ${transactions.length} shown`}
+          {`${transactions.length} total`}
           {saving && " - saving..."}
         </div>
         {!formOpen && !editing && (
@@ -1953,7 +2347,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
               }}
             >
               <Upload size={12} />
-              Import
+              Bulk Import
             </button>
             {transactions.length > 0 && (
               <button
@@ -2021,43 +2415,15 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
         />
       )}
 
-      {transactions.length > 0 && (
-        <FiltersBar filters={filters} setFilters={setFilters} />
-      )}
-
-      {visible.length === 0 ? (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${T.borderSoft}`,
-            padding: 32,
-            textAlign: "center",
-            fontFamily: FONT_MONO,
-            fontSize: 12,
-            color: T.textDim,
-            letterSpacing: "0.08em",
-          }}
-        >
-          {transactions.length === 0
-            ? "No transactions yet - tap New to add your first."
-            : "No matches for current filters."}
-        </div>
-      ) : (
-        <div>
-          {visible.map((tx) => (
-            <TxRow
-              key={tx.id}
-              tx={tx}
-              onEdit={(t) => {
-                setEditing(t);
-                setFormOpen(false);
-              }}
-              onDelete={handleDelete}
-              busy={saving}
-            />
-          ))}
-        </div>
-      )}
+      <TransactionTable
+        transactions={transactions}
+        onEdit={(t) => {
+          setEditing(t);
+          setFormOpen(false);
+        }}
+        onDelete={handleDelete}
+        busy={saving}
+      />
 
       <ImportModal
         open={importOpen}
