@@ -6,7 +6,7 @@
       "maxDuration": 30
     },
     "api/perf-history.js": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   }
 }
