@@ -58,11 +58,37 @@ async function loadTransactions(auth) {
   return Array.isArray(data.transactions) ? data.transactions : [];
 }
 
-async function loadPerfHistory(auth, transactions) {
+// Fetch daily close prices for a single ticker directly from Yahoo Finance.
+// Runs in the browser — user's own IP, no Vercel datacenter rate-limiting.
+async function fetchTickerPrices(ticker) {
+  try {
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+      `?range=10y&interval=1d`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const result = d?.chart?.result?.[0];
+    if (!result?.timestamp?.length) return null;
+    const closes = result.indicators?.quote?.[0]?.close;
+    if (!Array.isArray(closes)) return null;
+    const map = {};
+    for (let i = 0; i < result.timestamp.length; i++) {
+      if (closes[i] != null) {
+        map[new Date(result.timestamp[i] * 1000).toISOString().slice(0, 10)] = closes[i];
+      }
+    }
+    return Object.keys(map).length > 0 ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+async function postPerfHistory(auth, body) {
   const res = await fetch("/api/perf-history", {
     method: "POST",
     headers: { ...authHeaders(auth), "Content-Type": "application/json" },
-    body: JSON.stringify({ transactions }),
+    body: JSON.stringify(body),
   });
   if (res.status === 401) {
     const err = new Error("Unauthorized");
@@ -71,13 +97,39 @@ async function loadPerfHistory(auth, transactions) {
   }
   if (!res.ok) {
     let msg = `Perf history error ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j.error) msg = j.error;
-    } catch {}
+    try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
   return await res.json();
+}
+
+// Two-call protocol:
+//   1st call (no priceData): server returns cache hit OR { needsPrices, tickers, firstDate }.
+//   2nd call (with priceData): browser-fetched prices, server computes and caches.
+async function loadPerfHistory(auth, transactions, onFetchingPrices) {
+  const first = await postPerfHistory(auth, { transactions });
+
+  if (!first.needsPrices) return first; // cache hit
+
+  const { tickers, firstDate } = first;
+  onFetchingPrices(tickers.length);
+
+  // Fetch all tickers in parallel from Yahoo Finance (browser, not Vercel IP).
+  const priceData = {};
+  await Promise.allSettled(
+    tickers.map(async (ticker) => {
+      const map = await fetchTickerPrices(ticker);
+      if (!map) return;
+      // Trim to dates on or after the first transaction to keep the request body small.
+      const trimmed = {};
+      for (const [date, price] of Object.entries(map)) {
+        if (date >= firstDate) trimmed[date] = price;
+      }
+      if (Object.keys(trimmed).length > 0) priceData[ticker] = trimmed;
+    })
+  );
+
+  return await postPerfHistory(auth, { transactions, priceData });
 }
 
 function fmt(n, decimals = 2) {
@@ -233,6 +285,7 @@ function DiagnosticsPanel({ meta }) {
 export default function PerformanceView({ auth, onAuthFail }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
+  const [loadingMsg, setLoadingMsg] = useState("Loading performance data…");
   const [chartData, setChartData] = useState([]);
   const [lastPortfolio, setLastPortfolio] = useState(null);
   const [lastSpy, setLastSpy] = useState(null);
@@ -241,12 +294,15 @@ export default function PerformanceView({ auth, onAuthFail }) {
   useEffect(() => {
     let cancelled = false;
     setState("loading");
+    setLoadingMsg("Loading performance data…");
     setError(null);
 
     (async () => {
       try {
         const transactions = await loadTransactions(auth);
-        const result = await loadPerfHistory(auth, transactions);
+        const result = await loadPerfHistory(auth, transactions, (tickerCount) => {
+          if (!cancelled) setLoadingMsg(`Fetching price history… (${tickerCount} tickers)`);
+        });
         const { dates, portfolio, spy, meta: respMeta } = result;
 
         if (cancelled) return;
@@ -345,7 +401,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
             textAlign: "center",
           }}
         >
-          Loading performance data…
+          {loadingMsg}
         </div>
       )}
 

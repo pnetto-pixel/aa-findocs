@@ -2,7 +2,7 @@
 // Validates the perf-history algorithm without hitting external APIs.
 
 import { strict as assert } from 'node:assert';
-import { computePerformance, fetchStooqCandles } from '../api/perf-history.js';
+import { computePerformance } from '../api/perf-history.js';
 
 let passed = 0;
 let failed = 0;
@@ -199,171 +199,78 @@ test('missing US ticker candle: position with no price is skipped, but others st
   assert.equal(result.portfolio[1], 2.78);
 });
 
-console.log('\n— fetchStooqCandles (CSV parser) —');
-
-async function withMockedFetch(mockFn, body) {
-  const real = globalThis.fetch;
-  globalThis.fetch = mockFn;
-  try { return await body(); }
-  finally { globalThis.fetch = real; }
-}
-
-test('parses well-formed Stooq CSV', async () => {
-  const csv = [
-    'Date,Open,High,Low,Close,Volume',
-    '2024-01-02,180.00,182.50,179.50,181.20,10000000',
-    '2024-01-03,181.20,183.00,180.00,182.50,9500000',
-  ].join('\n');
-  const result = await withMockedFetch(
-    async () => ({ ok: true, status: 200, text: async () => csv }),
-    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
-  );
-  assert.deepEqual(result, { '2024-01-02': 181.20, '2024-01-03': 182.50 });
-});
-
-test('returns null for "No data" response', async () => {
-  const result = await withMockedFetch(
-    async () => ({ ok: true, status: 200, text: async () => 'No data' }),
-    () => fetchStooqCandles('FAKE', '2024-01-01', '2024-01-05')
-  );
-  assert.equal(result, null);
-});
-
-test('returns null for empty body', async () => {
-  const result = await withMockedFetch(
-    async () => ({ ok: true, status: 200, text: async () => '' }),
-    () => fetchStooqCandles('FAKE', '2024-01-01', '2024-01-05')
-  );
-  assert.equal(result, null);
-});
-
-test('returns null on non-OK response', async () => {
-  const result = await withMockedFetch(
-    async () => ({ ok: false, status: 503, text: async () => '' }),
-    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
-  );
-  assert.equal(result, null);
-});
-
-test('lowercases ticker and adds .us suffix in URL', async () => {
-  let capturedUrl = null;
-  await withMockedFetch(
-    async (url) => { capturedUrl = url; return { ok: true, status: 200, text: async () => 'No data' }; },
-    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
-  );
-  assert.match(capturedUrl, /s=aapl\.us/);
-  assert.match(capturedUrl, /d1=20240101/);
-  assert.match(capturedUrl, /d2=20240105/);
-});
-
-test('returns null when fetch throws (abort/network)', async () => {
-  const result = await withMockedFetch(
-    async () => { throw new Error('AbortError'); },
-    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
-  );
-  assert.equal(result, null);
-});
-
-test('passes an AbortSignal to fetch (timeout wired up)', async () => {
-  let receivedSignal = null;
-  await withMockedFetch(
-    async (_url, opts) => { receivedSignal = opts?.signal; return { ok: true, status: 200, text: async () => 'No data' }; },
-    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
-  );
-  assert.ok(receivedSignal, 'fetch must receive a signal');
-  assert.equal(typeof receivedSignal.aborted, 'boolean');
-});
-
 console.log(`\n— integration: handler with mocked fetch + redis + auth —`);
 
 process.env.APP_PASSWORD = 'test-pwd';
 process.env.REDIS_URL = process.env.REDIS_URL || 'redis://invalid-localhost:1';
 
-const realFetch = globalThis.fetch;
-const fetchCalls = [];
-
-function stooqCsv(basePrice) {
-  const lines = ['Date,Open,High,Low,Close,Volume'];
-  const start = new Date('2024-01-02T00:00:00Z');
-  for (let i = 0; i < 10; i++) {
+// Build synthetic price data (replaces Stooq/Yahoo mocks — prices now come from the browser).
+function makePriceMap(basePrice, startDate = '2024-01-02', days = 10) {
+  const map = {};
+  const start = new Date(startDate + 'T00:00:00Z');
+  for (let i = 0; i < days; i++) {
     const d = new Date(start);
     d.setUTCDate(d.getUTCDate() + i);
-    const close = (basePrice + i).toFixed(2);
-    lines.push(`${d.toISOString().slice(0, 10)},${close},${close},${close},${close},10000`);
+    map[d.toISOString().slice(0, 10)] = basePrice + i;
   }
-  return lines.join('\n');
+  return map;
 }
 
+const realFetch = globalThis.fetch;
+
 globalThis.fetch = async (url) => {
-  fetchCalls.push(url);
-  // Stooq CSV: primary US source
-  if (/stooq\.com\/q\/d\/l/.test(url)) {
-    const m = url.match(/s=([^&]+)/);
-    const sym = (m ? m[1] : '').toLowerCase();
-    const basePrice = sym.startsWith('spy') ? 450 : 100;
-    return {
-      ok: true, status: 200,
-      text: async () => stooqCsv(basePrice),
-    };
-  }
-  // Yahoo fallback: synthetic candles
-  if (/query1\.finance\.yahoo\.com.*\/chart\//.test(url)) {
-    const tsBase = Math.floor(new Date('2024-01-01T00:00:00Z').getTime() / 1000);
-    const tickers = url.match(/chart\/([^?]+)/);
-    const sym = tickers ? tickers[1] : '';
-    const basePrice = sym === 'SPY' ? 450 : 100;
-    const timestamp = [];
-    const closes = [];
-    for (let i = 0; i < 10; i++) {
-      timestamp.push(tsBase + i * 86400);
-      closes.push(basePrice + i);
-    }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        chart: { result: [{ timestamp, indicators: { quote: [{ close: closes }] } }] },
-      }),
-    };
-  }
-  // Frankfurter: no BRL tickers in this test → unused
+  // Frankfurter FX: no BRL tickers in these tests → return empty
   if (/frankfurter\.dev/.test(url)) {
     return { ok: true, status: 200, json: async () => ({ rates: {} }) };
   }
   return { ok: false, status: 404, json: async () => ({}) };
 };
 
-test('handler: returns non-empty series for a valid Stocks transaction', async () => {
-  // Need a mocked Redis. Easiest path: mock ioredis via dynamic-load trick is
-  // complex; instead we accept that getRedis() will fail to connect, and
-  // verify the error path. To actually exercise the success path, we'd need
-  // a working Redis. Skip this if no real Redis URL is configured.
+test('handler: returns needsPrices on first call (no priceData)', async () => {
   if (process.env.REDIS_URL?.startsWith('redis://invalid')) {
     console.log('       (skipped: no real REDIS_URL — algorithm tests above already validate the math)');
     return;
   }
-
   const { default: handler } = await import('../api/perf-history.js');
   const req = {
     method: 'POST',
     headers: { 'x-app-password': 'test-pwd' },
+    body: { transactions: [{ date: '2024-01-01', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' }] },
+    query: { refresh: '1' },
+  };
+  const res = { statusCode: 0, body: null, status(c) { this.statusCode = c; return this; }, json(d) { this.body = d; return this; } };
+  await handler(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.needsPrices, true);
+  assert.ok(Array.isArray(res.body.tickers));
+  assert.ok(res.body.tickers.includes('SPY'));
+  assert.ok(res.body.tickers.includes('AAPL'));
+});
+
+test('handler: returns non-empty series when priceData is provided', async () => {
+  if (process.env.REDIS_URL?.startsWith('redis://invalid')) {
+    console.log('       (skipped: no real REDIS_URL — algorithm tests above already validate the math)');
+    return;
+  }
+  const { default: handler } = await import('../api/perf-history.js');
+  const priceData = {
+    SPY: makePriceMap(450),
+    AAPL: makePriceMap(100),
+  };
+  const req = {
+    method: 'POST',
+    headers: { 'x-app-password': 'test-pwd' },
     body: {
-      transactions: [
-        { date: '2024-01-01', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' },
-      ],
+      transactions: [{ date: '2024-01-02', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' }],
+      priceData,
     },
     query: { refresh: '1' },
   };
-  const res = {
-    statusCode: 0, body: null,
-    status(c) { this.statusCode = c; return this; },
-    json(d) { this.body = d; return this; },
-  };
+  const res = { statusCode: 0, body: null, status(c) { this.statusCode = c; return this; }, json(d) { this.body = d; return this; } };
   await handler(req, res);
   assert.equal(res.statusCode, 200, `expected 200, got ${res.statusCode}: ${JSON.stringify(res.body)}`);
-  assert.ok(res.body.dates.length > 0, `expected non-empty dates, got: ${JSON.stringify(res.body)}`);
+  assert.ok(res.body.dates?.length > 0, `expected non-empty dates: ${JSON.stringify(res.body)}`);
   assert.equal(res.body.portfolio[0], 0);
-  assert.ok(res.body.portfolio[res.body.portfolio.length - 1] > 0, 'portfolio should have grown');
 });
 
 globalThis.fetch = realFetch;

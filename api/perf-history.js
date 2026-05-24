@@ -1,15 +1,16 @@
 // api/perf-history.js
-// POST { transactions }: { dates, portfolio, spy, meta }
-// Calculates daily portfolio vs SPY performance, normalized to % return.
-// Includes only: Stocks, BRA Stocks, Alternative, Real Estate.
+// POST { transactions, priceData? }
 //
-// Fetch strategy (three phases):
-//   1. brapi.dev bulk  — covers US + BR tickers; uses API key → no IP rate-limits.
-//   2. Stooq CSV       — fallback for tickers brapi misses (US only).
-//   3. Yahoo Finance   — serial fallback (concurrency 2) for anything Stooq misses.
+// Two-call protocol:
+//   1st call (no priceData): check Redis cache. If miss, respond with
+//     { needsPrices: true, tickers: [...], firstDate: "YYYY-MM-DD" }
+//     so the browser can fetch US ticker prices directly from Yahoo Finance.
+//   2nd call (with priceData: { [ticker]: { [date]: price } }):
+//     use client-provided prices for US tickers + SPY; fetch B3 tickers
+//     via brapi; compute portfolio vs SPY % return; cache 24h.
 //
-// USD/BRL historical FX: Frankfurter date-range series (free tier).
-// Result cached in Redis 24h per user.
+// Rationale: Vercel datacenter IPs are rate-limited/blocked by Yahoo Finance
+// and Stooq. The user's browser IP is not rate-limited by Yahoo.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
@@ -21,10 +22,6 @@ const INCLUDED_CLASSES = new Set([
   'Real Estate',
 ]);
 
-const YAHOO_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
 const FETCH_TIMEOUT_MS = 5000;
 
 function isBrazilianTicker(t) {
@@ -33,8 +30,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v7: fix brapi bulk URL — encode each ticker individually, join with literal comma.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v7');
+  // v8: client-side price fetching via browser.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v8');
 }
 
 function toDateStr(unixSec) {
@@ -51,138 +48,51 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
   }
 }
 
-// Error capture for diagnostics.
-const errorLog = { stooq: [], yahoo: [], brapi: [], fx: [] };
-function recordErr(source, ticker, status, snippet) {
-  if (errorLog[source].length >= 5) return;
-  errorLog[source].push({ ticker, status, snippet: (snippet || '').slice(0, 120) });
-}
-
-function chunkArray(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-// Fetch up to ~20 tickers from brapi in a single request.
-// Returns { [symbol]: priceMap } for each ticker that has data.
-// Works for both US tickers (USD prices) and B3 tickers (BRL prices).
-async function fetchBrapiCandlesBulk(tickers, token, range) {
-  if (!tickers.length || !token) return {};
-  // Encode each symbol individually but keep commas as literals —
-  // encodeURIComponent on the whole string would turn commas into %2C
-  // which brapi treats as part of the symbol name (→ 400).
-  const symbols = tickers.map((t) => encodeURIComponent(t)).join(',');
+// brapi.dev — used only for B3 tickers (BRL prices). US tickers are handled
+// by the browser-side fetch (not subject to Vercel IP rate limiting).
+async function fetchBrapiCandles(ticker, token) {
   const url =
-    `https://brapi.dev/api/quote/${symbols}` +
-    `?range=${range}&interval=1d&token=${encodeURIComponent(token)}`;
+    `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}` +
+    `?range=5y&interval=1d&token=${encodeURIComponent(token)}`;
   try {
     const r = await fetchWithTimeout(url);
-    if (!r.ok) {
-      tickers.forEach((t) => recordErr('brapi', t, r.status, ''));
-      return {};
-    }
+    if (!r.ok) return null;
     const d = await r.json();
-    const out = {};
-    for (const result of d?.results ?? []) {
-      if (!Array.isArray(result?.historicalDataPrice) || !result.historicalDataPrice.length) {
-        recordErr('brapi', result?.symbol, 200, 'no-historical');
-        continue;
-      }
-      const map = {};
-      for (const entry of result.historicalDataPrice) {
-        if (entry.close == null) continue;
-        const dateStr =
-          typeof entry.date === 'number'
-            ? toDateStr(entry.date)
-            : String(entry.date).slice(0, 10);
-        map[dateStr] = entry.close;
-      }
-      if (Object.keys(map).length > 0) out[result.symbol] = map;
+    const result = Array.isArray(d?.results) ? d.results[0] : null;
+    if (!Array.isArray(result?.historicalDataPrice) || !result.historicalDataPrice.length) {
+      return null;
     }
-    return out;
-  } catch (e) {
-    tickers.forEach((t) => recordErr('brapi', t, 0, e.message));
+    const map = {};
+    for (const entry of result.historicalDataPrice) {
+      if (entry.close == null) continue;
+      const dateStr =
+        typeof entry.date === 'number'
+          ? toDateStr(entry.date)
+          : String(entry.date).slice(0, 10);
+      map[dateStr] = entry.close;
+    }
+    return Object.keys(map).length > 0 ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchFxHistory(fromDate, toDate) {
+  try {
+    const url = `https://api.frankfurter.dev/v1/${fromDate}..${toDate}?from=USD&to=BRL`;
+    const r = await fetchWithTimeout(url);
+    if (!r.ok) return {};
+    const d = await r.json();
+    const map = {};
+    for (const [date, rates] of Object.entries(d.rates || {})) {
+      if (rates?.BRL) map[date] = rates.BRL;
+    }
+    return map;
+  } catch {
     return {};
   }
 }
 
-// Stooq.com CSV — designed for bulk historical downloads.
-export async function fetchStooqCandles(ticker, fromDate, toDate) {
-  const symbol = ticker.toLowerCase() + '.us';
-  const d1 = fromDate.replace(/-/g, '');
-  const d2 = toDate.replace(/-/g, '');
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&d1=${d1}&d2=${d2}&i=d`;
-  try {
-    const r = await fetchWithTimeout(url, {
-      headers: { Accept: 'text/csv,text/plain,*/*' },
-    });
-    if (!r.ok) { recordErr('stooq', ticker, r.status, ''); return null; }
-    const text = await r.text();
-    if (!text || text.length < 20) { recordErr('stooq', ticker, r.status, text); return null; }
-    if (/^no data/i.test(text.trim())) { recordErr('stooq', ticker, r.status, 'No data'); return null; }
-    const lines = text.trim().split(/\r?\n/);
-    if (lines.length < 2) { recordErr('stooq', ticker, r.status, text.slice(0, 80)); return null; }
-    const header = lines[0].split(',').map((s) => s.trim().toLowerCase());
-    const dateIdx = header.indexOf('date');
-    const closeIdx = header.indexOf('close');
-    if (dateIdx < 0 || closeIdx < 0) {
-      recordErr('stooq', ticker, r.status, `bad headers: ${lines[0]}`);
-      return null;
-    }
-    const map = {};
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(',');
-      const date = cols[dateIdx]?.trim();
-      const close = parseFloat(cols[closeIdx]);
-      if (date && Number.isFinite(close)) map[date] = close;
-    }
-    return Object.keys(map).length > 0 ? map : null;
-  } catch (e) {
-    recordErr('stooq', ticker, 0, e.message);
-    return null;
-  }
-}
-
-// Yahoo Finance chart API — range= form avoids crumb requirement.
-async function fetchYahooCandles(ticker) {
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
-    `?range=10y&interval=1d`;
-  try {
-    const r = await fetchWithTimeout(url, {
-      headers: { 'User-Agent': YAHOO_UA, Accept: 'application/json' },
-    });
-    if (!r.ok) {
-      let body = '';
-      try { body = await r.text(); } catch {}
-      recordErr('yahoo', ticker, r.status, body);
-      return null;
-    }
-    const d = await r.json();
-    const result = d?.chart?.result?.[0];
-    const ycode = d?.chart?.error?.code;
-    if (!result?.timestamp?.length) {
-      recordErr('yahoo', ticker, r.status, ycode || 'no-timestamps');
-      return null;
-    }
-    const closes = result.indicators?.quote?.[0]?.close;
-    if (!Array.isArray(closes)) {
-      recordErr('yahoo', ticker, r.status, 'no-closes');
-      return null;
-    }
-    const map = {};
-    for (let i = 0; i < result.timestamp.length; i++) {
-      if (closes[i] != null) map[toDateStr(result.timestamp[i])] = closes[i];
-    }
-    return Object.keys(map).length > 0 ? map : null;
-  } catch (e) {
-    recordErr('yahoo', ticker, 0, e.message);
-    return null;
-  }
-}
-
-// Run async tasks with limited concurrency.
 async function mapConcurrent(items, fn, concurrency = 4) {
   const results = new Array(items.length);
   let next = 0;
@@ -310,39 +220,14 @@ export function computePerformance({
     dates: outDates,
     portfolio,
     spy,
-    meta: {
-      txFiltered: filtered.length,
-      daysComputed: outDates.length,
-    },
+    meta: { txFiltered: filtered.length, daysComputed: outDates.length },
   };
-}
-
-async function fetchFxHistory(fromDate, toDate) {
-  try {
-    const url = `https://api.frankfurter.dev/v1/${fromDate}..${toDate}?from=USD&to=BRL`;
-    const r = await fetchWithTimeout(url);
-    if (!r.ok) { recordErr('fx', null, r.status, ''); return {}; }
-    const d = await r.json();
-    const map = {};
-    for (const [date, rates] of Object.entries(d.rates || {})) {
-      if (rates?.BRL) map[date] = rates.BRL;
-    }
-    return map;
-  } catch (e) {
-    recordErr('fx', null, 0, e.message);
-    return {};
-  }
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-
-  errorLog.stooq = [];
-  errorLog.yahoo = [];
-  errorLog.brapi = [];
-  errorLog.fx = [];
 
   const auth = await authenticate(req);
   if (!auth.ok) {
@@ -366,7 +251,7 @@ export default async function handler(req, res) {
     } catch {}
   }
 
-  const { transactions } = req.body || {};
+  const { transactions, priceData } = req.body || {};
   if (!Array.isArray(transactions)) {
     return res.status(400).json({ error: 'transactions array required' });
   }
@@ -390,73 +275,44 @@ export default async function handler(req, res) {
   const firstDate = eligible[0].date.slice(0, 10);
   const todayDate = new Date().toISOString().slice(0, 10);
 
-  const brapiKey = process.env.BRAPI_API_KEY || null;
-
   const uniqueTickers = [
     ...new Set(eligible.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean)),
   ];
   const brTickers = uniqueTickers.filter(isBrazilianTicker);
   const usTickers = uniqueTickers.filter((t) => !isBrazilianTicker(t));
-  const allUsTickers = ['SPY', ...usTickers];
 
-  // How far back we need data — pick brapi range parameter accordingly.
-  const yearsBack = Math.ceil(
-    (new Date(todayDate) - new Date(firstDate)) / (365.25 * 24 * 3600 * 1000)
-  );
-  const brapiRange = yearsBack > 5 ? '10y' : '5y';
+  // If no priceData was sent, ask the client to fetch prices from Yahoo Finance.
+  // The browser is not subject to the IP-based rate limiting that blocks Vercel.
+  if (!priceData || typeof priceData !== 'object' || !Object.keys(priceData).length) {
+    return res.status(200).json({
+      needsPrices: true,
+      tickers: ['SPY', ...usTickers],
+      firstDate,
+    });
+  }
 
+  // priceData received — build candle maps.
+  const candleMap = {};
+  for (const [ticker, map] of Object.entries(priceData)) {
+    if (ticker !== 'SPY' && map && typeof map === 'object') {
+      candleMap[ticker] = map;
+    }
+  }
+  const spyCandles = priceData['SPY'] && typeof priceData['SPY'] === 'object'
+    ? priceData['SPY']
+    : null;
+
+  const brapiKey = process.env.BRAPI_API_KEY || null;
   const t0 = Date.now();
 
-  // Phase 1 — brapi bulk for ALL tickers (US + BR + SPY) in chunks of 20.
-  // brapi uses an API key so it isn't IP-rate-limited like anonymous Yahoo/Stooq.
-  // Runs in parallel with FX fetch.
-  const allFetchTickers = [...allUsTickers, ...brTickers];
-  const brapiChunks = chunkArray(allFetchTickers, 20);
-
-  const [fxMap, ...brapiChunkResults] = await Promise.all([
+  // Fetch B3 tickers via brapi (server-side, API key, works fine from Vercel).
+  const [brResults, fxMap] = await Promise.all([
+    mapConcurrent(brTickers, (t) => brapiKey ? fetchBrapiCandles(t, brapiKey) : Promise.resolve(null), 4),
     brTickers.length > 0 ? fetchFxHistory(firstDate, todayDate) : Promise.resolve({}),
-    ...brapiChunks.map((chunk) =>
-      brapiKey
-        ? fetchBrapiCandlesBulk(chunk, brapiKey, brapiRange)
-        : Promise.resolve({})
-    ),
   ]);
-  const brapiCandles = Object.assign({}, ...brapiChunkResults);
-
-  // Phase 2 — Stooq for US tickers brapi missed (concurrency 20, 5s timeout).
-  const stooqCandidates = allUsTickers.filter((t) => !brapiCandles[t]);
-  const stooqResultsArr = stooqCandidates.length > 0
-    ? await mapConcurrent(stooqCandidates, (t) => fetchStooqCandles(t, firstDate, todayDate), 20)
-    : [];
-  const stooqCandles = {};
-  stooqCandidates.forEach((t, i) => { if (stooqResultsArr[i]) stooqCandles[t] = stooqResultsArr[i]; });
-
-  // Phase 3 — Yahoo serial fallback (concurrency 2) for what both phases missed.
-  // Low concurrency avoids 429 from Vercel IPs.
-  const yahooCandidates = allUsTickers.filter((t) => !brapiCandles[t] && !stooqCandles[t]);
-  const yahooResultsArr = yahooCandidates.length > 0
-    ? await mapConcurrent(yahooCandidates, (t) => fetchYahooCandles(t), 2)
-    : [];
-  const yahooCandles = {};
-  yahooCandidates.forEach((t, i) => { if (yahooResultsArr[i]) yahooCandles[t] = yahooResultsArr[i]; });
+  brTickers.forEach((t, i) => { if (brResults[i]) candleMap[t] = brResults[i]; });
 
   const fetchMs = Date.now() - t0;
-
-  // Merge: brapi wins, then stooq, then yahoo.
-  const candleMap = {};
-  const sourceCount = { brapi: 0, stooq: 0, yahoo: 0 };
-
-  allFetchTickers.forEach((t) => {
-    const map = brapiCandles[t] || stooqCandles[t] || yahooCandles[t] || null;
-    const src = brapiCandles[t] ? 'brapi' : stooqCandles[t] ? 'stooq' : yahooCandles[t] ? 'yahoo' : null;
-    if (map && t !== 'SPY') {
-      candleMap[t] = map;
-      if (src) sourceCount[src] = (sourceCount[src] || 0) + 1;
-    }
-  });
-
-  const spyCandles = brapiCandles['SPY'] || stooqCandles['SPY'] || yahooCandles['SPY'] || null;
-  const spySource = brapiCandles['SPY'] ? 'brapi' : stooqCandles['SPY'] ? 'stooq' : yahooCandles['SPY'] ? 'yahoo' : null;
 
   const result = computePerformance({
     transactions: eligible,
@@ -480,18 +336,10 @@ export default async function handler(req, res) {
     usTickersMissing: usMissing.length,
     usMissingSample: usMissing.slice(0, 8),
     brTickersFetched: brFetchedCount,
-    brTickersMissing: brTickers.length - brFetchedCount,
     spyDays: spyCandles ? Object.keys(spyCandles).length : 0,
-    spySource,
-    sources: sourceCount,
+    spySource: spyCandles ? 'client' : null,
     fxDays: Object.keys(fxMap).length,
     fetchMs,
-    errors: {
-      stooq: errorLog.stooq,
-      yahoo: errorLog.yahoo,
-      brapi: errorLog.brapi,
-      fx: errorLog.fx,
-    },
   };
 
   if (cacheKey && result.dates.length > 0) {
