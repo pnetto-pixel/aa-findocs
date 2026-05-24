@@ -545,13 +545,14 @@ function FilterPopover({
 
   // Position popover below anchor.
   const rect = anchor?.getBoundingClientRect();
+  const POPOVER_W = 240;
   const style = rect
     ? {
         position: "fixed",
         top: rect.bottom + 4,
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)),
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8)),
         zIndex: 50,
-        width: 220,
+        width: POPOVER_W,
       }
     : { display: "none" };
 
@@ -932,9 +933,10 @@ function TransactionTable({
                 background: "transparent",
                 border: "none",
                 color: filtered ? T.gold : T.textFaint,
-                padding: "0 8px",
+                padding: "10px 6px",
                 cursor: "pointer",
-                fontSize: 11,
+                fontSize: 12,
+                minWidth: 22,
               }}
             >
               ▾
@@ -1151,15 +1153,16 @@ function TransactionTable({
         }}
       >
         <colgroup>
-          <col style={{ width: "28px" }} />
-          <col style={{ width: "78px" }} />
-          <col style={{ width: "40px" }} />
-          <col style={{ width: "70px" }} />
-          <col style={{ width: "54px" }} />
-          <col style={{ width: "40px" }} />
-          <col style={{ width: "70px" }} />
+          <col style={{ width: "26px" }} />
+          <col style={{ width: "72px" }} />
+          <col style={{ width: "34px" }} />
+          <col style={{ width: "66px" }} />
+          <col style={{ width: "50px" }} />
+          <col style={{ width: "36px" }} />
+          <col style={{ width: "64px" }} />
+          <col style={{ width: "48px" }} />
           <col style={{ width: "auto" }} />
-          <col style={{ width: "52px" }} />
+          <col style={{ width: "48px" }} />
         </colgroup>
         <thead>
           <tr>
@@ -1191,6 +1194,7 @@ function TransactionTable({
             <HeaderCell col="ticker" label="Tkr" />
             <HeaderCell col="qty" label="Qty" align="right" />
             <HeaderCell col="price" label="Price" align="right" />
+            <HeaderCell col="fee" label="Fee" align="right" />
             <HeaderCell col="notes" label="Notes" />
             <th
               style={{
@@ -1208,7 +1212,7 @@ function TransactionTable({
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={9}
+                colSpan={10}
                 style={{
                   padding: 32,
                   textAlign: "center",
@@ -1330,6 +1334,18 @@ function TransactionTable({
                         onChange={(e) => setDraft({ ...draft, price: e.target.value })}
                         onKeyDown={onKey}
                         style={{ ...inputStyle, textAlign: "right" }}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="number"
+                        step="any"
+                        inputMode="decimal"
+                        value={draft.fee}
+                        onChange={(e) => setDraft({ ...draft, fee: e.target.value })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, textAlign: "right" }}
+                        placeholder="0"
                       />
                     </td>
                     <td style={cellStyle}>
@@ -1478,6 +1494,17 @@ function TransactionTable({
                   <td
                     style={{
                       padding: "8px 4px",
+                      color: tx.fee ? T.text : T.textFaint,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                      fontSize: 10,
+                    }}
+                  >
+                    {tx.fee ? fmtPrice(tx.fee, cur) : "—"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 2px",
                       color: tx.notes ? T.textDim : T.textFaint,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
