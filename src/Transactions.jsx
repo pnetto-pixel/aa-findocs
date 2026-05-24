@@ -106,6 +106,45 @@ function fmtMoney(n, currency = "USD") {
   }).format(n);
 }
 
+// Compact price display: "$175.50" / "R$ 38.20".
+function fmtPrice(n, currency = "USD") {
+  if (n == null || isNaN(n)) return "—";
+  const num = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+  return currency === "BRL" ? `R$ ${num}` : `$${num}`;
+}
+
+// --- Asset classes ---------------------------------------------------------
+// Each entry: { id, currency }. UI uses sorted ids.
+const ASSET_CLASSES = [
+  { id: "Alternative", currency: "USD" },
+  { id: "Bonds", currency: "USD" },
+  { id: "BRA Fixed Income", currency: "BRL" },
+  { id: "BRA Stocks", currency: "BRL" },
+  { id: "Real Estate", currency: "USD" },
+  { id: "Stocks", currency: "USD" },
+  { id: "Unallocated BRL", currency: "BRL" },
+  { id: "Unallocated USD", currency: "USD" },
+];
+
+const ASSET_CLASS_IDS = ASSET_CLASSES.map((a) => a.id);
+
+function currencyForAssetClass(id) {
+  const a = ASSET_CLASSES.find((x) => x.id === id);
+  return a ? a.currency : null;
+}
+
+// Normalize incoming asset class string from CSV (case-insensitive match).
+function normalizeAssetClass(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  const found = ASSET_CLASSES.find((a) => a.id.toLowerCase() === s);
+  return found ? found.id : null;
+}
+
 // --- Styled primitives (kept minimal; reuse App.jsx tokens) ----------------
 
 function Input({ style, onEnter, ...props }) {
@@ -158,27 +197,13 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
   const [ticker, setTicker] = useState(initial?.ticker || "");
   const [qty, setQty] = useState(initial ? String(initial.qty) : "");
   const [price, setPrice] = useState(initial ? String(initial.price) : "");
-  const [currency, setCurrency] = useState(initial?.currency || "USD");
-  const [currencyTouched, setCurrencyTouched] = useState(!!initial);
+  const [assetClass, setAssetClass] = useState(initial?.assetClass || "");
   const [fee, setFee] = useState(initial?.fee ? String(initial.fee) : "");
   const [notes, setNotes] = useState(initial?.notes || "");
   const [error, setError] = useState("");
   const [showTickerList, setShowTickerList] = useState(false);
 
-  // Auto-infer currency from ticker unless user picked manually.
-  useEffect(() => {
-    if (currencyTouched) return;
-    const inferred = inferCurrency(ticker);
-    if (inferred && inferred !== currency) {
-      setCurrency(inferred);
-    }
-  }, [ticker, currencyTouched, currency]);
-
-  const tickerInferenceAmbiguous = useMemo(() => {
-    const t = ticker.trim();
-    if (!t) return false;
-    return inferCurrency(t) === null;
-  }, [ticker]);
+  const currency = currencyForAssetClass(assetClass) || "USD";
 
   const tickerSuggestions = useMemo(() => {
     const q = ticker.trim().toUpperCase();
@@ -192,6 +217,7 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
     setError("");
     const tkr = ticker.trim().toUpperCase();
     if (!tkr) return setError("Ticker required");
+    if (!assetClass) return setError("Asset class required");
     const qn = parseFloat(qty);
     const pn = parseFloat(price);
     if (!isFinite(qn) || qn <= 0) return setError("Qty must be > 0");
@@ -205,6 +231,7 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
       date,
       side,
       ticker: tkr,
+      assetClass,
       qty: qn,
       price: pn,
       currency,
@@ -363,45 +390,37 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
 
         <div>
           <Label>
-            Currency
-            {!currencyTouched && ticker.trim() && !tickerInferenceAmbiguous && (
+            Asset Class
+            {assetClass && (
               <span style={{ color: T.gold, marginLeft: 6, letterSpacing: 0 }}>
-                (auto)
-              </span>
-            )}
-            {tickerInferenceAmbiguous && (
-              <span style={{ color: T.red, marginLeft: 6, letterSpacing: 0 }}>
-                (pick manually)
+                ({currency})
               </span>
             )}
           </Label>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["USD", "BRL"].map((c) => {
-              const active = currency === c;
-              return (
-                <button
-                  key={c}
-                  onClick={() => {
-                    setCurrency(c);
-                    setCurrencyTouched(true);
-                  }}
-                  style={{
-                    flex: 1,
-                    background: active ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                    border: `1px solid ${active ? T.gold : T.border}`,
-                    color: active ? T.gold : T.textDim,
-                    padding: "10px 12px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 12,
-                    letterSpacing: "0.15em",
-                    cursor: "pointer",
-                  }}
-                >
-                  {c}
-                </button>
-              );
-            })}
-          </div>
+          <select
+            value={assetClass}
+            onChange={(e) => setAssetClass(e.target.value)}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              background: T.cardElev,
+              border: `1px solid ${T.border}`,
+              color: assetClass ? T.text : T.textFaint,
+              padding: "10px 12px",
+              fontSize: 14,
+              fontFamily: FONT_MONO,
+              borderRadius: 2,
+              outline: "none",
+              cursor: "pointer",
+            }}
+          >
+            <option value="">— Select —</option>
+            {ASSET_CLASS_IDS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <Label>Fee (optional)</Label>
@@ -677,27 +696,25 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
   // Each filter: Set of allowed values; if empty, treat as "all" (no filter).
   // Defaults are computed lazily from the data.
   const allValues = useMemo(() => {
-    const u = new Set();
     const s = new Set();
     const t = new Set();
-    const c = new Set();
+    const a = new Set();
     for (const tx of transactions) {
-      u.add(tx.date);
       s.add(tx.side);
       t.add(tx.ticker);
-      c.add(tx.currency);
+      if (tx.assetClass) a.add(tx.assetClass);
     }
     return {
       side: Array.from(s).sort(),
       ticker: Array.from(t).sort(),
-      currency: Array.from(c).sort(),
+      assetClass: Array.from(a).sort(),
     };
   }, [transactions]);
 
   const [filters, setFilters] = useState({
     side: new Set(),
     ticker: new Set(),
-    currency: new Set(),
+    assetClass: new Set(),
     dateFrom: "",
     dateTo: "",
   });
@@ -715,7 +732,7 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
     let list = transactions.filter((t) => {
       if (filters.side.size > 0 && !filters.side.has(t.side)) return false;
       if (filters.ticker.size > 0 && !filters.ticker.has(t.ticker)) return false;
-      if (filters.currency.size > 0 && !filters.currency.has(t.currency)) return false;
+      if (filters.assetClass.size > 0 && !filters.assetClass.has(t.assetClass)) return false;
       if (filters.dateFrom && t.date < filters.dateFrom) return false;
       if (filters.dateTo && t.date > filters.dateTo) return false;
       return true;
@@ -820,35 +837,43 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
   }
 
   return (
-    <div style={{ position: "relative", overflowX: "auto", border: `1px solid ${T.borderSoft}` }}>
+    <div style={{ position: "relative", border: `1px solid ${T.borderSoft}` }}>
       <table
         style={{
           width: "100%",
           borderCollapse: "collapse",
           fontFamily: FONT_MONO,
-          fontSize: 12,
-          minWidth: 760,
+          fontSize: 11,
+          tableLayout: "fixed",
         }}
       >
+        <colgroup>
+          <col style={{ width: "82px" }} />
+          <col style={{ width: "48px" }} />
+          <col style={{ width: "70px" }} />
+          <col style={{ width: "54px" }} />
+          <col style={{ width: "44px" }} />
+          <col style={{ width: "74px" }} />
+          <col style={{ width: "auto" }} />
+          <col style={{ width: "56px" }} />
+        </colgroup>
         <thead>
           <tr>
             <HeaderCell col="date" label="Date" />
             <HeaderCell col="side" label="Side" />
-            <HeaderCell col="ticker" label="Ticker" />
+            <HeaderCell col="assetClass" label="Class" />
+            <HeaderCell col="ticker" label="Tkr" />
             <HeaderCell col="qty" label="Qty" align="right" />
             <HeaderCell col="price" label="Price" align="right" />
-            <HeaderCell col="currency" label="Cur" />
-            <HeaderCell col="fee" label="Fee" align="right" />
             <HeaderCell col="notes" label="Notes" />
             <th
               style={{
-                padding: "10px 8px",
+                padding: "10px 4px",
                 borderBottom: `1px solid ${T.border}`,
                 background: T.card,
                 position: "sticky",
                 top: 0,
                 zIndex: 2,
-                width: 80,
               }}
             />
           </tr>
@@ -857,7 +882,7 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={9}
+                colSpan={8}
                 style={{
                   padding: 32,
                   textAlign: "center",
@@ -874,21 +899,37 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
           ) : (
             visible.map((tx) => {
               const isBuy = tx.side === "buy";
+              const cur = tx.currency || currencyForAssetClass(tx.assetClass) || "USD";
+              const feeStr = tx.fee
+                ? fmtPrice(tx.fee, cur)
+                : "—";
               return (
                 <tr
                   key={tx.id}
                   style={{ borderBottom: `1px solid ${T.borderSoft}` }}
+                  title={
+                    tx.notes
+                      ? `${tx.assetClass || "—"} · fee ${feeStr}\n${tx.notes}`
+                      : `${tx.assetClass || "—"} · fee ${feeStr}`
+                  }
                 >
-                  <td style={{ padding: "8px", color: T.text, whiteSpace: "nowrap" }}>
+                  <td
+                    style={{
+                      padding: "8px 4px",
+                      color: T.text,
+                      whiteSpace: "nowrap",
+                      fontSize: 10,
+                    }}
+                  >
                     {tx.date}
                   </td>
-                  <td style={{ padding: "8px" }}>
+                  <td style={{ padding: "8px 4px" }}>
                     <span
                       style={{
                         fontSize: 9,
-                        letterSpacing: "0.15em",
+                        letterSpacing: "0.1em",
                         textTransform: "uppercase",
-                        padding: "3px 6px",
+                        padding: "2px 5px",
                         background: isBuy
                           ? "rgba(125, 211, 164, 0.1)"
                           : "rgba(232, 140, 140, 0.1)",
@@ -896,14 +937,28 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
                         border: `1px solid ${isBuy ? T.green : T.red}`,
                       }}
                     >
-                      {tx.side}
+                      {tx.side === "buy" ? "B" : "S"}
                     </span>
                   </td>
                   <td
                     style={{
-                      padding: "8px",
+                      padding: "8px 4px",
+                      color: T.textDim,
+                      fontSize: 10,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tx.assetClass || "—"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 4px",
                       color: T.text,
                       fontWeight: 500,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
                     }}
                   >
@@ -911,49 +966,38 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
                   </td>
                   <td
                     style={{
-                      padding: "8px",
+                      padding: "8px 4px",
                       color: T.text,
                       textAlign: "right",
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {fmtNum(tx.qty)}
+                    {fmtNum(tx.qty, 0)}
                   </td>
                   <td
                     style={{
-                      padding: "8px",
+                      padding: "8px 4px",
                       color: T.text,
                       textAlign: "right",
                       whiteSpace: "nowrap",
+                      fontSize: 10,
                     }}
                   >
-                    {fmtNum(tx.price, 2)}
-                  </td>
-                  <td style={{ padding: "8px", color: T.textDim }}>{tx.currency}</td>
-                  <td
-                    style={{
-                      padding: "8px",
-                      color: tx.fee ? T.text : T.textFaint,
-                      textAlign: "right",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {tx.fee ? fmtNum(tx.fee, 2) : "—"}
+                    {fmtPrice(tx.price, cur)}
                   </td>
                   <td
                     style={{
-                      padding: "8px",
+                      padding: "8px 4px",
                       color: tx.notes ? T.textDim : T.textFaint,
-                      maxWidth: 180,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
+                      fontSize: 10,
                     }}
-                    title={tx.notes || ""}
                   >
                     {tx.notes || "—"}
                   </td>
-                  <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                  <td style={{ padding: "6px 2px", textAlign: "right", whiteSpace: "nowrap" }}>
                     <button
                       onClick={() => onEdit(tx)}
                       disabled={busy}
@@ -962,14 +1006,14 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
                         background: "transparent",
                         border: `1px solid ${T.border}`,
                         color: T.textDim,
-                        padding: "4px 6px",
-                        marginRight: 4,
+                        padding: "3px 4px",
+                        marginRight: 2,
                         cursor: "pointer",
                         display: "inline-flex",
                         alignItems: "center",
                       }}
                     >
-                      <Pencil size={10} />
+                      <Pencil size={9} />
                     </button>
                     <button
                       onClick={() => onDelete(tx)}
@@ -979,13 +1023,13 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
                         background: "transparent",
                         border: `1px solid ${T.border}`,
                         color: T.red,
-                        padding: "4px 6px",
+                        padding: "3px 4px",
                         cursor: "pointer",
                         display: "inline-flex",
                         alignItems: "center",
                       }}
                     >
-                      <Trash2 size={10} />
+                      <Trash2 size={9} />
                     </button>
                   </td>
                 </tr>
@@ -1177,44 +1221,45 @@ function parseRow(row, defaultCurrency = "USD") {
     if (fee.error) errors.push(`fee: ${fee.error}`);
   }
 
-  // Currency: explicit field wins; else infer from ticker; else mark needsCurrency.
-  let cur = { value: null, error: null };
-  let needsCurrency = false;
-  if (row.currency) {
-    cur = parseCurrency(row.currency);
-    if (cur.error) errors.push(`currency: ${cur.error}`);
-  } else if (ticker) {
+  // Asset class: explicit field wins; else infer from ticker.
+  // If neither resolves, mark needsAssetClass so user picks in preview.
+  let assetClass = normalizeAssetClass(row.assetClass);
+  let needsAssetClass = false;
+  if (!assetClass && ticker) {
     const inferred = inferCurrency(ticker);
-    if (inferred) {
-      cur.value = inferred;
-    } else {
-      needsCurrency = true;
-      cur.value = defaultCurrency; // placeholder; user must pick before import
-    }
-  } else {
-    cur.value = defaultCurrency;
+    if (inferred === "BRL") assetClass = "BRA Stocks";
+    else if (inferred === "USD") assetClass = "Stocks";
+    else needsAssetClass = true;
+  } else if (!assetClass) {
+    needsAssetClass = true;
+  }
+  const currency = assetClass ? currencyForAssetClass(assetClass) : defaultCurrency;
+
+  if (row.assetClass && !assetClass) {
+    errors.push(`assetClass: unknown "${row.assetClass}"`);
   }
 
   const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
 
   if (errors.length > 0) {
-    return { ok: false, tx: null, errors, ambiguous, needsCurrency, rawNumbers };
+    return { ok: false, tx: null, errors, ambiguous, needsAssetClass, rawNumbers };
   }
 
   return {
-    ok: !needsCurrency,
-    errors: needsCurrency ? ["currency: pick USD or BRL"] : [],
+    ok: !needsAssetClass,
+    errors: needsAssetClass ? ["assetClass: pick one"] : [],
     ambiguous,
-    needsCurrency,
+    needsAssetClass,
     rawNumbers,
     tx: {
       id: newId(),
       date: d.value,
       side: sd.value,
       ticker,
+      assetClass: assetClass || null,
       qty: qty.value,
       price: price.value,
-      currency: cur.value,
+      currency,
       fee: fee.value || 0,
       notes: String(row.notes || "").trim(),
       createdAt: new Date().toISOString(),
@@ -1246,7 +1291,7 @@ const HEADER_ALIASES = {
   ticker: ["ticker", "symbol", "ativo", "asset", "papel"],
   qty: ["qty", "quantity", "quantidade", "qtd", "shares"],
   price: ["price", "preco", "preço", "cotacao", "cotação", "value", "valor"],
-  currency: ["currency", "moeda", "ccy"],
+  assetClass: ["assetclass", "asset class", "class", "classe", "categoria"],
   fee: ["fee", "fees", "taxa", "tarifa", "corretagem"],
   notes: ["notes", "note", "obs", "observacao", "observação", "memo"],
 };
@@ -1352,7 +1397,7 @@ function parseCSVOrPaste(text, opts = {}) {
     });
   }
 
-  const FIELD_ORDER = ["date", "side", "ticker", "qty", "price", "currency", "fee", "notes"];
+  const FIELD_ORDER = ["date", "side", "ticker", "qty", "price", "assetClass", "fee", "notes"];
 
   const rows = dataRows.map((arr) => {
     const obj = {};
@@ -1382,7 +1427,7 @@ function parseCSVOrPaste(text, opts = {}) {
 
 // CSV export
 function transactionsToCSV(transactions) {
-  const headers = ["date", "side", "ticker", "qty", "price", "currency", "fee", "notes"];
+  const headers = ["date", "side", "ticker", "qty", "price", "assetClass", "fee", "notes"];
   const lines = [headers.join(",")];
   for (const t of transactions) {
     const row = headers.map((h) => {
@@ -1413,12 +1458,137 @@ function downloadCSV(filename, content) {
 
 // --- Import Modal ----------------------------------------------------------
 
-const SAMPLE_CSV = `date,side,ticker,qty,price,currency,fee,notes
-2024-03-15,buy,AAPL,10,175.50,USD,0,
-2024-03-20,buy,BBSE3,100,38.20,BRL,,monthly buy`;
+const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
+2024-03-15,buy,AAPL,10,175.50,Stocks,0,
+2024-03-20,buy,BBSE3,100,38.20,BRA Stocks,,monthly buy`;
+
+// Fidelity "Accounts History" CSV parser.
+// - Skips blank lines / BOM at start
+// - Header row contains: Run Date, Action, Symbol, Price ($), Quantity, Fees ($)
+// - Keeps only rows where Action startsWith "YOU BOUGHT" or "YOU SOLD"
+// - SOLD has negative Quantity → take abs
+// - Date format MM/DD/YYYY → ISO
+// - All Fidelity transactions are USD; assetClass defaults to "Stocks"
+//   (user can edit later)
+function parseFidelityCSV(text) {
+  const result = Papa.parse(text, {
+    skipEmptyLines: true,
+    delimitersToGuess: [",", ";", "\t"],
+  });
+  if (!result.data || result.data.length === 0) {
+    return { results: [], hadHeader: false, rawRows: [], sourceText: text };
+  }
+
+  // Find header row (contains "Run Date" and "Action").
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(8, result.data.length); i++) {
+    const row = result.data[i].map((c) => String(c || "").trim().toLowerCase());
+    if (row.includes("run date") && row.includes("action")) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) {
+    return { results: [], hadHeader: false, rawRows: [], sourceText: text, error: "Fidelity header not found" };
+  }
+
+  const header = result.data[headerIdx].map((c) => String(c || "").trim());
+  const colOf = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+
+  const idxDate = colOf("Run Date");
+  const idxAction = colOf("Action");
+  const idxSymbol = colOf("Symbol");
+  const idxPrice = colOf("Price ($)");
+  const idxQty = colOf("Quantity");
+  const idxFees = colOf("Fees ($)");
+
+  if (idxDate < 0 || idxAction < 0 || idxSymbol < 0 || idxPrice < 0 || idxQty < 0) {
+    return { results: [], hadHeader: true, rawRows: [], sourceText: text, error: "Required Fidelity columns missing" };
+  }
+
+  const results = [];
+  const rawRows = [];
+  for (let i = headerIdx + 1; i < result.data.length; i++) {
+    const arr = result.data[i];
+    if (!arr || arr.length === 0) continue;
+    const action = String(arr[idxAction] || "").trim();
+    const upper = action.toUpperCase();
+    let side = null;
+    if (upper.startsWith("YOU BOUGHT")) side = "buy";
+    else if (upper.startsWith("YOU SOLD")) side = "sell";
+    else continue; // skip dividends, contributions, interest, redemptions, etc.
+
+    const rawDate = String(arr[idxDate] || "").trim();
+    // Fidelity dates are always MM/DD/YYYY (US format). Override the
+    // BR-default parseDate which would interpret 05/08/2026 as DMY.
+    const mdy = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    let isoDate = null;
+    if (mdy) {
+      let [, mo, d, y] = mdy;
+      if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+      mo = mo.padStart(2, "0");
+      d = d.padStart(2, "0");
+      const yi = parseInt(y, 10);
+      const mi = parseInt(mo, 10);
+      const di = parseInt(d, 10);
+      if (mi >= 1 && mi <= 12 && di >= 1 && di <= 31 && yi >= 1900 && yi <= 2100) {
+        const dt = new Date(yi, mi - 1, di);
+        if (dt.getFullYear() === yi && dt.getMonth() === mi - 1 && dt.getDate() === di) {
+          isoDate = `${y}-${mo}-${d}`;
+        }
+      }
+    }
+    if (!isoDate) continue; // skip malformed rows silently
+
+    const symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
+    if (!symbol) continue;
+
+    const priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
+    if (!isFinite(priceN) || priceN < 0) continue;
+
+    const qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
+    if (!isFinite(qtyRaw) || qtyRaw === 0) continue;
+    const qty = Math.abs(qtyRaw);
+
+    let fee = 0;
+    if (idxFees >= 0) {
+      const fn = parseFloat(String(arr[idxFees] || "").replace(/[$,\s]/g, ""));
+      if (isFinite(fn) && fn > 0) fee = fn;
+    }
+
+    // Default Fidelity transactions to "Stocks" assetClass. User can edit
+    // afterwards if it's a bond (e.g. CD), since CDs come through as symbols
+    // like 949764WE0 that we can't reliably classify.
+    const tx = {
+      id: newId(),
+      date: isoDate,
+      side,
+      ticker: symbol,
+      assetClass: "Stocks",
+      qty,
+      price: priceN,
+      currency: "USD",
+      fee,
+      notes: "",
+      createdAt: new Date().toISOString(),
+    };
+
+    results.push({
+      ok: true,
+      errors: [],
+      ambiguous: false,
+      needsAssetClass: false,
+      rawNumbers: { qty: qtyRaw, price: priceN, fee },
+      tx,
+    });
+    rawRows.push(arr);
+  }
+
+  return { results, hadHeader: true, rawRows, sourceText: text };
+}
 
 function ImportModal({ open, onClose, onConfirm, existingCount }) {
-  const [tab, setTab] = useState("paste"); // paste | upload
+  const [tab, setTab] = useState("paste"); // paste | upload | fidelity
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
@@ -1499,17 +1669,18 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     setDecimalPrompt(false);
   }
 
-  function pickCurrency(idx, cur) {
+  function pickAssetClass(idx, cls) {
     if (!parsed) return;
+    const cur = currencyForAssetClass(cls);
     const next = parsed.results.map((r, i) => {
       if (i !== idx) return r;
       if (!r.tx) return r;
       return {
         ...r,
         ok: true,
-        needsCurrency: false,
+        needsAssetClass: false,
         errors: [],
-        tx: { ...r.tx, currency: cur },
+        tx: { ...r.tx, assetClass: cls, currency: cur },
       };
     });
     setParsed({ ...parsed, results: next });
@@ -1528,6 +1699,36 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     reader.readAsText(file);
   }
 
+  function handleFidelityFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      // Strip BOM if present.
+      let content = String(ev.target?.result || "");
+      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+      setText(content);
+      const out = parseFidelityCSV(content);
+      if (out.error || out.results.length === 0) {
+        setFileError(out.error || "No BUY/SELL transactions found in this Fidelity file");
+        setParsed(null);
+        return;
+      }
+      setParsed({
+        results: out.results,
+        hadHeader: true,
+        rawRows: out.rawRows,
+        sourceText: content,
+        sourceLabel: "Fidelity",
+      });
+      setDecimalPrompt(false);
+      setStructuralPrompt(false);
+      setFileError("");
+    };
+    reader.onerror = () => setFileError("Failed to read file");
+    reader.readAsText(file);
+  }
+
   function handleConfirm() {
     if (!parsed) return;
     const validTx = parsed.results.filter((r) => r.ok).map((r) => r.tx);
@@ -1539,10 +1740,10 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
 
   const validCount = parsed ? parsed.results.filter((r) => r.ok).length : 0;
   const errorCount = parsed
-    ? parsed.results.filter((r) => !r.ok && !r.needsCurrency).length
+    ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass).length
     : 0;
-  const needsCurrencyCount = parsed
-    ? parsed.results.filter((r) => r.needsCurrency).length
+  const needsAssetClassCount = parsed
+    ? parsed.results.filter((r) => r.needsAssetClass).length
     : 0;
 
   return (
@@ -1739,6 +1940,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 {[
                   { id: "paste", label: "Paste" },
                   { id: "upload", label: "Upload CSV" },
+                  { id: "fidelity", label: "Fidelity" },
                 ].map((t) => {
                   const active = tab === t.id;
                   return (
@@ -1868,6 +2070,53 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                   )}
                 </div>
               )}
+
+              {tab === "fidelity" && (
+                <div>
+                  <Label>Select your Fidelity "Accounts History" CSV</Label>
+                  <input
+                    type="file"
+                    accept=".csv,text/csv,text/plain"
+                    onChange={handleFidelityFile}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: 12,
+                      background: T.card,
+                      border: `1px dashed ${T.border}`,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      color: T.textFaint,
+                      marginTop: 8,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    Imports only YOU BOUGHT / YOU SOLD rows. Dividends,
+                    contributions, interest, and redemptions are skipped. All
+                    transactions are assigned to USD and Asset Class "Stocks"
+                    (you can edit CDs/bonds afterward).
+                  </div>
+                  {fileError && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        color: T.red,
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                      }}
+                    >
+                      {fileError}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -1906,7 +2155,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     {errorCount} with errors
                   </div>
                 )}
-                {needsCurrencyCount > 0 && (
+                {needsAssetClassCount > 0 && (
                   <div
                     style={{
                       fontFamily: FONT_MONO,
@@ -1916,7 +2165,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                       textTransform: "uppercase",
                     }}
                   >
-                    {needsCurrencyCount} need currency
+                    {needsAssetClassCount} need class
                   </div>
                 )}
                 <div
@@ -1967,7 +2216,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 >
                   <thead>
                     <tr style={{ background: T.card }}>
-                      {["#", "date", "side", "ticker", "qty", "price", "cur", ""].map((h) => (
+                      {["#", "date", "side", "ticker", "qty", "price", "class", ""].map((h) => (
                         <th
                           key={h}
                           style={{
@@ -2026,36 +2275,40 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                           {r.ok ? fmtNum(r.tx.price, 2) : "—"}
                         </td>
                         <td style={{ padding: "6px 10px", color: T.textDim }}>
-                          {r.needsCurrency ? (
-                            <div style={{ display: "flex", gap: 4 }}>
-                              {["USD", "BRL"].map((c) => (
-                                <button
-                                  key={c}
-                                  onClick={() => pickCurrency(idx, c)}
-                                  style={{
-                                    background: "transparent",
-                                    border: `1px solid ${T.gold}`,
-                                    color: T.gold,
-                                    padding: "2px 6px",
-                                    fontFamily: FONT_MONO,
-                                    fontSize: 9,
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  {c}
-                                </button>
+                          {r.needsAssetClass ? (
+                            <select
+                              value=""
+                              onChange={(e) =>
+                                e.target.value && pickAssetClass(idx, e.target.value)
+                              }
+                              style={{
+                                background: T.cardElev,
+                                border: `1px solid ${T.gold}`,
+                                color: T.gold,
+                                padding: "2px 4px",
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                cursor: "pointer",
+                                maxWidth: 130,
+                              }}
+                            >
+                              <option value="">— pick —</option>
+                              {ASSET_CLASS_IDS.map((id) => (
+                                <option key={id} value={id}>
+                                  {id}
+                                </option>
                               ))}
-                            </div>
+                            </select>
                           ) : r.ok ? (
-                            r.tx.currency
+                            r.tx.assetClass || "—"
                           ) : (
                             "—"
                           )}
                         </td>
                         <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
-                          {!r.ok && !r.needsCurrency && r.errors.join("; ")}
-                          {r.needsCurrency && (
-                            <span style={{ color: T.gold }}>pick currency</span>
+                          {!r.ok && !r.needsAssetClass && r.errors.join("; ")}
+                          {r.needsAssetClass && (
+                            <span style={{ color: T.gold }}>pick class</span>
                           )}
                         </td>
                       </tr>
@@ -2197,7 +2450,18 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
     fetchTransactionsFromServer(auth)
       .then((data) => {
         if (cancelled) return;
-        setTransactions(Array.isArray(data.transactions) ? data.transactions : []);
+        const raw = Array.isArray(data.transactions) ? data.transactions : [];
+        // Backfill assetClass on legacy records via inferCurrency.
+        const migrated = raw.map((t) => {
+          if (t.assetClass) return t;
+          const inferred = inferCurrency(t.ticker);
+          let cls = null;
+          if (inferred === "BRL") cls = "BRA Stocks";
+          else if (inferred === "USD") cls = "Stocks";
+          else cls = t.currency === "BRL" ? "Unallocated BRL" : "Unallocated USD";
+          return { ...t, assetClass: cls };
+        });
+        setTransactions(migrated);
         setLoading(false);
       })
       .catch((err) => {
