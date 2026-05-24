@@ -2,7 +2,7 @@
 // Validates the perf-history algorithm without hitting external APIs.
 
 import { strict as assert } from 'node:assert';
-import { computePerformance } from '../api/perf-history.js';
+import { computePerformance, fetchStooqCandles } from '../api/perf-history.js';
 
 let passed = 0;
 let failed = 0;
@@ -199,21 +199,114 @@ test('missing US ticker candle: position with no price is skipped, but others st
   assert.equal(result.portfolio[1], 2.78);
 });
 
+console.log('\n— fetchStooqCandles (CSV parser) —');
+
+async function withMockedFetch(mockFn, body) {
+  const real = globalThis.fetch;
+  globalThis.fetch = mockFn;
+  try { return await body(); }
+  finally { globalThis.fetch = real; }
+}
+
+test('parses well-formed Stooq CSV', async () => {
+  const csv = [
+    'Date,Open,High,Low,Close,Volume',
+    '2024-01-02,180.00,182.50,179.50,181.20,10000000',
+    '2024-01-03,181.20,183.00,180.00,182.50,9500000',
+  ].join('\n');
+  const result = await withMockedFetch(
+    async () => ({ ok: true, status: 200, text: async () => csv }),
+    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
+  );
+  assert.deepEqual(result, { '2024-01-02': 181.20, '2024-01-03': 182.50 });
+});
+
+test('returns null for "No data" response', async () => {
+  const result = await withMockedFetch(
+    async () => ({ ok: true, status: 200, text: async () => 'No data' }),
+    () => fetchStooqCandles('FAKE', '2024-01-01', '2024-01-05')
+  );
+  assert.equal(result, null);
+});
+
+test('returns null for empty body', async () => {
+  const result = await withMockedFetch(
+    async () => ({ ok: true, status: 200, text: async () => '' }),
+    () => fetchStooqCandles('FAKE', '2024-01-01', '2024-01-05')
+  );
+  assert.equal(result, null);
+});
+
+test('returns null on non-OK response', async () => {
+  const result = await withMockedFetch(
+    async () => ({ ok: false, status: 503, text: async () => '' }),
+    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
+  );
+  assert.equal(result, null);
+});
+
+test('lowercases ticker and adds .us suffix in URL', async () => {
+  let capturedUrl = null;
+  await withMockedFetch(
+    async (url) => { capturedUrl = url; return { ok: true, status: 200, text: async () => 'No data' }; },
+    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
+  );
+  assert.match(capturedUrl, /s=aapl\.us/);
+  assert.match(capturedUrl, /d1=20240101/);
+  assert.match(capturedUrl, /d2=20240105/);
+});
+
+test('returns null when fetch throws (abort/network)', async () => {
+  const result = await withMockedFetch(
+    async () => { throw new Error('AbortError'); },
+    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
+  );
+  assert.equal(result, null);
+});
+
+test('passes an AbortSignal to fetch (timeout wired up)', async () => {
+  let receivedSignal = null;
+  await withMockedFetch(
+    async (_url, opts) => { receivedSignal = opts?.signal; return { ok: true, status: 200, text: async () => 'No data' }; },
+    () => fetchStooqCandles('AAPL', '2024-01-01', '2024-01-05')
+  );
+  assert.ok(receivedSignal, 'fetch must receive a signal');
+  assert.equal(typeof receivedSignal.aborted, 'boolean');
+});
+
 console.log(`\n— integration: handler with mocked fetch + redis + auth —`);
 
-// Stub the module-level imports by replacing fetch + injecting fake req/res.
-// authenticate() inside the handler reads request headers and calls Redis;
-// we sidestep by setting a fake env + intercepting global fetch for the
-// Google JWT verification path, but it's simpler to just test by setting
-// APP_PASSWORD and using the password auth path.
 process.env.APP_PASSWORD = 'test-pwd';
 process.env.REDIS_URL = process.env.REDIS_URL || 'redis://invalid-localhost:1';
 
 const realFetch = globalThis.fetch;
 const fetchCalls = [];
-globalThis.fetch = async (url, opts) => {
+
+function stooqCsv(basePrice) {
+  const lines = ['Date,Open,High,Low,Close,Volume'];
+  const start = new Date('2024-01-02T00:00:00Z');
+  for (let i = 0; i < 10; i++) {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + i);
+    const close = (basePrice + i).toFixed(2);
+    lines.push(`${d.toISOString().slice(0, 10)},${close},${close},${close},${close},10000`);
+  }
+  return lines.join('\n');
+}
+
+globalThis.fetch = async (url) => {
   fetchCalls.push(url);
-  // Yahoo Finance: return synthetic candles
+  // Stooq CSV: primary US source
+  if (/stooq\.com\/q\/d\/l/.test(url)) {
+    const m = url.match(/s=([^&]+)/);
+    const sym = (m ? m[1] : '').toLowerCase();
+    const basePrice = sym.startsWith('spy') ? 450 : 100;
+    return {
+      ok: true, status: 200,
+      text: async () => stooqCsv(basePrice),
+    };
+  }
+  // Yahoo fallback: synthetic candles
   if (/query1\.finance\.yahoo\.com.*\/chart\//.test(url)) {
     const tsBase = Math.floor(new Date('2024-01-01T00:00:00Z').getTime() / 1000);
     const tickers = url.match(/chart\/([^?]+)/);
@@ -223,7 +316,7 @@ globalThis.fetch = async (url, opts) => {
     const closes = [];
     for (let i = 0; i < 10; i++) {
       timestamp.push(tsBase + i * 86400);
-      closes.push(basePrice + i); // +1/day
+      closes.push(basePrice + i);
     }
     return {
       ok: true,

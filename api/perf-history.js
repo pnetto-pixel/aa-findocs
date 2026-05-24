@@ -2,7 +2,7 @@
 // POST { transactions }: { dates, portfolio, spy, meta }
 // Calculates daily portfolio vs SPY performance, normalized to % return.
 // Includes only: Stocks, BRA Stocks, Alternative, Real Estate.
-// US tickers + SPY: Yahoo Finance chart API (free).
+// US tickers + SPY: Stooq.com CSV (primary, bulk-friendly) → Yahoo fallback.
 // B3 tickers: brapi.dev daily candles.
 // USD/BRL historical FX: Frankfurter date-range series (free tier).
 // Result cached in Redis 24h per user.
@@ -21,48 +21,80 @@ const YAHOO_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+// Hard per-fetch ceiling. Vercel default function timeout is 30s; we must
+// finish 30+ network calls + math + Redis write in that budget.
+const FETCH_TIMEOUT_MS = 6000;
+
 function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
 }
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v2: switched US source from Finnhub (premium-only candles) to Yahoo.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v2');
+  // v3: switched US source to Stooq primary + Yahoo fallback, added timeouts.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v3');
 }
 
 function toDateStr(unixSec) {
   return new Date(unixSec * 1000).toISOString().slice(0, 10);
 }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-async function fetchWithRetry(url, options = {}, maxAttempts = 3) {
-  let lastErr;
-  for (let i = 0; i < maxAttempts; i++) {
-    if (i > 0) await sleep(500 * Math.pow(2, i - 1));
-    try {
-      const r = await fetch(url, options);
-      if (r.status === 429) { lastErr = new Error('429'); continue; }
-      return r;
-    } catch (e) { lastErr = e; }
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
-  if (lastErr) throw lastErr;
-  return null;
 }
 
-// Yahoo Finance chart API — free, no key. Same pattern already used in
-// api/price.js fetchYahooBR (proven). Requires browser User-Agent to bypass
-// anti-bot. Returns { 'YYYY-MM-DD': close } or null.
+// Stooq.com CSV — designed for bulk historical downloads, no anti-bot,
+// no auth. Format: Date,Open,High,Low,Close,Volume.
+// Symbol convention: lowercase ticker + ".us" (e.g. "aapl.us", "spy.us").
+export async function fetchStooqCandles(ticker, fromDate, toDate) {
+  const symbol = ticker.toLowerCase() + '.us';
+  const d1 = fromDate.replace(/-/g, '');
+  const d2 = toDate.replace(/-/g, '');
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&d1=${d1}&d2=${d2}&i=d`;
+  try {
+    const r = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': YAHOO_UA, Accept: 'text/csv,text/plain,*/*' },
+    });
+    if (!r.ok) return null;
+    const text = await r.text();
+    if (!text || text.length < 20) return null;
+    // Stooq returns "No data" or empty body when ticker is unknown.
+    if (/^no data/i.test(text.trim())) return null;
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) return null;
+    const header = lines[0].split(',').map((s) => s.trim().toLowerCase());
+    const dateIdx = header.indexOf('date');
+    const closeIdx = header.indexOf('close');
+    if (dateIdx < 0 || closeIdx < 0) return null;
+    const map = {};
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',');
+      const date = cols[dateIdx]?.trim();
+      const close = parseFloat(cols[closeIdx]);
+      if (date && Number.isFinite(close)) map[date] = close;
+    }
+    return Object.keys(map).length > 0 ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+// Yahoo Finance chart API — fallback for tickers Stooq doesn't cover.
 async function fetchYahooCandles(ticker, fromSec, toSec) {
   const url =
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
     `?period1=${fromSec}&period2=${toSec}&interval=1d`;
   try {
-    const r = await fetchWithRetry(url, {
+    const r = await fetchWithTimeout(url, {
       headers: { 'User-Agent': YAHOO_UA, Accept: 'application/json' },
     });
-    if (!r?.ok) return null;
+    if (!r.ok) return null;
     const d = await r.json();
     const result = d?.chart?.result?.[0];
     if (!result?.timestamp?.length) return null;
@@ -78,13 +110,23 @@ async function fetchYahooCandles(ticker, fromSec, toSec) {
   }
 }
 
+// Try Stooq first (bulk-friendly), fall back to Yahoo. Returns
+// { map, source } where source is 'stooq' | 'yahoo' | null.
+async function fetchUSCandles(ticker, fromSec, toSec, fromDate, toDate) {
+  const stooq = await fetchStooqCandles(ticker, fromDate, toDate);
+  if (stooq) return { map: stooq, source: 'stooq' };
+  const yahoo = await fetchYahooCandles(ticker, fromSec, toSec);
+  if (yahoo) return { map: yahoo, source: 'yahoo' };
+  return { map: null, source: null };
+}
+
 async function fetchBrapiCandles(ticker, token) {
   const url =
     `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}` +
     `?range=5y&interval=1d&token=${encodeURIComponent(token)}`;
   try {
-    const r = await fetchWithRetry(url);
-    if (!r?.ok) return null;
+    const r = await fetchWithTimeout(url);
+    if (!r.ok) return null;
     const d = await r.json();
     const result = Array.isArray(d?.results) ? d.results[0] : null;
     if (!Array.isArray(result?.historicalDataPrice) || result.historicalDataPrice.length === 0) {
@@ -108,8 +150,8 @@ async function fetchBrapiCandles(ticker, token) {
 async function fetchFxHistory(fromDate, toDate) {
   try {
     const url = `https://api.frankfurter.dev/v1/${fromDate}..${toDate}?from=USD&to=BRL`;
-    const r = await fetchWithRetry(url);
-    if (!r?.ok) return {};
+    const r = await fetchWithTimeout(url);
+    if (!r.ok) return {};
     const d = await r.json();
     const map = {};
     for (const [date, rates] of Object.entries(d.rates || {})) {
@@ -323,17 +365,28 @@ export default async function handler(req, res) {
   const brTickers = uniqueTickers.filter(isBrazilianTicker);
   const usTickers = uniqueTickers.filter((t) => !isBrazilianTicker(t));
 
-  // Fetch in parallel groups; concurrency caps Yahoo Finance pressure.
-  const [spyCandles, usResults, brResults, fxMap] = await Promise.all([
-    fetchYahooCandles('SPY', fromSec, toSec),
-    mapConcurrent(usTickers, (t) => fetchYahooCandles(t, fromSec, toSec), 4),
+  // Fetch in parallel groups. Stooq (CSV) handles bulk well; Yahoo is fallback.
+  const t0 = Date.now();
+  const [spyResult, usResultsArr, brResults, fxMap] = await Promise.all([
+    fetchUSCandles('SPY', fromSec, toSec, firstDate, todayDate),
+    mapConcurrent(usTickers, (t) => fetchUSCandles(t, fromSec, toSec, firstDate, todayDate), 8),
     mapConcurrent(brTickers, (t) => brapiKey ? fetchBrapiCandles(t, brapiKey) : Promise.resolve(null), 4),
     brTickers.length > 0 ? fetchFxHistory(firstDate, todayDate) : Promise.resolve({}),
   ]);
+  const fetchMs = Date.now() - t0;
 
   const candleMap = {};
-  usTickers.forEach((t, i) => { if (usResults[i]) candleMap[t] = usResults[i]; });
+  const sourceCount = { stooq: 0, yahoo: 0 };
+  usTickers.forEach((t, i) => {
+    const r = usResultsArr[i];
+    if (r?.map) {
+      candleMap[t] = r.map;
+      sourceCount[r.source] = (sourceCount[r.source] || 0) + 1;
+    }
+  });
   brTickers.forEach((t, i) => { if (brResults[i]) candleMap[t] = brResults[i]; });
+
+  const spyCandles = spyResult?.map || null;
 
   const result = computePerformance({
     transactions: eligible,
@@ -344,18 +397,25 @@ export default async function handler(req, res) {
     todayDate,
   });
 
-  // Enrich meta with fetch-level diagnostics so failures are visible client-side.
+  const usFetchedCount = Object.keys(candleMap).filter((t) => !isBrazilianTicker(t)).length;
+  const usMissing = usTickers.filter((t) => !candleMap[t]);
+  const brFetchedCount = Object.keys(candleMap).filter((t) => isBrazilianTicker(t)).length;
+
   result.meta = {
     ...(result.meta || {}),
     txTotal: transactions.length,
     txEligible: eligible.length,
     uniqueTickers: uniqueTickers.length,
-    usTickersFetched: Object.keys(candleMap).filter((t) => !isBrazilianTicker(t)).length,
-    usTickersMissing: usTickers.length - Object.keys(candleMap).filter((t) => !isBrazilianTicker(t)).length,
-    brTickersFetched: Object.keys(candleMap).filter((t) => isBrazilianTicker(t)).length,
-    brTickersMissing: brTickers.length - Object.keys(candleMap).filter((t) => isBrazilianTicker(t)).length,
+    usTickersFetched: usFetchedCount,
+    usTickersMissing: usMissing.length,
+    usMissingSample: usMissing.slice(0, 8),
+    brTickersFetched: brFetchedCount,
+    brTickersMissing: brTickers.length - brFetchedCount,
     spyDays: spyCandles ? Object.keys(spyCandles).length : 0,
+    spySource: spyResult?.source || null,
+    sources: sourceCount,
     fxDays: Object.keys(fxMap).length,
+    fetchMs,
   };
 
   // Only cache non-empty successful results.
