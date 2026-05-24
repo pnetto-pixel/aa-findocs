@@ -33,8 +33,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v6: brapi as primary source for all tickers (US + BR bulk), 5s timeout.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v6');
+  // v7: fix brapi bulk URL — encode each ticker individually, join with literal comma.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v7');
 }
 
 function toDateStr(unixSec) {
@@ -69,9 +69,12 @@ function chunkArray(arr, size) {
 // Works for both US tickers (USD prices) and B3 tickers (BRL prices).
 async function fetchBrapiCandlesBulk(tickers, token, range) {
   if (!tickers.length || !token) return {};
-  const symbols = tickers.join(',');
+  // Encode each symbol individually but keep commas as literals —
+  // encodeURIComponent on the whole string would turn commas into %2C
+  // which brapi treats as part of the symbol name (→ 400).
+  const symbols = tickers.map((t) => encodeURIComponent(t)).join(',');
   const url =
-    `https://brapi.dev/api/quote/${encodeURIComponent(symbols)}` +
+    `https://brapi.dev/api/quote/${symbols}` +
     `?range=${range}&interval=1d&token=${encodeURIComponent(token)}`;
   try {
     const r = await fetchWithTimeout(url);
