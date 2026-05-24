@@ -1,7 +1,7 @@
 // src/Performance.jsx — Performance (TEST ONLY) view
 // Lazy-loaded. Shows portfolio vs SPY total return chart since first transaction.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   LineChart,
   Line,
@@ -166,6 +166,70 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
+function DiagnosticsPanel({ meta }) {
+  const [copied, setCopied] = useState(false);
+  const text = JSON.stringify(meta, null, 2);
+  const copy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [text]);
+
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary
+        style={{
+          cursor: "pointer",
+          color: T.textFaint,
+          fontSize: 11,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
+        Diagnostics
+      </summary>
+      <div style={{ position: "relative", marginTop: 10 }}>
+        <button
+          onClick={copy}
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            background: copied ? T.green + "22" : T.cardElev,
+            color: copied ? T.green : T.textFaint,
+            border: `1px solid ${copied ? T.green + "44" : T.border}`,
+            borderRadius: 3,
+            padding: "4px 8px",
+            cursor: "pointer",
+            transition: "color 0.2s, background 0.2s, border-color 0.2s",
+          }}
+        >
+          {copied ? "Copied!" : "Copy"}
+        </button>
+        <pre
+          style={{
+            margin: 0,
+            fontSize: 11,
+            color: T.textFaint,
+            background: T.bg,
+            padding: "12px 12px 12px 12px",
+            borderRadius: 4,
+            overflow: "auto",
+            maxHeight: 240,
+          }}
+        >
+          {text}
+        </pre>
+      </div>
+    </details>
+  );
+}
+
 export default function PerformanceView({ auth, onAuthFail }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
@@ -321,33 +385,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
               : "No performance data available."}
           </div>
           {meta && (
-            <details style={{ marginTop: 8 }}>
-              <summary
-                style={{
-                  cursor: "pointer",
-                  color: T.textFaint,
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Diagnostics
-              </summary>
-              <pre
-                style={{
-                  marginTop: 10,
-                  fontSize: 11,
-                  color: T.textFaint,
-                  background: T.bg,
-                  padding: 12,
-                  borderRadius: 4,
-                  overflow: "auto",
-                  maxHeight: 240,
-                }}
-              >
-                {JSON.stringify(meta, null, 2)}
-              </pre>
-            </details>
+            <DiagnosticsPanel meta={meta} />
           )}
         </div>
       )}
