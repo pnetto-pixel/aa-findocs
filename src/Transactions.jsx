@@ -520,15 +520,25 @@ function inferCurrency(ticker) {
 
 // --- Filter dropdown popover ----------------------------------------------
 
-function FilterPopover({
+// HeaderPopover: unified sort + filter popover anchored to a header cell.
+// - Always shows sort buttons (asc/desc).
+// - Filter section appears only when `filterable` is true.
+// - Date column gets From/To range instead of value checkboxes.
+function HeaderPopover({
   anchor,
+  onClose,
+  // sort
+  sortDir, // "asc" | "desc"
+  onSort,
+  // filter
+  filterable,
   options,
   selected,
   onChange,
-  onClose,
+  optionLabel,
+  // date range
   dateRange,
   setDateRange,
-  optionLabel,
 }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -543,7 +553,6 @@ function FilterPopover({
     };
   }, [onClose]);
 
-  // Position popover below anchor.
   const rect = anchor?.getBoundingClientRect();
   const POPOVER_W = 240;
   const style = rect
@@ -556,6 +565,38 @@ function FilterPopover({
       }
     : { display: "none" };
 
+  const sectionLabel = {
+    fontFamily: FONT_MONO,
+    fontSize: 9,
+    letterSpacing: "0.2em",
+    color: T.textFaint,
+    textTransform: "uppercase",
+    marginBottom: 8,
+  };
+
+  function SortBtn({ dir, label }) {
+    const active = sortDir === dir;
+    return (
+      <button
+        onClick={() => onSort(dir)}
+        style={{
+          flex: 1,
+          background: active ? "rgba(201, 169, 97, 0.12)" : "transparent",
+          border: `1px solid ${active ? T.gold : T.border}`,
+          color: active ? T.gold : T.textDim,
+          padding: "8px 6px",
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    );
+  }
+
   return (
     <div
       ref={ref}
@@ -565,12 +606,28 @@ function FilterPopover({
         border: `1px solid ${T.border}`,
         boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
         padding: 12,
-        maxHeight: 320,
+        maxHeight: 380,
         overflowY: "auto",
       }}
     >
-      {dateRange ? (
-        <div>
+      {/* Sort section */}
+      <div style={sectionLabel}>Sort</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <SortBtn dir="asc" label="↑ Asc" />
+        <SortBtn dir="desc" label="↓ Desc" />
+      </div>
+
+      {/* Filter section */}
+      {filterable && dateRange && (
+        <>
+          <div
+            style={{
+              height: 1,
+              background: T.border,
+              marginBottom: 12,
+            }}
+          />
+          <div style={sectionLabel}>Date range</div>
           <Label>From</Label>
           <Input
             type="date"
@@ -600,11 +657,21 @@ function FilterPopover({
               width: "100%",
             }}
           >
-            Clear
+            Clear range
           </button>
-        </div>
-      ) : (
+        </>
+      )}
+
+      {filterable && !dateRange && (
         <>
+          <div
+            style={{
+              height: 1,
+              background: T.border,
+              marginBottom: 12,
+            }}
+          />
+          <div style={sectionLabel}>Filter</div>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
             <button
               onClick={() => onChange(new Set(options))}
@@ -678,7 +745,13 @@ function FilterPopover({
                   }}
                   style={{ accentColor: T.gold }}
                 />
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   {optionLabel ? optionLabel(opt) : opt}
                 </span>
               </label>
@@ -768,11 +841,15 @@ function TransactionTable({
     return list;
   }, [transactions, filters, sort]);
 
-  function toggleSort(col) {
-    setSort((cur) => {
-      if (cur.col === col) return { col, dir: cur.dir === "asc" ? "desc" : "asc" };
-      return { col, dir: col === "date" ? "desc" : "asc" };
-    });
+  function setSortFor(col, dir) {
+    setSort({ col, dir });
+  }
+
+  // Returns "asc" | "desc" for the popover to show the currently active dir
+  // when this column is the active sort, otherwise a sensible default.
+  function sortDirFor(col) {
+    if (sort.col === col) return sort.dir;
+    return col === "date" ? "desc" : "asc";
   }
 
   function toggleSelect(id) {
@@ -876,6 +953,7 @@ function TransactionTable({
   function HeaderCell({ col, label, align = "left", width }) {
     const filtered = isFiltered(col);
     const sorted = sort.col === col;
+    const active = sorted || filtered;
     return (
       <th
         style={{
@@ -889,60 +967,43 @@ function TransactionTable({
           zIndex: 2,
         }}
       >
-        <div style={{ display: "flex", alignItems: "stretch" }}>
-          <button
-            onClick={() => toggleSort(col)}
-            title="Sort"
-            style={{
-              flex: 1,
-              background: "transparent",
-              border: "none",
-              color: sorted ? T.gold : T.textDim,
-              padding: "10px 8px",
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              textAlign: align,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              justifyContent: align === "right" ? "flex-end" : "flex-start",
-            }}
-          >
-            {label}
-            {sorted && (
-              <span style={{ fontSize: 9 }}>{sort.dir === "asc" ? "↑" : "↓"}</span>
-            )}
-          </button>
-          {col !== "fee" && col !== "notes" && col !== "qty" && col !== "price" && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (openCol === col) {
-                  setOpenCol(null);
-                  setAnchor(null);
-                } else {
-                  setOpenCol(col);
-                  setAnchor(e.currentTarget);
-                }
-              }}
-              title="Filter"
-              style={{
-                background: "transparent",
-                border: "none",
-                color: filtered ? T.gold : T.textFaint,
-                padding: "10px 6px",
-                cursor: "pointer",
-                fontSize: 12,
-                minWidth: 22,
-              }}
-            >
-              ▾
-            </button>
+        <button
+          onClick={(e) => {
+            if (openCol === col) {
+              setOpenCol(null);
+              setAnchor(null);
+            } else {
+              setOpenCol(col);
+              setAnchor(e.currentTarget);
+            }
+          }}
+          title={`${label} — sort & filter`}
+          style={{
+            width: "100%",
+            background: "transparent",
+            border: "none",
+            color: active ? T.gold : T.textDim,
+            padding: "10px 6px",
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            textAlign: align,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            justifyContent: align === "right" ? "flex-end" : "flex-start",
+          }}
+        >
+          {label}
+          {sorted && (
+            <span style={{ fontSize: 9 }}>{sort.dir === "asc" ? "↑" : "↓"}</span>
           )}
-        </div>
+          {filtered && !sorted && (
+            <span style={{ fontSize: 9, color: T.gold }}>•</span>
+          )}
+        </button>
       </th>
     );
   }
@@ -1556,36 +1617,47 @@ function TransactionTable({
         </tbody>
       </table>
 
-      {openCol && openCol !== "date" && (
-        <FilterPopover
-          anchor={anchor}
-          options={allValues[openCol] || []}
-          selected={filters[openCol]}
-          onChange={(next) => setColFilter(openCol, next)}
-          optionLabel={
-            openCol === "side"
-              ? (v) => (v === "buy" ? "B (Buy)" : v === "sell" ? "S (Sell)" : v)
-              : undefined
-          }
-          onClose={() => {
-            setOpenCol(null);
-            setAnchor(null);
-          }}
-        />
-      )}
-      {openCol === "date" && (
-        <FilterPopover
-          anchor={anchor}
-          dateRange={{ from: filters.dateFrom, to: filters.dateTo }}
-          setDateRange={(r) =>
-            setFilters((cur) => ({ ...cur, dateFrom: r.from, dateTo: r.to }))
-          }
-          onClose={() => {
-            setOpenCol(null);
-            setAnchor(null);
-          }}
-        />
-      )}
+      {openCol && (() => {
+        const filterableCols = ["date", "side", "ticker", "assetClass"];
+        const isFilterable = filterableCols.includes(openCol);
+        const isDateCol = openCol === "date";
+        const close = () => {
+          setOpenCol(null);
+          setAnchor(null);
+        };
+        return (
+          <HeaderPopover
+            anchor={anchor}
+            onClose={close}
+            sortDir={sortDirFor(openCol)}
+            onSort={(dir) => setSortFor(openCol, dir)}
+            filterable={isFilterable}
+            options={isFilterable && !isDateCol ? allValues[openCol] || [] : []}
+            selected={isFilterable && !isDateCol ? filters[openCol] : new Set()}
+            onChange={(next) => setColFilter(openCol, next)}
+            optionLabel={
+              openCol === "side"
+                ? (v) => (v === "buy" ? "B (Buy)" : v === "sell" ? "S (Sell)" : v)
+                : undefined
+            }
+            dateRange={
+              isDateCol
+                ? { from: filters.dateFrom, to: filters.dateTo }
+                : null
+            }
+            setDateRange={
+              isDateCol
+                ? (r) =>
+                    setFilters((cur) => ({
+                      ...cur,
+                      dateFrom: r.from,
+                      dateTo: r.to,
+                    }))
+                : undefined
+            }
+          />
+        );
+      })()}
     </div>
     </div>
   );
