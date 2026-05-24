@@ -528,6 +528,7 @@ function FilterPopover({
   onClose,
   dateRange,
   setDateRange,
+  optionLabel,
 }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -677,7 +678,7 @@ function FilterPopover({
                   style={{ accentColor: T.gold }}
                 />
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {opt}
+                  {optionLabel ? optionLabel(opt) : opt}
                 </span>
               </label>
             );
@@ -690,9 +691,23 @@ function FilterPopover({
 
 // --- TransactionTable ------------------------------------------------------
 
-function TransactionTable({ transactions, onEdit, onDelete, busy }) {
+function TransactionTable({
+  transactions,
+  onEdit,
+  onDelete,
+  onUpdate,
+  onBulkDelete,
+  onBulkAssetClass,
+  busy,
+}) {
   const [openCol, setOpenCol] = useState(null); // column key for popover
   const [anchor, setAnchor] = useState(null);
+  const [selected, setSelected] = useState(() => new Set()); // tx ids
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null); // edit buffer
+  const [bulkClassMenu, setBulkClassMenu] = useState(false);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+
   // Each filter: Set of allowed values; if empty, treat as "all" (no filter).
   // Defaults are computed lazily from the data.
   const allValues = useMemo(() => {
@@ -757,6 +772,104 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
       if (cur.col === col) return { col, dir: cur.dir === "asc" ? "desc" : "asc" };
       return { col, dir: col === "date" ? "desc" : "asc" };
     });
+  }
+
+  function toggleSelect(id) {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  function toggleSelectAllVisible() {
+    setSelected((cur) => {
+      const visibleIds = visible.map((t) => t.id);
+      const allSelected = visibleIds.every((id) => cur.has(id));
+      const next = new Set(cur);
+      if (allSelected) {
+        for (const id of visibleIds) next.delete(id);
+      } else {
+        for (const id of visibleIds) next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function startEdit(tx) {
+    setEditingId(tx.id);
+    setDraft({
+      date: tx.date,
+      side: tx.side,
+      assetClass: tx.assetClass || "",
+      ticker: tx.ticker,
+      qty: String(tx.qty),
+      price: String(tx.price),
+      fee: tx.fee ? String(tx.fee) : "",
+      notes: tx.notes || "",
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setDraft(null);
+  }
+
+  function commitEdit() {
+    if (!draft || !editingId) return;
+    const original = transactions.find((t) => t.id === editingId);
+    if (!original) {
+      cancelEdit();
+      return;
+    }
+    const qn = parseFloat(draft.qty);
+    const pn = parseFloat(draft.price);
+    const feeN = draft.fee ? parseFloat(draft.fee) : 0;
+    if (!draft.date) return;
+    if (!isFinite(qn) || qn <= 0) return;
+    if (!isFinite(pn) || pn < 0) return;
+    if (draft.fee && (!isFinite(feeN) || feeN < 0)) return;
+    if (!draft.assetClass) return;
+    const tkr = draft.ticker.trim().toUpperCase();
+    if (!tkr) return;
+    const cur = currencyForAssetClass(draft.assetClass) || "USD";
+    const updated = {
+      ...original,
+      date: draft.date,
+      side: draft.side,
+      assetClass: draft.assetClass,
+      ticker: tkr,
+      qty: qn,
+      price: pn,
+      currency: cur,
+      fee: feeN,
+      notes: draft.notes.trim(),
+    };
+    if (typeof onUpdate === "function") onUpdate(updated);
+    cancelEdit();
+  }
+
+  async function handleBulkDelete() {
+    if (selected.size === 0) return;
+    if (typeof onBulkDelete === "function") {
+      await onBulkDelete(Array.from(selected));
+    }
+    clearSelection();
+    setConfirmBulkDelete(false);
+  }
+
+  async function handleBulkAssetClass(cls) {
+    if (selected.size === 0) return;
+    if (typeof onBulkAssetClass === "function") {
+      await onBulkAssetClass(Array.from(selected), cls);
+    }
+    setBulkClassMenu(false);
+    clearSelection();
   }
 
   function HeaderCell({ col, label, align = "left", width }) {
@@ -837,6 +950,196 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
   }
 
   return (
+    <div>
+      {/* Bulk toolbar */}
+      {selected.size > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: T.cardElev,
+            border: `1px solid ${T.gold}`,
+            padding: "10px 12px",
+            marginBottom: 8,
+            fontFamily: FONT_MONO,
+            fontSize: 11,
+            position: "relative",
+          }}
+        >
+          <span style={{ color: T.gold, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+            {selected.size} selected
+          </span>
+          <div style={{ flex: 1 }} />
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setBulkClassMenu((v) => !v)}
+              disabled={busy}
+              style={{
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.text,
+                padding: "6px 10px",
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+              }}
+            >
+              Change class ▾
+            </button>
+            {bulkClassMenu && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  right: 0,
+                  marginTop: 4,
+                  background: T.cardElev,
+                  border: `1px solid ${T.border}`,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                  zIndex: 30,
+                  minWidth: 180,
+                }}
+              >
+                {ASSET_CLASS_IDS.map((id) => (
+                  <button
+                    key={id}
+                    onClick={() => handleBulkAssetClass(id)}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      color: T.text,
+                      padding: "8px 12px",
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {id}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setConfirmBulkDelete(true)}
+            disabled={busy}
+            style={{
+              background: "transparent",
+              border: `1px solid ${T.red}`,
+              color: T.red,
+              padding: "6px 10px",
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            Delete
+          </button>
+          <button
+            onClick={clearSelection}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: T.textDim,
+              padding: "4px 6px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+            }}
+            title="Clear selection"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* Confirm bulk delete modal */}
+      {confirmBulkDelete && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => setConfirmBulkDelete(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: T.cardElev,
+              border: `1px solid ${T.red}`,
+              padding: 20,
+              maxWidth: 360,
+              width: "100%",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.2em",
+                color: T.red,
+                textTransform: "uppercase",
+                marginBottom: 10,
+              }}
+            >
+              Confirm delete
+            </div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.text, marginBottom: 16, lineHeight: 1.5 }}>
+              Delete {selected.size} transaction{selected.size === 1 ? "" : "s"}? This cannot be undone.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleBulkDelete}
+                disabled={busy}
+                style={{
+                  background: T.red,
+                  border: "none",
+                  color: "#0b0d10",
+                  padding: "10px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => setConfirmBulkDelete(false)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  color: T.textDim,
+                  padding: "10px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     <div style={{ position: "relative", border: `1px solid ${T.borderSoft}` }}>
       <table
         style={{
@@ -848,19 +1151,42 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
         }}
       >
         <colgroup>
-          <col style={{ width: "82px" }} />
-          <col style={{ width: "48px" }} />
+          <col style={{ width: "28px" }} />
+          <col style={{ width: "78px" }} />
+          <col style={{ width: "40px" }} />
           <col style={{ width: "70px" }} />
           <col style={{ width: "54px" }} />
-          <col style={{ width: "44px" }} />
-          <col style={{ width: "74px" }} />
+          <col style={{ width: "40px" }} />
+          <col style={{ width: "70px" }} />
           <col style={{ width: "auto" }} />
-          <col style={{ width: "56px" }} />
+          <col style={{ width: "52px" }} />
         </colgroup>
         <thead>
           <tr>
+            <th
+              style={{
+                padding: "10px 4px",
+                borderBottom: `1px solid ${T.border}`,
+                background: T.card,
+                position: "sticky",
+                top: 0,
+                zIndex: 2,
+                textAlign: "center",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={
+                  visible.length > 0 &&
+                  visible.every((t) => selected.has(t.id))
+                }
+                onChange={toggleSelectAllVisible}
+                style={{ accentColor: T.gold, cursor: "pointer" }}
+                title="Select all visible"
+              />
+            </th>
             <HeaderCell col="date" label="Date" />
-            <HeaderCell col="side" label="Side" />
+            <HeaderCell col="side" label="B/S" />
             <HeaderCell col="assetClass" label="Class" />
             <HeaderCell col="ticker" label="Tkr" />
             <HeaderCell col="qty" label="Qty" align="right" />
@@ -882,7 +1208,7 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={8}
+                colSpan={9}
                 style={{
                   padding: 32,
                   textAlign: "center",
@@ -900,19 +1226,183 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
             visible.map((tx) => {
               const isBuy = tx.side === "buy";
               const cur = tx.currency || currencyForAssetClass(tx.assetClass) || "USD";
-              const feeStr = tx.fee
-                ? fmtPrice(tx.fee, cur)
-                : "—";
+              const feeStr = tx.fee ? fmtPrice(tx.fee, cur) : "—";
+              const isEditing = editingId === tx.id;
+              const isSelected = selected.has(tx.id);
+
+              if (isEditing && draft) {
+                // Inline edit row
+                const cellStyle = {
+                  padding: "4px 2px",
+                  verticalAlign: "middle",
+                };
+                const inputStyle = {
+                  width: "100%",
+                  boxSizing: "border-box",
+                  background: T.cardElev,
+                  border: `1px solid ${T.gold}`,
+                  color: T.text,
+                  padding: "4px 4px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  outline: "none",
+                };
+                const onKey = (e) => {
+                  if (e.key === "Enter") commitEdit();
+                  else if (e.key === "Escape") cancelEdit();
+                };
+                return (
+                  <tr
+                    key={tx.id}
+                    style={{
+                      borderBottom: `1px solid ${T.gold}`,
+                      background: "rgba(201, 169, 97, 0.04)",
+                    }}
+                  >
+                    <td style={{ ...cellStyle, textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(tx.id)}
+                        style={{ accentColor: T.gold, cursor: "pointer" }}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="date"
+                        value={draft.date}
+                        onChange={(e) => setDraft({ ...draft, date: e.target.value })}
+                        onKeyDown={onKey}
+                        style={inputStyle}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <select
+                        value={draft.side}
+                        onChange={(e) => setDraft({ ...draft, side: e.target.value })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, cursor: "pointer" }}
+                      >
+                        <option value="buy">B</option>
+                        <option value="sell">S</option>
+                      </select>
+                    </td>
+                    <td style={cellStyle}>
+                      <select
+                        value={draft.assetClass}
+                        onChange={(e) => setDraft({ ...draft, assetClass: e.target.value })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, cursor: "pointer" }}
+                      >
+                        {ASSET_CLASS_IDS.map((id) => (
+                          <option key={id} value={id}>
+                            {id}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="text"
+                        value={draft.ticker}
+                        onChange={(e) => setDraft({ ...draft, ticker: e.target.value.toUpperCase() })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, textTransform: "uppercase" }}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="number"
+                        step="any"
+                        inputMode="decimal"
+                        value={draft.qty}
+                        onChange={(e) => setDraft({ ...draft, qty: e.target.value })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, textAlign: "right" }}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="number"
+                        step="any"
+                        inputMode="decimal"
+                        value={draft.price}
+                        onChange={(e) => setDraft({ ...draft, price: e.target.value })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, textAlign: "right" }}
+                      />
+                    </td>
+                    <td style={cellStyle}>
+                      <input
+                        type="text"
+                        value={draft.notes}
+                        onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+                        onKeyDown={onKey}
+                        style={inputStyle}
+                        placeholder="notes"
+                      />
+                    </td>
+                    <td style={{ padding: "4px 2px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button
+                        onClick={commitEdit}
+                        disabled={busy}
+                        title="Save (Enter)"
+                        style={{
+                          background: "transparent",
+                          border: `1px solid ${T.green}`,
+                          color: T.green,
+                          padding: "3px 4px",
+                          marginRight: 2,
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                        }}
+                      >
+                        <Check size={10} />
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        title="Cancel (Esc)"
+                        style={{
+                          background: "transparent",
+                          border: `1px solid ${T.border}`,
+                          color: T.textDim,
+                          padding: "3px 4px",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                        }}
+                      >
+                        <X size={10} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              }
+
               return (
                 <tr
                   key={tx.id}
-                  style={{ borderBottom: `1px solid ${T.borderSoft}` }}
+                  style={{
+                    borderBottom: `1px solid ${T.borderSoft}`,
+                    background: isSelected ? "rgba(201, 169, 97, 0.06)" : "transparent",
+                  }}
+                  onDoubleClick={() => startEdit(tx)}
                   title={
                     tx.notes
                       ? `${tx.assetClass || "—"} · fee ${feeStr}\n${tx.notes}`
                       : `${tx.assetClass || "—"} · fee ${feeStr}`
                   }
                 >
+                  <td style={{ padding: "8px 4px", textAlign: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(tx.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ accentColor: T.gold, cursor: "pointer" }}
+                    />
+                  </td>
                   <td
                     style={{
                       padding: "8px 4px",
@@ -999,9 +1489,9 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
                   </td>
                   <td style={{ padding: "6px 2px", textAlign: "right", whiteSpace: "nowrap" }}>
                     <button
-                      onClick={() => onEdit(tx)}
+                      onClick={() => startEdit(tx)}
                       disabled={busy}
-                      title="Edit"
+                      title="Edit inline"
                       style={{
                         background: "transparent",
                         border: `1px solid ${T.border}`,
@@ -1045,6 +1535,11 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
           options={allValues[openCol] || []}
           selected={filters[openCol]}
           onChange={(next) => setColFilter(openCol, next)}
+          optionLabel={
+            openCol === "side"
+              ? (v) => (v === "buy" ? "B (Buy)" : v === "sell" ? "S (Sell)" : v)
+              : undefined
+          }
           onClose={() => {
             setOpenCol(null);
             setAnchor(null);
@@ -1064,6 +1559,7 @@ function TransactionTable({ transactions, onEdit, onDelete, busy }) {
           }}
         />
       )}
+    </div>
     </div>
   );
 }
@@ -1588,7 +2084,7 @@ function parseFidelityCSV(text) {
 }
 
 function ImportModal({ open, onClose, onConfirm, existingCount }) {
-  const [tab, setTab] = useState("paste"); // paste | upload | fidelity
+  const [tab, setTab] = useState("upload"); // upload | fidelity
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
@@ -1605,7 +2101,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setStructuralPrompt(false);
       setMode("append");
       setFileError("");
-      setTab("paste");
+      setTab("upload");
     }
   }, [open]);
 
@@ -1938,7 +2434,6 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 }}
               >
                 {[
-                  { id: "paste", label: "Paste" },
                   { id: "upload", label: "Upload CSV" },
                   { id: "fidelity", label: "Fidelity" },
                 ].map((t) => {
@@ -1969,63 +2464,6 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 })}
               </div>
 
-              {tab === "paste" && (
-                <div>
-                  <Label>Paste CSV or tab-separated data</Label>
-                  <textarea
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    placeholder={SAMPLE_CSV}
-                    rows={10}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      background: T.card,
-                      border: `1px solid ${T.border}`,
-                      color: T.text,
-                      padding: 12,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      resize: "vertical",
-                      outline: "none",
-                    }}
-                  />
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      color: T.textFaint,
-                      marginTop: 8,
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    Columns: date, side, ticker, qty, price, currency, fee,
-                    notes. First row may be a header. Sides: buy/sell or
-                    compra/venda.
-                  </div>
-                  <button
-                    onClick={() => doParse(text)}
-                    disabled={!text.trim()}
-                    style={{
-                      marginTop: 12,
-                      background: T.gold,
-                      border: "none",
-                      color: "#0b0d10",
-                      padding: "10px 16px",
-                      fontFamily: FONT_MONO,
-                      fontSize: 11,
-                      letterSpacing: "0.15em",
-                      textTransform: "uppercase",
-                      cursor: text.trim() ? "pointer" : "default",
-                      opacity: text.trim() ? 1 : 0.4,
-                    }}
-                  >
-                    Import
-                  </button>
-                </div>
-              )}
-
               {tab === "upload" && (
                 <div>
                   <Label>Select a CSV file</Label>
@@ -2050,11 +2488,27 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                       fontFamily: FONT_MONO,
                       fontSize: 10,
                       color: T.textFaint,
-                      marginTop: 8,
-                      lineHeight: 1.5,
+                      marginTop: 10,
+                      lineHeight: 1.7,
                     }}
                   >
-                    Same columns as paste. Header row recommended.
+                    <div style={{ color: T.textDim, marginBottom: 4 }}>
+                      Required columns:
+                    </div>
+                    <div style={{ color: T.text }}>
+                      date, side, ticker, qty, price
+                    </div>
+                    <div style={{ color: T.textDim, marginTop: 8, marginBottom: 4 }}>
+                      Optional columns:
+                    </div>
+                    <div style={{ color: T.text }}>
+                      assetClass, fee, notes
+                    </div>
+                    <div style={{ color: T.textFaint, marginTop: 10 }}>
+                      Header row recommended. PT aliases accepted (data, tipo,
+                      ativo, qtd, preco, classe, taxa, obs). Sides accepted:
+                      buy/sell or compra/venda.
+                    </div>
                   </div>
                   {fileError && (
                     <div
@@ -2506,6 +2960,21 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
     await persist(next);
   }
 
+  async function handleBulkDelete(ids) {
+    const idSet = new Set(ids);
+    const next = transactions.filter((t) => !idSet.has(t.id));
+    await persist(next);
+  }
+
+  async function handleBulkAssetClass(ids, cls) {
+    const idSet = new Set(ids);
+    const cur = currencyForAssetClass(cls) || "USD";
+    const next = transactions.map((t) =>
+      idSet.has(t.id) ? { ...t, assetClass: cls, currency: cur } : t
+    );
+    await persist(next);
+  }
+
   async function handleImport(newTxs, mode) {
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
     await persist(next);
@@ -2681,11 +3150,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
 
       <TransactionTable
         transactions={transactions}
-        onEdit={(t) => {
-          setEditing(t);
-          setFormOpen(false);
-        }}
+        onUpdate={handleUpdate}
         onDelete={handleDelete}
+        onBulkDelete={handleBulkDelete}
+        onBulkAssetClass={handleBulkAssetClass}
         busy={saving}
       />
 
