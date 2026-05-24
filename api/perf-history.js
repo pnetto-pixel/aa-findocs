@@ -21,9 +21,10 @@ const YAHOO_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Hard per-fetch ceiling. Vercel default function timeout is 30s; we must
-// finish 30+ network calls + math + Redis write in that budget.
-const FETCH_TIMEOUT_MS = 6000;
+// Hard per-fetch ceiling. Vercel default function timeout is 30s; we run
+// Stooq (phase 1) and Yahoo fallback (phase 2) as separate concurrent
+// sweeps to stay well under budget.
+const FETCH_TIMEOUT_MS = 2500;
 
 function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
@@ -31,8 +32,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v3: switched US source to Stooq primary + Yahoo fallback, added timeouts.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v4');
+  // v5: two-phase fetch (Stooq sweep → Yahoo for misses), 2.5s per-fetch timeout.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v5');
 }
 
 function toDateStr(unixSec) {
@@ -390,8 +391,6 @@ export default async function handler(req, res) {
   eligible.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const firstDate = eligible[0].date.slice(0, 10);
   const todayDate = new Date().toISOString().slice(0, 10);
-  const fromSec = Math.floor(new Date(firstDate + 'T00:00:00Z').getTime() / 1000);
-  const toSec = Math.floor(new Date(todayDate + 'T23:59:59Z').getTime() / 1000);
 
   const brapiKey = process.env.BRAPI_API_KEY || null;
 
@@ -401,28 +400,47 @@ export default async function handler(req, res) {
   const brTickers = uniqueTickers.filter(isBrazilianTicker);
   const usTickers = uniqueTickers.filter((t) => !isBrazilianTicker(t));
 
-  // Fetch in parallel groups. Stooq (CSV) handles bulk well; Yahoo is fallback.
+  // Two-phase fetch strategy to stay within the 30s Vercel function budget:
+  //   Phase 1 — Stooq for all US tickers + SPY, concurrency 20, 2.5s timeout.
+  //             Runs in parallel with B3 + FX fetches.
+  //   Phase 2 — Yahoo fallback only for Phase 1 misses, concurrency 15.
+  // Worst case: ceil(66/20)×2.5s + ceil(66/15)×2.5s ≈ 10s + 12.5s = 22.5s.
+  const allUsTickers = ['SPY', ...usTickers];
   const t0 = Date.now();
-  const [spyResult, usResultsArr, brResults, fxMap] = await Promise.all([
-    fetchUSCandles('SPY', firstDate, todayDate),
-    mapConcurrent(usTickers, (t) => fetchUSCandles(t, firstDate, todayDate), 8),
+
+  const [stooqResultsArr, brResults, fxMap] = await Promise.all([
+    mapConcurrent(allUsTickers, (t) => fetchStooqCandles(t, firstDate, todayDate), 20),
     mapConcurrent(brTickers, (t) => brapiKey ? fetchBrapiCandles(t, brapiKey) : Promise.resolve(null), 4),
     brTickers.length > 0 ? fetchFxHistory(firstDate, todayDate) : Promise.resolve({}),
   ]);
+
+  // Phase 2: Yahoo fallback for any ticker Stooq missed.
+  const phase2Tickers = allUsTickers.filter((_, i) => !stooqResultsArr[i]);
+  const yahooResultsArr = phase2Tickers.length > 0
+    ? await mapConcurrent(phase2Tickers, (t) => fetchYahooCandles(t), 15)
+    : [];
+
   const fetchMs = Date.now() - t0;
 
+  // Merge results: build per-ticker candle map and track source counts.
   const candleMap = {};
   const sourceCount = { stooq: 0, yahoo: 0 };
-  usTickers.forEach((t, i) => {
-    const r = usResultsArr[i];
-    if (r?.map) {
-      candleMap[t] = r.map;
-      sourceCount[r.source] = (sourceCount[r.source] || 0) + 1;
+  const yahooByTicker = {};
+  phase2Tickers.forEach((t, i) => { if (yahooResultsArr[i]) yahooByTicker[t] = yahooResultsArr[i]; });
+
+  allUsTickers.forEach((t, i) => {
+    const map = stooqResultsArr[i] || yahooByTicker[t] || null;
+    const source = stooqResultsArr[i] ? 'stooq' : yahooByTicker[t] ? 'yahoo' : null;
+    if (map && t !== 'SPY') {
+      candleMap[t] = map;
+      sourceCount[source] = (sourceCount[source] || 0) + 1;
     }
   });
   brTickers.forEach((t, i) => { if (brResults[i]) candleMap[t] = brResults[i]; });
 
-  const spyCandles = spyResult?.map || null;
+  const spyEntry = stooqResultsArr[0] || yahooByTicker['SPY'] || null;
+  const spySource = stooqResultsArr[0] ? 'stooq' : yahooByTicker['SPY'] ? 'yahoo' : null;
+  const spyCandles = spyEntry || null;
 
   const result = computePerformance({
     transactions: eligible,
@@ -448,7 +466,7 @@ export default async function handler(req, res) {
     brTickersFetched: brFetchedCount,
     brTickersMissing: brTickers.length - brFetchedCount,
     spyDays: spyCandles ? Object.keys(spyCandles).length : 0,
-    spySource: spyResult?.source || null,
+    spySource: spySource,
     sources: sourceCount,
     fxDays: Object.keys(fxMap).length,
     fetchMs,
