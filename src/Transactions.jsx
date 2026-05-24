@@ -2066,6 +2066,7 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 // - All Fidelity transactions are USD; assetClass defaults to "Stocks"
 //   (user can edit later)
 function parseFidelityCSV(text) {
+  console.log("Fidelity parser: processing rows");
   const result = Papa.parse(text, {
     skipEmptyLines: true,
     delimitersToGuess: [",", ";", "\t"],
