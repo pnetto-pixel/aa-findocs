@@ -1,7 +1,7 @@
 // api/perf-history.js
 // POST { transactions }: { dates, portfolio, spy }
 // Calculates daily portfolio vs SPY performance, normalized to % return.
-// Filters out BRA Fixed Income, Bonds, Unallocated USD, Unallocated BRL.
+// Includes only: Stocks, BRA Stocks, Alternative, Real Estate.
 // US tickers: Finnhub daily candles. B3 tickers: brapi.dev daily candles.
 // USD/BRL historical FX: Frankfurter date-range series (free tier).
 // Result cached in Redis 24h per user.
@@ -9,11 +9,11 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
-const EXCLUDED_CLASSES = new Set([
-  'BRA Fixed Income',
-  'Bonds',
-  'Unallocated USD',
-  'Unallocated BRL',
+const INCLUDED_CLASSES = new Set([
+  'Stocks',
+  'BRA Stocks',
+  'Alternative',
+  'Real Estate',
 ]);
 
 function isBrazilianTicker(t) {
@@ -150,7 +150,7 @@ export default async function handler(req, res) {
   }
 
   const filtered = transactions.filter(
-    (tx) => tx?.assetClass && !EXCLUDED_CLASSES.has(tx.assetClass)
+    (tx) => tx?.assetClass && INCLUDED_CLASSES.has(tx.assetClass)
   );
 
   if (filtered.length === 0) {
