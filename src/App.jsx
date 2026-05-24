@@ -1568,7 +1568,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               }}
             >
               {[
-                { id: "dashboard", label: "Dashboard" },
+                { id: "dashboard", label: "Holdings" },
                 { id: "transactions", label: "Transactions" },
               ].map((tab) => {
                 const active = activeView === tab.id;
