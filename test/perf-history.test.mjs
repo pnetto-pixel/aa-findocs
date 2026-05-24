@@ -6,9 +6,11 @@ import { computePerformance } from '../api/perf-history.js';
 
 let passed = 0;
 let failed = 0;
-function test(name, fn) {
+
+// Properly awaits async tests.
+async function test(name, fn) {
   try {
-    fn();
+    await fn();
     console.log(`  ok  ${name}`);
     passed++;
   } catch (e) {
@@ -20,7 +22,7 @@ function test(name, fn) {
 
 console.log('\n— computePerformance —');
 
-test('happy path: single AAPL buy, 3 days of candles', () => {
+await test('happy path: single AAPL buy, 3 days of candles', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'AAPL', qty: 10, price: 180, assetClass: 'Stocks' },
@@ -37,7 +39,7 @@ test('happy path: single AAPL buy, 3 days of candles', () => {
   assert.deepEqual(result.spy, [0, 1.11, 2.22]);
 });
 
-test('excludes non-whitelisted classes', () => {
+await test('excludes non-whitelisted classes', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'TLT', qty: 5, price: 90, assetClass: 'Bonds' },
@@ -52,7 +54,7 @@ test('excludes non-whitelisted classes', () => {
   assert.equal(result.meta.reason, 'no-eligible-transactions');
 });
 
-test('includes all four whitelisted classes', () => {
+await test('includes all four whitelisted classes', () => {
   const tx = (assetClass, ticker) => ({
     date: '2023-11-26', side: 'buy', ticker, qty: 1, price: 100, assetClass,
   });
@@ -78,7 +80,7 @@ test('includes all four whitelisted classes', () => {
   assert.equal(result.meta.txFiltered, 4);
 });
 
-test('sell reduces position', () => {
+await test('sell reduces position', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'AAPL', qty: 10, price: 180, assetClass: 'Stocks' },
@@ -95,7 +97,7 @@ test('sell reduces position', () => {
   assert.deepEqual(result.portfolio, [0, -48.61, -44.44]);
 });
 
-test('BRL ticker converted to USD via FX', () => {
+await test('BRL ticker converted to USD via FX', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'BBSE3', qty: 100, price: 30, assetClass: 'BRA Stocks' },
@@ -111,7 +113,7 @@ test('BRL ticker converted to USD via FX', () => {
   assert.deepEqual(result.portfolio, [0, 3.33]);
 });
 
-test('carries forward prices over weekends', () => {
+await test('carries forward prices over weekends', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-24', side: 'buy', ticker: 'AAPL', qty: 10, price: 180, assetClass: 'Stocks' },
@@ -126,7 +128,7 @@ test('carries forward prices over weekends', () => {
   assert.deepEqual(result.dates, ['2023-11-24', '2023-11-27']);
 });
 
-test('skips days with no SPY data', () => {
+await test('skips days with no SPY data', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'AAPL', qty: 10, price: 180, assetClass: 'Stocks' },
@@ -140,7 +142,7 @@ test('skips days with no SPY data', () => {
   assert.equal(result.meta.reason, 'no-priced-days');
 });
 
-test('large portfolio: 50 tickers × 250 days returns sensible series', () => {
+await test('large portfolio: 50 tickers × 250 days returns sensible series', () => {
   // Simulate a realistic 436-transaction-like scenario.
   const tickers = Array.from({ length: 50 }, (_, i) => `T${i}`);
   const dates = Array.from({ length: 250 }, (_, i) => {
@@ -182,7 +184,7 @@ test('large portfolio: 50 tickers × 250 days returns sensible series', () => {
   assert.equal(result.spy[249], 25);
 });
 
-test('missing US ticker candle: position with no price is skipped, but others still count', () => {
+await test('missing US ticker candle: position with no price is skipped, but others still count', () => {
   const result = computePerformance({
     transactions: [
       { date: '2023-11-26', side: 'buy', ticker: 'AAPL', qty: 10, price: 180, assetClass: 'Stocks' },
@@ -203,8 +205,9 @@ console.log(`\n— integration: handler with mocked fetch + redis + auth —`);
 
 process.env.APP_PASSWORD = 'test-pwd';
 process.env.REDIS_URL = process.env.REDIS_URL || 'redis://invalid-localhost:1';
+process.env.TWELVEDATA_API_KEY = 'mock-key';
 
-// Build synthetic price data (replaces Stooq/Yahoo mocks — prices now come from the browser).
+// Build synthetic price data for Twelve Data mock.
 function makePriceMap(basePrice, startDate = '2024-01-02', days = 10) {
   const map = {};
   const start = new Date(startDate + 'T00:00:00Z');
@@ -219,50 +222,63 @@ function makePriceMap(basePrice, startDate = '2024-01-02', days = 10) {
 const realFetch = globalThis.fetch;
 
 globalThis.fetch = async (url) => {
-  // Frankfurter FX: no BRL tickers in these tests → return empty
   if (/frankfurter\.dev/.test(url)) {
     return { ok: true, status: 200, json: async () => ({ rates: {} }) };
+  }
+  if (/twelvedata\.com/.test(url)) {
+    const match = url.match(/symbol=([^&]+)/);
+    const symbolsRaw = match ? match[1] : '';
+    const tickers = symbolsRaw.split(',');
+    const makeValues = (basePrice) =>
+      Object.entries(makePriceMap(basePrice)).map(([date, price]) => ({
+        datetime: date,
+        close: String(price),
+      }));
+    if (tickers.length === 1) {
+      const ticker = tickers[0];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'ok', values: makeValues(ticker === 'SPY' ? 450 : 100) }),
+      };
+    }
+    const result = {};
+    for (const ticker of tickers) {
+      result[ticker] = { status: 'ok', values: makeValues(ticker === 'SPY' ? 450 : 100) };
+    }
+    return { ok: true, status: 200, json: async () => result };
   }
   return { ok: false, status: 404, json: async () => ({}) };
 };
 
-test('handler: returns needsPrices on first call (no priceData)', async () => {
-  if (process.env.REDIS_URL?.startsWith('redis://invalid')) {
-    console.log('       (skipped: no real REDIS_URL — algorithm tests above already validate the math)');
-    return;
-  }
+await test('handler: returns 503 when TWELVEDATA_API_KEY not set', async () => {
+  const saved = process.env.TWELVEDATA_API_KEY;
+  delete process.env.TWELVEDATA_API_KEY;
   const { default: handler } = await import('../api/perf-history.js');
   const req = {
     method: 'POST',
     headers: { 'x-app-password': 'test-pwd' },
-    body: { transactions: [{ date: '2024-01-01', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' }] },
-    query: { refresh: '1' },
+    body: { transactions: [{ date: '2024-01-02', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' }] },
+    query: {},
   };
   const res = { statusCode: 0, body: null, status(c) { this.statusCode = c; return this; }, json(d) { this.body = d; return this; } };
   await handler(req, res);
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.needsPrices, true);
-  assert.ok(Array.isArray(res.body.tickers));
-  assert.ok(res.body.tickers.includes('SPY'));
-  assert.ok(res.body.tickers.includes('AAPL'));
+  process.env.TWELVEDATA_API_KEY = saved;
+  assert.equal(res.statusCode, 503);
+  assert.ok(/TWELVEDATA_API_KEY/.test(res.body.error));
 });
 
-test('handler: returns non-empty series when priceData is provided', async () => {
+await test('handler: returns non-empty series when mocked prices are provided', async () => {
   if (process.env.REDIS_URL?.startsWith('redis://invalid')) {
     console.log('       (skipped: no real REDIS_URL — algorithm tests above already validate the math)');
     return;
   }
   const { default: handler } = await import('../api/perf-history.js');
-  const priceData = {
-    SPY: makePriceMap(450),
-    AAPL: makePriceMap(100),
-  };
   const req = {
     method: 'POST',
     headers: { 'x-app-password': 'test-pwd' },
     body: {
       transactions: [{ date: '2024-01-02', side: 'buy', ticker: 'AAPL', qty: 10, price: 100, assetClass: 'Stocks' }],
-      priceData,
     },
     query: { refresh: '1' },
   };

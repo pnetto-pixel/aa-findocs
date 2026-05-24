@@ -1,16 +1,9 @@
 // api/perf-history.js
-// POST { transactions, priceData? }
+// POST { transactions }
 //
-// Two-call protocol:
-//   1st call (no priceData): check Redis cache. If miss, respond with
-//     { needsPrices: true, tickers: [...], firstDate: "YYYY-MM-DD" }
-//     so the browser can fetch US ticker prices directly from Yahoo Finance.
-//   2nd call (with priceData: { [ticker]: { [date]: price } }):
-//     use client-provided prices for US tickers + SPY; fetch B3 tickers
-//     via brapi; compute portfolio vs SPY % return; cache 24h.
-//
-// Rationale: Vercel datacenter IPs are rate-limited/blocked by Yahoo Finance
-// and Stooq. The user's browser IP is not rate-limited by Yahoo.
+// Fetches US ticker prices server-side from Twelve Data (requires TWELVEDATA_API_KEY).
+// B3 tickers fetched from brapi (requires BRAPI_API_KEY). FX from Frankfurter.
+// Results cached in Redis 24h.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
@@ -22,7 +15,8 @@ const INCLUDED_CLASSES = new Set([
   'Real Estate',
 ]);
 
-const FETCH_TIMEOUT_MS = 5000;
+const FETCH_TIMEOUT_MS = 15000;
+const TWELVEDATA_BATCH = 20; // tickers per request
 
 function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
@@ -30,8 +24,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v8: client-side price fetching via browser.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v8');
+  // v9: Twelve Data server-side fetching.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v9');
 }
 
 function toDateStr(unixSec) {
@@ -48,8 +42,48 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
   }
 }
 
-// brapi.dev — used only for B3 tickers (BRL prices). US tickers are handled
-// by the browser-side fetch (not subject to Vercel IP rate limiting).
+function parseTwelvedataSeries(series) {
+  const map = {};
+  for (const entry of (series?.values || [])) {
+    if (entry.datetime && entry.close != null) {
+      map[entry.datetime.slice(0, 10)] = parseFloat(entry.close);
+    }
+  }
+  return map;
+}
+
+// Twelve Data — batch up to TWELVEDATA_BATCH US tickers per call.
+// Single-ticker and multi-ticker responses have different shapes.
+async function fetchTwelvedataBatch(tickers, apiKey, fromDate, toDate) {
+  if (!tickers.length) return {};
+  const symbol = tickers.join(',');
+  const url =
+    `https://api.twelvedata.com/time_series?symbol=${symbol}` +
+    `&interval=1day&start_date=${fromDate}&end_date=${toDate}&outputsize=5000` +
+    `&apikey=${encodeURIComponent(apiKey)}`;
+  try {
+    const r = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS);
+    if (!r.ok) return {};
+    const data = await r.json();
+    if (tickers.length === 1) {
+      if (data.status === 'error') return {};
+      const map = parseTwelvedataSeries(data);
+      return Object.keys(map).length > 0 ? { [tickers[0]]: map } : {};
+    }
+    const result = {};
+    for (const ticker of tickers) {
+      const series = data[ticker];
+      if (!series || series.status === 'error') continue;
+      const map = parseTwelvedataSeries(series);
+      if (Object.keys(map).length > 0) result[ticker] = map;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+// brapi.dev — used only for B3 tickers (BRL prices).
 async function fetchBrapiCandles(ticker, token) {
   const url =
     `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}` +
@@ -234,6 +268,11 @@ export default async function handler(req, res) {
     return res.status(auth.status).json({ error: auth.error });
   }
 
+  const twelvedataKey = process.env.TWELVEDATA_API_KEY;
+  if (!twelvedataKey) {
+    return res.status(503).json({ error: 'Price data unavailable: TWELVEDATA_API_KEY not configured.' });
+  }
+
   let redis;
   try {
     redis = getRedis();
@@ -251,7 +290,7 @@ export default async function handler(req, res) {
     } catch {}
   }
 
-  const { transactions, priceData } = req.body || {};
+  const { transactions } = req.body || {};
   if (!Array.isArray(transactions)) {
     return res.status(400).json({ error: 'transactions array required' });
   }
@@ -281,36 +320,28 @@ export default async function handler(req, res) {
   const brTickers = uniqueTickers.filter(isBrazilianTicker);
   const usTickers = uniqueTickers.filter((t) => !isBrazilianTicker(t));
 
-  // If no priceData was sent, ask the client to fetch prices from Yahoo Finance.
-  // The browser is not subject to the IP-based rate limiting that blocks Vercel.
-  if (!priceData || typeof priceData !== 'object' || !Object.keys(priceData).length) {
-    return res.status(200).json({
-      needsPrices: true,
-      tickers: ['SPY', ...usTickers],
-      firstDate,
-    });
-  }
-
-  // priceData received — build candle maps.
-  const candleMap = {};
-  for (const [ticker, map] of Object.entries(priceData)) {
-    if (ticker !== 'SPY' && map && typeof map === 'object') {
-      candleMap[ticker] = map;
-    }
-  }
-  const spyCandles = priceData['SPY'] && typeof priceData['SPY'] === 'object'
-    ? priceData['SPY']
-    : null;
-
-  const brapiKey = process.env.BRAPI_API_KEY || null;
   const t0 = Date.now();
 
-  // Fetch B3 tickers via brapi (server-side, API key, works fine from Vercel).
-  const [brResults, fxMap] = await Promise.all([
-    mapConcurrent(brTickers, (t) => brapiKey ? fetchBrapiCandles(t, brapiKey) : Promise.resolve(null), 4),
+  // Batch all US tickers + SPY for Twelve Data (reduces HTTP round-trips).
+  const allUsTickers = ['SPY', ...usTickers];
+  const usBatches = [];
+  for (let i = 0; i < allUsTickers.length; i += TWELVEDATA_BATCH) {
+    usBatches.push(allUsTickers.slice(i, i + TWELVEDATA_BATCH));
+  }
+
+  const [batchResults, brResults, fxMap] = await Promise.all([
+    mapConcurrent(usBatches, (batch) => fetchTwelvedataBatch(batch, twelvedataKey, firstDate, todayDate), 2),
+    mapConcurrent(brTickers, (t) => process.env.BRAPI_API_KEY ? fetchBrapiCandles(t, process.env.BRAPI_API_KEY) : Promise.resolve(null), 4),
     brTickers.length > 0 ? fetchFxHistory(firstDate, todayDate) : Promise.resolve({}),
   ]);
+
+  const twelveMap = Object.assign({}, ...batchResults);
+  const candleMap = {};
+  for (const t of usTickers) {
+    if (twelveMap[t]) candleMap[t] = twelveMap[t];
+  }
   brTickers.forEach((t, i) => { if (brResults[i]) candleMap[t] = brResults[i]; });
+  const spyCandles = twelveMap['SPY'] || null;
 
   const fetchMs = Date.now() - t0;
 
@@ -323,21 +354,19 @@ export default async function handler(req, res) {
     todayDate,
   });
 
-  const usFetchedCount = Object.keys(candleMap).filter((t) => !isBrazilianTicker(t)).length;
   const usMissing = usTickers.filter((t) => !candleMap[t]);
-  const brFetchedCount = Object.keys(candleMap).filter((t) => isBrazilianTicker(t)).length;
 
   result.meta = {
     ...(result.meta || {}),
     txTotal: transactions.length,
     txEligible: eligible.length,
     uniqueTickers: uniqueTickers.length,
-    usTickersFetched: usFetchedCount,
+    usTickersFetched: usTickers.filter((t) => candleMap[t]).length,
     usTickersMissing: usMissing.length,
     usMissingSample: usMissing.slice(0, 8),
-    brTickersFetched: brFetchedCount,
+    brTickersFetched: brTickers.filter((t) => candleMap[t]).length,
     spyDays: spyCandles ? Object.keys(spyCandles).length : 0,
-    spySource: spyCandles ? 'client' : null,
+    spySource: spyCandles ? 'twelvedata' : null,
     fxDays: Object.keys(fxMap).length,
     fetchMs,
   };
