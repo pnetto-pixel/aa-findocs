@@ -1,8 +1,10 @@
 // api/perf-history.js
 // POST { transactions }
 //
-// Fetches US ticker prices server-side from Twelve Data (requires TWELVEDATA_API_KEY).
-// B3 tickers fetched from brapi (requires BRAPI_API_KEY). FX from Frankfurter.
+// Fetches US ticker prices server-side:
+//   Primary:  Twelve Data (requires TWELVEDATA_API_KEY)
+//   Fallback: Yahoo Finance (User-Agent header, low concurrency)
+// B3 tickers: brapi (requires BRAPI_API_KEY). FX: Frankfurter.
 // Results cached in Redis 24h.
 
 import { getRedis } from '../lib/redis.js';
@@ -52,34 +54,76 @@ function parseTwelvedataSeries(series) {
   return map;
 }
 
-// Twelve Data — batch up to TWELVEDATA_BATCH US tickers per call.
-// Single-ticker and multi-ticker responses have different shapes.
+// Returns { prices: {[ticker]: priceMap}, error: string|null }.
+// Captures actual error details instead of swallowing them.
 async function fetchTwelvedataBatch(tickers, apiKey, fromDate, toDate) {
-  if (!tickers.length) return {};
+  if (!tickers.length) return { prices: {}, error: null };
   const symbol = tickers.join(',');
   const url =
     `https://api.twelvedata.com/time_series?symbol=${symbol}` +
     `&interval=1day&start_date=${fromDate}&end_date=${toDate}&outputsize=5000` +
     `&apikey=${encodeURIComponent(apiKey)}`;
+  let httpStatus = null;
   try {
     const r = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS);
-    if (!r.ok) return {};
+    httpStatus = r.status;
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      return { prices: {}, error: `HTTP ${httpStatus}: ${body.slice(0, 300)}` };
+    }
     const data = await r.json();
+    // Top-level error (plan limit, bad params, etc.)
+    if (data.status === 'error') {
+      return { prices: {}, error: `API ${data.code}: ${data.message}` };
+    }
+    const prices = {};
     if (tickers.length === 1) {
-      if (data.status === 'error') return {};
       const map = parseTwelvedataSeries(data);
-      return Object.keys(map).length > 0 ? { [tickers[0]]: map } : {};
+      if (Object.keys(map).length > 0) prices[tickers[0]] = map;
+    } else {
+      for (const ticker of tickers) {
+        const series = data[ticker];
+        if (!series || series.status === 'error') continue;
+        const map = parseTwelvedataSeries(series);
+        if (Object.keys(map).length > 0) prices[ticker] = map;
+      }
     }
-    const result = {};
-    for (const ticker of tickers) {
-      const series = data[ticker];
-      if (!series || series.status === 'error') continue;
-      const map = parseTwelvedataSeries(series);
-      if (Object.keys(map).length > 0) result[ticker] = map;
+    return { prices, error: null };
+  } catch (e) {
+    return { prices: {}, error: `${e?.name || 'Error'}: ${e?.message || 'network error'} (HTTP ${httpStatus ?? 'none'})` };
+  }
+}
+
+// Yahoo Finance fallback — User-Agent avoids plain-scraper blocks.
+// With 24h Redis cache this runs at most once per day per portfolio.
+async function fetchYahooCandle(ticker, fromDate) {
+  const url =
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+    `?range=10y&interval=1d`;
+  try {
+    const r = await fetchWithTimeout(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    }, 8000);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const result = d?.chart?.result?.[0];
+    if (!result?.timestamp?.length) return null;
+    const closes = result.indicators?.quote?.[0]?.close;
+    if (!Array.isArray(closes)) return null;
+    const map = {};
+    for (let i = 0; i < result.timestamp.length; i++) {
+      if (closes[i] != null) {
+        const date = new Date(result.timestamp[i] * 1000).toISOString().slice(0, 10);
+        if (date >= fromDate) map[date] = closes[i];
+      }
     }
-    return result;
+    return Object.keys(map).length > 0 ? map : null;
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -322,7 +366,7 @@ export default async function handler(req, res) {
 
   const t0 = Date.now();
 
-  // Batch all US tickers + SPY for Twelve Data (reduces HTTP round-trips).
+  // Batch US tickers + SPY for Twelve Data.
   const allUsTickers = ['SPY', ...usTickers];
   const usBatches = [];
   for (let i = 0; i < allUsTickers.length; i += TWELVEDATA_BATCH) {
@@ -335,13 +379,32 @@ export default async function handler(req, res) {
     brTickers.length > 0 ? fetchFxHistory(firstDate, todayDate) : Promise.resolve({}),
   ]);
 
-  const twelveMap = Object.assign({}, ...batchResults);
+  const twelvedataErrors = batchResults.filter(r => r.error).map(r => r.error).slice(0, 3);
+  const twelveMap = Object.assign({}, ...batchResults.map(r => r.prices));
+
   const candleMap = {};
   for (const t of usTickers) {
     if (twelveMap[t]) candleMap[t] = twelveMap[t];
   }
   brTickers.forEach((t, i) => { if (brResults[i]) candleMap[t] = brResults[i]; });
-  const spyCandles = twelveMap['SPY'] || null;
+  let spyCandles = twelveMap['SPY'] || null;
+
+  // Yahoo Finance fallback for SPY and any US tickers that Twelve Data couldn't price.
+  const missingForYahoo = [
+    ...(!spyCandles ? ['SPY'] : []),
+    ...usTickers.filter(t => !candleMap[t]),
+  ];
+  let yahooFetched = 0;
+  if (missingForYahoo.length > 0) {
+    const yahooResults = await mapConcurrent(missingForYahoo, t => fetchYahooCandle(t, firstDate), 2);
+    for (let i = 0; i < missingForYahoo.length; i++) {
+      if (!yahooResults[i]) continue;
+      const t = missingForYahoo[i];
+      if (t === 'SPY') spyCandles = yahooResults[i];
+      else candleMap[t] = yahooResults[i];
+      yahooFetched++;
+    }
+  }
 
   const fetchMs = Date.now() - t0;
 
@@ -366,7 +429,9 @@ export default async function handler(req, res) {
     usMissingSample: usMissing.slice(0, 8),
     brTickersFetched: brTickers.filter((t) => candleMap[t]).length,
     spyDays: spyCandles ? Object.keys(spyCandles).length : 0,
-    spySource: spyCandles ? 'twelvedata' : null,
+    spySource: spyCandles ? (twelveMap['SPY'] ? 'twelvedata' : 'yahoo') : null,
+    yahooFallbackFetched: yahooFetched,
+    twelvedataErrors,
     fxDays: Object.keys(fxMap).length,
     fetchMs,
   };
