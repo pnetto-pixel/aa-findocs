@@ -4,6 +4,9 @@
   "functions": {
     "api/price.js": {
       "maxDuration": 30
+    },
+    "api/perf-history.js": {
+      "maxDuration": 30
     }
   }
 }

@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
 import Papa from "papaparse";
 import TransactionsView from "./Transactions.jsx";
+const PerformanceView = lazy(() => import("./Performance.jsx"));
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
 
@@ -1556,7 +1557,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 fontStyle: "italic",
               }}
             >
-              {activeView === "transactions" ? "Transactions" : "Holdings"}
+              {activeView === "transactions"
+                ? "Transactions"
+                : activeView === "performance"
+                ? "Performance"
+                : "Holdings"}
             </h1>
             {/* View switcher */}
             <div
@@ -1570,6 +1575,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               {[
                 { id: "dashboard", label: "Holdings" },
                 { id: "transactions", label: "Transactions" },
+                { id: "performance", label: "Performance (test only)" },
               ].map((tab) => {
                 const active = activeView === tab.id;
                 return (
@@ -1612,6 +1618,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 )
               ).sort()}
             />
+          )}
+
+          {activeView === "performance" && (
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13,
+                    color: "#8a8f99",
+                    padding: "40px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  Loading…
+                </div>
+              }
+            >
+              <PerformanceView auth={auth} onAuthFail={onAuthFail} />
+            </Suspense>
           )}
 
           {activeView === "dashboard" && (
