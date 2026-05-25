@@ -354,10 +354,15 @@ export default function PerformanceView({ auth, onAuthFail }) {
     return () => { cancelled = true; };
   }, [auth]);
 
+  const hasUSD = rawData.some((d) => d.usd != null);
+
   const { data: chartData, lastPortfolio, lastSpy, lastUSD } = useMemo(
     () => getWindowData(rawData, period),
     [rawData, period]
   );
+
+  // If API response has no USD values (old cache), force comparison mode.
+  const effectiveComparing = comparing || !hasUSD;
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -507,15 +512,15 @@ export default function PerformanceView({ auth, onAuthFail }) {
                 fontSize: 11,
                 letterSpacing: "0.08em",
                 padding: "5px 12px",
-                border: `1px solid ${comparing ? T.orange + "66" : T.border}`,
+                border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
                 borderRadius: 3,
-                background: comparing ? T.orange + "18" : "transparent",
-                color: comparing ? T.orange : T.textDim,
+                background: effectiveComparing ? T.orange + "18" : "transparent",
+                color: effectiveComparing ? T.orange : T.textDim,
                 cursor: "pointer",
                 transition: "color 0.15s, background 0.15s, border-color 0.15s",
               }}
             >
-              {comparing ? "← Portfolio Value" : "Compare vs S&P 500"}
+              {effectiveComparing ? "← Portfolio Value" : "Compare vs S&P 500"}
             </button>
           </div>
 
@@ -538,7 +543,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
               value={fmt(lastPortfolio)}
               color={kpiColor(lastPortfolio)}
             />
-            {comparing && (
+            {effectiveComparing && (
               <>
                 <KpiCard
                   label={`S&P 500 ${period}`}
@@ -573,7 +578,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                   axisLine={{ stroke: T.border }}
                   interval={0}
                 />
-                {comparing ? (
+                {effectiveComparing ? (
                   <YAxis
                     tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
                     tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
@@ -591,7 +596,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                   />
                 )}
                 <Tooltip content={<CustomTooltip />} />
-                {comparing && (
+                {effectiveComparing && (
                   <Legend
                     wrapperStyle={{
                       fontFamily: FONT_MONO,
@@ -601,7 +606,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                     }}
                   />
                 )}
-                {comparing ? (
+                {effectiveComparing ? (
                   <>
                     <Line
                       type="monotone"
