@@ -1,5 +1,6 @@
 // src/Performance.jsx — Performance (TEST ONLY) view
-// Lazy-loaded. Shows portfolio vs SPY total return chart since first transaction.
+// Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
+// switches to a TWR % comparison chart.
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import {
@@ -87,8 +88,22 @@ function fmt(n, decimals = 2) {
   return `${sign}${n.toFixed(decimals)}%`;
 }
 
+function fmtUSD(n) {
+  if (n == null || isNaN(n)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function fmtUSDAxis(n) {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
+  return `$${n.toFixed(0)}`;
+}
+
 function fmtDate(dateStr) {
-  // "2024-03-15" → "Mar '24"
   try {
     const d = new Date(dateStr + "T00:00:00Z");
     return d.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
@@ -115,8 +130,8 @@ const PERIODS = [
   { label: "MAX", days: Infinity },
 ];
 
-function getWindowData(chartData, period) {
-  if (!chartData.length) return { data: [], lastPortfolio: null, lastSpy: null };
+function getWindowData(rawData, period) {
+  if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
 
   const p = PERIODS.find((x) => x.label === period) || PERIODS.find((x) => x.label === "1Y");
   let cutoff = null;
@@ -129,12 +144,12 @@ function getWindowData(chartData, period) {
 
   let startIdx = 0;
   if (cutoff) {
-    const found = chartData.findIndex((d) => d.date >= cutoff);
-    startIdx = found >= 0 ? found : chartData.length - 1;
+    const found = rawData.findIndex((d) => d.date >= cutoff);
+    startIdx = found >= 0 ? found : rawData.length - 1;
   }
 
-  const slice = chartData.slice(startIdx);
-  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null };
+  const slice = rawData.slice(startIdx);
+  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
 
   const baseP = slice[0].portfolio;
   const baseS = slice[0].spy;
@@ -146,12 +161,15 @@ function getWindowData(chartData, period) {
     label: i % step === 0 ? fmtDate(d.date) : "",
     portfolio: toWin(d.portfolio, baseP),
     spy: toWin(d.spy, baseS),
+    usd: d.usd,
   }));
 
+  const last = data[data.length - 1];
   return {
     data,
-    lastPortfolio: data[data.length - 1].portfolio,
-    lastSpy: data[data.length - 1].spy,
+    lastPortfolio: last.portfolio,
+    lastSpy: last.spy,
+    lastUSD: last.usd,
   };
 }
 
@@ -210,8 +228,10 @@ function CustomTooltip({ active, payload, label }) {
       <div style={{ color: T.textDim, marginBottom: 6 }}>{label}</div>
       {payload.map((p) => (
         <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
-          {p.name}: {p.value > 0 ? "+" : ""}
-          {p.value?.toFixed(2)}%
+          {p.name}:{" "}
+          {p.dataKey === "usd"
+            ? fmtUSD(p.value)
+            : `${p.value > 0 ? "+" : ""}${p.value?.toFixed(2)}%`}
         </div>
       ))}
     </div>
@@ -288,6 +308,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
   const [rawData, setRawData] = useState([]); // all dates, unfiltered
   const [meta, setMeta] = useState(null);
   const [period, setPeriod] = useState("1Y");
+  const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +319,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
       try {
         const transactions = await loadTransactions(auth);
         const result = await loadPerfHistory(auth, transactions);
-        const { dates, portfolio, spy, meta: respMeta } = result;
+        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = result;
 
         if (cancelled) return;
 
@@ -310,7 +331,14 @@ export default function PerformanceView({ auth, onAuthFail }) {
           return;
         }
 
-        setRawData(dates.map((d, i) => ({ date: d, portfolio: portfolio[i], spy: spy[i] })));
+        setRawData(
+          dates.map((d, i) => ({
+            date: d,
+            portfolio: portfolio[i],
+            usd: portfolioUSD?.[i] ?? null,
+            spy: spy[i],
+          }))
+        );
         setState("done");
       } catch (err) {
         if (cancelled) return;
@@ -326,7 +354,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
     return () => { cancelled = true; };
   }, [auth]);
 
-  const { data: chartData, lastPortfolio, lastSpy } = useMemo(
+  const { data: chartData, lastPortfolio, lastSpy, lastUSD } = useMemo(
     () => getWindowData(rawData, period),
     [rawData, period]
   );
@@ -429,39 +457,66 @@ export default function PerformanceView({ auth, onAuthFail }) {
               ? "Could not fetch enough historical price data to build a chart."
               : "No performance data available."}
           </div>
-          {meta && (
-            <DiagnosticsPanel meta={meta} />
-          )}
+          {meta && <DiagnosticsPanel meta={meta} />}
         </div>
       )}
 
       {state === "done" && rawData.length > 0 && (
         <>
-          {/* Period selector */}
-          <div style={{ display: "flex", gap: 2, marginBottom: 16 }}>
-            {PERIODS.map(({ label }) => {
-              const active = period === label;
-              return (
-                <button
-                  key={label}
-                  onClick={() => setPeriod(label)}
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: "0.08em",
-                    padding: "5px 10px",
-                    border: `1px solid ${active ? T.blue + "66" : T.border}`,
-                    borderRadius: 3,
-                    background: active ? T.blue + "18" : "transparent",
-                    color: active ? T.blue : T.textDim,
-                    cursor: "pointer",
-                    transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                  }}
-                >
-                  {label}
-                </button>
-              );
-            })}
+          {/* Period selector + compare toggle */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 16,
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            <div style={{ display: "flex", gap: 2 }}>
+              {PERIODS.map(({ label }) => {
+                const active = period === label;
+                return (
+                  <button
+                    key={label}
+                    onClick={() => setPeriod(label)}
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 10px",
+                      border: `1px solid ${active ? T.blue + "66" : T.border}`,
+                      borderRadius: 3,
+                      background: active ? T.blue + "18" : "transparent",
+                      color: active ? T.blue : T.textDim,
+                      cursor: "pointer",
+                      transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => setComparing((c) => !c)}
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.08em",
+                padding: "5px 12px",
+                border: `1px solid ${comparing ? T.orange + "66" : T.border}`,
+                borderRadius: 3,
+                background: comparing ? T.orange + "18" : "transparent",
+                color: comparing ? T.orange : T.textDim,
+                cursor: "pointer",
+                transition: "color 0.15s, background 0.15s, border-color 0.15s",
+              }}
+            >
+              {comparing ? "← Portfolio Value" : "Compare vs S&P 500"}
+            </button>
           </div>
 
           {/* KPI cards */}
@@ -474,20 +529,29 @@ export default function PerformanceView({ auth, onAuthFail }) {
             }}
           >
             <KpiCard
+              label="Current Value"
+              value={fmtUSD(lastUSD)}
+              color={T.text}
+            />
+            <KpiCard
               label={`Portfolio ${period}`}
               value={fmt(lastPortfolio)}
               color={kpiColor(lastPortfolio)}
             />
-            <KpiCard
-              label={`S&P 500 ${period}`}
-              value={fmt(lastSpy)}
-              color={kpiColor(lastSpy)}
-            />
-            <KpiCard
-              label="Alpha"
-              value={fmt(alpha)}
-              color={kpiColor(alpha)}
-            />
+            {comparing && (
+              <>
+                <KpiCard
+                  label={`S&P 500 ${period}`}
+                  value={fmt(lastSpy)}
+                  color={kpiColor(lastSpy)}
+                />
+                <KpiCard
+                  label="Alpha"
+                  value={fmt(alpha)}
+                  color={kpiColor(alpha)}
+                />
+              </>
+            )}
           </div>
 
           {/* Chart */}
@@ -509,44 +573,76 @@ export default function PerformanceView({ auth, onAuthFail }) {
                   axisLine={{ stroke: T.border }}
                   interval={0}
                 />
-                <YAxis
-                  tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
-                  tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={52}
-                />
+                {comparing ? (
+                  <YAxis
+                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
+                    tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={52}
+                  />
+                ) : (
+                  <YAxis
+                    tickFormatter={fmtUSDAxis}
+                    tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={64}
+                  />
+                )}
                 <Tooltip content={<CustomTooltip />} />
-                <Legend
-                  wrapperStyle={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    paddingTop: 8,
-                    color: T.textDim,
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="portfolio"
-                  name="Portfolio"
-                  stroke={T.blue}
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: T.blue }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="spy"
-                  name="S&P 500"
-                  stroke={T.orange}
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: T.orange }}
-                />
+                {comparing && (
+                  <Legend
+                    wrapperStyle={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      paddingTop: 8,
+                      color: T.textDim,
+                    }}
+                  />
+                )}
+                {comparing ? (
+                  <>
+                    <Line
+                      type="monotone"
+                      dataKey="portfolio"
+                      name="Portfolio"
+                      stroke={T.blue}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, fill: T.blue }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="spy"
+                      name="S&P 500"
+                      stroke={T.orange}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, fill: T.orange }}
+                    />
+                  </>
+                ) : (
+                  <Line
+                    type="monotone"
+                    dataKey="usd"
+                    name="Portfolio"
+                    stroke={T.blue}
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4, fill: T.blue }}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
         </>
+      )}
+
+      {state === "done" && meta && rawData.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <DiagnosticsPanel meta={meta} />
+        </div>
       )}
     </div>
   );

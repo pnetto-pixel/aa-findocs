@@ -250,6 +250,7 @@ export function computePerformance({
 
   const outDates = [];
   const portfolioValues = [];
+  const portfolioUSD = [];
   const spyValues = [];
 
   for (const d of allDates) {
@@ -288,6 +289,7 @@ export function computePerformance({
       if (valueCurrent > 0) {
         outDates.push(d);
         portfolioValues.push(0);
+        portfolioUSD.push(+valueCurrent.toFixed(2));
         spyValues.push(rawSpy[d]);
         isFirstDay = false;
         prevDayPositions = { ...positions };
@@ -312,6 +314,7 @@ export function computePerformance({
         chainedReturn *= num / den;
         outDates.push(d);
         portfolioValues.push(+((chainedReturn - 1) * 100).toFixed(2));
+        portfolioUSD.push(+valueCurrent.toFixed(2));
         spyValues.push(rawSpy[d]);
       }
       prevDayPositions = { ...positions };
@@ -336,7 +339,8 @@ export function computePerformance({
 
   return {
     dates: outDates,
-    portfolio: portfolioValues, // already in % form (TWR, base = 0)
+    portfolio: portfolioValues, // TWR %, base = 0
+    portfolioUSD,              // absolute USD value each trading day
     spy,
     meta: { txFiltered: filtered.length, daysComputed: outDates.length },
   };
