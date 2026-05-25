@@ -91,10 +91,11 @@ await test('sell reduces position', () => {
     firstDate: '2023-11-26',
     todayDate: '2023-11-28',
   });
-  // Day 0: 10*180 = 1800
-  // Day 1: 5 left * 185 = 925
-  // Day 2: 5 * 200 = 1000
-  assert.deepEqual(result.portfolio, [0, -48.61, -44.44]);
+  // TWR uses prev day's positions to isolate price return from capital flows.
+  // Day 0: base → 0%
+  // Day 1: prev=10 shares; 10×185/10×180 − 1 = 2.78%; chain=1.0278
+  // Day 2: prev=5 shares; 5×200/5×185 × chain − 1 = 11.11% (200/180 telescopes)
+  assert.deepEqual(result.portfolio, [0, 2.78, 11.11]);
 });
 
 await test('BRL ticker converted to USD via FX', () => {
