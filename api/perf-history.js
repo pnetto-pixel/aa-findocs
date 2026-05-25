@@ -207,6 +207,10 @@ function carryForward(rawMap, dates) {
 }
 
 // Pure calculation — exported for testability.
+// Uses Time-Weighted Return (TWR): each day's return is computed from the
+// PREVIOUS day's positions at today's vs yesterday's prices. New capital
+// additions (buys) and withdrawals (sells) do not inflate or deflate the
+// return — only price appreciation counts.
 export function computePerformance({
   transactions,
   candles,
@@ -239,11 +243,17 @@ export function computePerformance({
   }
 
   const positions = {};
+  let prevDayPositions = {}; // positions at close of last trading day
+  let prevDayPrices = {};    // USD prices at close of last trading day
+  let chainedReturn = 1;
+  let isFirstDay = true;
+
   const outDates = [];
   const portfolioValues = [];
   const spyValues = [];
 
   for (const d of allDates) {
+    // Apply today's transactions (buys/sells update positions).
     if (txByDate[d]) {
       for (const tx of txByDate[d]) {
         const ticker = tx.ticker?.toUpperCase();
@@ -256,25 +266,57 @@ export function computePerformance({
 
     if (rawSpy[d] == null) continue;
 
-    let value = 0;
+    // Compute today's USD price for each held ticker.
+    const todayPrices = {};
     for (const [ticker, qty] of Object.entries(positions)) {
-      if (qty === 0) continue;
+      if (qty <= 0) continue;
       const price = filled[ticker]?.[d];
       if (price == null) continue;
       if (isBrazilianTicker(ticker)) {
         const fx = filledFx[d];
-        if (!fx) continue;
-        value += qty * (price / fx);
+        if (fx) todayPrices[ticker] = price / fx;
       } else {
-        value += qty * price;
+        todayPrices[ticker] = price;
       }
     }
 
-    if (value <= 0) continue;
+    const valueCurrent = Object.entries(positions).reduce(
+      (s, [t, q]) => (q > 0 && todayPrices[t] != null ? s + q * todayPrices[t] : s), 0
+    );
 
-    outDates.push(d);
-    portfolioValues.push(value);
-    spyValues.push(rawSpy[d]);
+    if (isFirstDay) {
+      if (valueCurrent > 0) {
+        outDates.push(d);
+        portfolioValues.push(0);
+        spyValues.push(rawSpy[d]);
+        isFirstDay = false;
+        prevDayPositions = { ...positions };
+        prevDayPrices = { ...todayPrices };
+      }
+    } else {
+      // TWR sub-period return: (prev positions × today prices) / (prev positions × yesterday prices) − 1.
+      // Buys and sells that happened today are NOT in prevDayPositions, so they
+      // don't contribute to this day's return (capital flows are neutralised).
+      let num = 0;
+      let den = 0;
+      for (const [ticker, qty] of Object.entries(prevDayPositions)) {
+        if (qty <= 0) continue;
+        const tp = todayPrices[ticker];
+        const yp = prevDayPrices[ticker];
+        if (tp != null && yp != null) {
+          num += qty * tp;
+          den += qty * yp;
+        }
+      }
+      if (den > 0) {
+        chainedReturn *= num / den;
+        outDates.push(d);
+        portfolioValues.push(+((chainedReturn - 1) * 100).toFixed(2));
+        spyValues.push(rawSpy[d]);
+      }
+      prevDayPositions = { ...positions };
+      prevDayPrices = { ...todayPrices };
+    }
   }
 
   if (outDates.length === 0) {
@@ -289,14 +331,12 @@ export function computePerformance({
     };
   }
 
-  const basePortfolio = portfolioValues[0];
   const baseSpy = spyValues[0];
-  const portfolio = portfolioValues.map((v) => +((v / basePortfolio - 1) * 100).toFixed(2));
   const spy = spyValues.map((v) => +((v / baseSpy - 1) * 100).toFixed(2));
 
   return {
     dates: outDates,
-    portfolio,
+    portfolio: portfolioValues, // already in % form (TWR, base = 0)
     spy,
     meta: { txFiltered: filtered.length, daysComputed: outDates.length },
   };
