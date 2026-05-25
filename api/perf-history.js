@@ -26,8 +26,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v9: Twelve Data server-side fetching.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v9');
+  // v10: portfolioUSD[] added to response.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v10');
 }
 
 function toDateStr(unixSec) {
