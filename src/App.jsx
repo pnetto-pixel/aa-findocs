@@ -3059,7 +3059,7 @@ function HoldingRow({
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
 
   const driftColor =
-    drift == null ? T.textDim : Math.abs(drift) < 1 ? T.textDim : drift > 0 ? T.green : T.red;
+    drift == null ? T.textDim : Math.abs(drift) < 1 ? T.textDim : drift > 0 ? T.red : T.green;
   const DriftIcon =
     drift == null ? Minus : Math.abs(drift) < 1 ? Minus : drift > 0 ? TrendingUp : TrendingDown;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
@@ -3072,55 +3072,131 @@ function HoldingRow({
       if (driftRef.current && !driftRef.current.contains(e.target)) setDriftOpen(false);
     }
     document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+    };
   }, [driftOpen]);
 
   return (
     <div className="card-enter" style={{ padding: "10px 14px" }}>
-      {/* Line 1: ticker + name | value + day change */}
+      {/* Line 1: ticker (tap to open detail popup) | value + day change */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 7, minWidth: 0, overflow: "hidden" }}>
-          <span
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 13,
-              fontWeight: 700,
-              letterSpacing: "0.05em",
-              color: T.text,
-              flexShrink: 0,
-            }}
-          >
-            {holding.ticker}
-          </span>
-          {holding.market === "B3" && (
-            <span
+        <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
+          <div ref={driftRef} style={{ position: "relative", flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setDriftOpen((o) => !o)}
               style={{
-                fontSize: 8,
-                fontWeight: 600,
-                letterSpacing: "0.1em",
-                color: "#7898a9",
-                background: "rgba(120,152,169,0.12)",
-                border: "1px solid rgba(120,152,169,0.4)",
-                padding: "1px 4px",
-                borderRadius: 1,
-                flexShrink: 0,
+                background: "none",
+                border: "none",
+                padding: "6px 2px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                WebkitTapHighlightColor: "transparent",
               }}
             >
+              <span style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, letterSpacing: "0.05em", color: T.text }}>
+                {holding.ticker}
+              </span>
+              <ChevronDown
+                size={11}
+                style={{
+                  color: T.textFaint,
+                  transform: driftOpen ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.15s ease",
+                }}
+              />
+            </button>
+            {driftOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  left: 0,
+                  zIndex: 200,
+                  background: T.cardElev,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 4,
+                  padding: "10px 12px",
+                  minWidth: 220,
+                  boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+                }}
+              >
+                {holding.target > 0 ? (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
+                    </div>
+                    {driftUSD != null && (
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
+                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
+                          {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Allocated</span>
+                    <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
+                  </div>
+                )}
+                <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Position</span>
+                    <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.textDim }}>
+                      {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
+                    </span>
+                  </div>
+                  {holding.originalCurrency === "BRL" && holding.fxRate != null && (
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>BRL/USD</span>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.textDim }}>{holding.fxRate.toFixed(4)}</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
+                    <button
+                      type="button"
+                      onClick={() => { onEditClass(); setDriftOpen(false); }}
+                      style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
+                    >
+                      {holding.assetClass || "Uncategorized"}
+                      <Pencil size={7} />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { onRefresh(); setDriftOpen(false); }}
+                    disabled={busy}
+                    style={{ width: "100%", background: "transparent", border: `1px solid ${T.border}`, color: busy ? T.textFaint : T.textDim, padding: "5px 8px", fontSize: 10, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
+                  >
+                    <RefreshCw size={10} className={busy ? "spin" : ""} />
+                    Refresh price
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          {holding.market === "B3" && (
+            <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.1em", color: "#7898a9", background: "rgba(120,152,169,0.12)", border: "1px solid rgba(120,152,169,0.4)", padding: "1px 4px", borderRadius: 1, flexShrink: 0 }}>
               B3
             </span>
           )}
           {holding.name && (
-            <span
-              style={{
-                fontSize: 11,
-                color: T.textDim,
-                fontFamily: FONT_DISPLAY,
-                fontStyle: "italic",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_DISPLAY, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {holding.name}
             </span>
           )}
@@ -3132,157 +3208,33 @@ function HoldingRow({
               {dayChangePct.toFixed(2)}%
             </span>
           )}
-          <span
-            style={{
-              fontFamily: FONT_DISPLAY,
-              fontSize: 15,
-              fontWeight: 500,
-              color: T.text,
-              letterSpacing: "-0.01em",
-            }}
-          >
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, letterSpacing: "-0.01em" }}>
             {value != null ? maskMoney(value, valuesHidden) : busy ? "…" : "—"}
           </span>
         </div>
       </div>
 
-      {/* Line 2: qty×price | drift badge | edit + remove */}
+      {/* Line 2: labeled qty · price · drift | edit + remove */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, overflow: "hidden" }}>
           <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
-            {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
+            <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Qty </span>
+            {fmtNum(holding.qty)}
           </span>
-          {actualPct != null && (
-            <div ref={driftRef} style={{ position: "relative", flexShrink: 0 }}>
-              <button
-                onClick={() => setDriftOpen((o) => !o)}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  padding: "1px 4px",
-                  fontSize: 10,
-                  fontFamily: FONT_MONO,
-                  color: driftColor,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                  letterSpacing: "0.04em",
-                }}
-              >
-                <DriftIcon size={9} strokeWidth={2.5} />
-                {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(1)}%` : fmtPct(actualPct)}
-              </button>
-              {driftOpen && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 6px)",
-                    left: 0,
-                    zIndex: 200,
-                    background: T.cardElev,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 4,
-                    padding: "10px 12px",
-                    minWidth: 220,
-                    boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
-                  }}
-                >
-                  {holding.target > 0 ? (
-                    <>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
-                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
-                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
-                      </div>
-                      {driftUSD != null && (
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
-                          <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
-                            {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
-                          </span>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Allocated</span>
-                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
-                    </div>
-                  )}
-                  <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Position</span>
-                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.textDim }}>
-                        {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
-                      </span>
-                    </div>
-                    {holding.originalCurrency === "BRL" && holding.fxRate != null && (
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>BRL/USD</span>
-                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.textDim }}>{holding.fxRate.toFixed(4)}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-                      <button
-                        onClick={() => { onEditClass(); setDriftOpen(false); }}
-                        style={{
-                          background: "rgba(201,169,97,0.08)",
-                          border: `1px solid ${T.goldDim}55`,
-                          color: T.gold,
-                          padding: "1px 6px",
-                          fontSize: 9,
-                          fontFamily: FONT_MONO,
-                          letterSpacing: "0.08em",
-                          textTransform: "uppercase",
-                          borderRadius: 1,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 3,
-                        }}
-                      >
-                        {holding.assetClass || "Uncategorized"}
-                        <Pencil size={7} />
-                      </button>
-                    </div>
-                    <button
-                      onClick={() => { onRefresh(); setDriftOpen(false); }}
-                      disabled={busy}
-                      style={{
-                        width: "100%",
-                        background: "transparent",
-                        border: `1px solid ${T.border}`,
-                        color: busy ? T.textFaint : T.textDim,
-                        padding: "5px 8px",
-                        fontSize: 10,
-                        fontFamily: FONT_MONO,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                        borderRadius: 2,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 5,
-                      }}
-                    >
-                      <RefreshCw size={10} className={busy ? "spin" : ""} />
-                      Refresh price
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+          <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+            <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Price </span>
+            {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
+          </span>
+          {drift != null && (
+            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0, display: "flex", alignItems: "center", gap: 3 }}>
+              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Drift </span>
+              <DriftIcon size={9} strokeWidth={2.5} />
+              {drift > 0 ? "+" : ""}{drift.toFixed(1)}%
+            </span>
           )}
           {holding.error && (
             <span style={{ fontSize: 10, color: T.red, fontFamily: FONT_MONO, display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
-              <AlertCircle size={9} />
-              {holding.error}
+              <AlertCircle size={9} />{holding.error}
             </span>
           )}
         </div>
@@ -3310,8 +3262,8 @@ function HoldingRow({
             placeholder="Asset class"
             style={{ background: T.cardElev, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, minWidth: 0, flex: 1, maxWidth: 180 }}
           />
-          <button onClick={onSaveClass} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
-          <button onClick={onCancelEditClass} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}>Cancel</button>
+          <button type="button" onClick={onSaveClass} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
+          <button type="button" onClick={onCancelEditClass} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}>Cancel</button>
         </div>
       )}
 
@@ -3988,7 +3940,7 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
 
   const driftColor =
-    drift == null ? T.textDim : Math.abs(drift) < 1 ? T.textDim : drift > 0 ? T.green : T.red;
+    drift == null ? T.textDim : Math.abs(drift) < 1 ? T.textDim : drift > 0 ? T.red : T.green;
   const DriftIcon =
     drift == null ? Minus : Math.abs(drift) < 1 ? Minus : drift > 0 ? TrendingUp : TrendingDown;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
@@ -4006,7 +3958,11 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
       }
     }
     document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+    };
   }, [driftOpen]);
 
   function startEdit() {
@@ -4041,158 +3997,140 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
 
   return (
     <div className="card-enter" style={{ padding: "10px 14px" }}>
-      {/* Line 1: name | value */}
+      {/* Line 1: name (tap to open detail popup) | value */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <span
-          style={{
-            fontFamily: FONT_DISPLAY,
-            fontSize: 13,
-            fontWeight: 500,
-            fontStyle: "italic",
-            color: T.text,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {holding.name}
-        </span>
-        <span
-          style={{
-            fontFamily: FONT_DISPLAY,
-            fontSize: 15,
-            fontWeight: 500,
-            color: T.text,
-            flexShrink: 0,
-            letterSpacing: "-0.01em",
-          }}
-        >
+        <div ref={driftRef} style={{ position: "relative", minWidth: 0, flex: 1 }}>
+          <button
+            type="button"
+            onClick={() => setDriftOpen((o) => !o)}
+            style={{
+              background: "none",
+              border: "none",
+              padding: "6px 2px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              maxWidth: "100%",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <span style={{ fontFamily: FONT_DISPLAY, fontSize: 13, fontWeight: 500, fontStyle: "italic", color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {holding.name}
+            </span>
+            <ChevronDown
+              size={11}
+              style={{
+                color: T.textFaint,
+                flexShrink: 0,
+                transform: driftOpen ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 0.15s ease",
+              }}
+            />
+          </button>
+          {driftOpen && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                zIndex: 200,
+                background: T.cardElev,
+                border: `1px solid ${T.border}`,
+                borderRadius: 4,
+                padding: "10px 12px",
+                minWidth: 220,
+                boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              }}
+            >
+              {holding.target > 0 ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
+                    <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
+                    <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
+                  </div>
+                  {driftUSD != null && (
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
+                        {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Allocated</span>
+                  <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
+                </div>
+              )}
+              <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
+                {editingPopupClass ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      value={draftPopupClass}
+                      onChange={(e) => setDraftPopupClass(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null }); setEditingPopupClass(false); }
+                        if (e.key === "Escape") setEditingPopupClass(false);
+                      }}
+                      autoFocus
+                      placeholder="Class"
+                      style={{ background: T.bg, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, flex: 1, minWidth: 0 }}
+                    />
+                    <button type="button" onClick={() => { onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null }); setEditingPopupClass(false); }} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
+                    <button type="button" onClick={() => setEditingPopupClass(false)} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}>✕</button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
+                    {!locked ? (
+                      <button
+                        type="button"
+                        onClick={() => { setDraftPopupClass(holding.assetClass || ""); setEditingPopupClass(true); }}
+                        style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
+                      >
+                        {holding.assetClass || "Manual"}<Pencil size={7} />
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, color: T.gold, letterSpacing: "0.08em", textTransform: "uppercase" }}>{holding.assetClass || "Manual"}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, flexShrink: 0, letterSpacing: "-0.01em" }}>
           {maskMoney(value, valuesHidden)}
         </span>
       </div>
 
-      {/* Line 2: qty×price | drift badge | edit + remove */}
+      {/* Line 2: labeled qty · price · drift | edit + remove */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, overflow: "hidden" }}>
           {holding.manualMode === "qty_price" && (
-            <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
-              {fmtNum(holding.qty)} × {maskMoney(holding.manualPrice, valuesHidden)}
-            </span>
+            <>
+              <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+                <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Qty </span>
+                {fmtNum(holding.qty)}
+              </span>
+              <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+                <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Price </span>
+                {maskMoney(holding.manualPrice, valuesHidden)}
+              </span>
+            </>
           )}
-          {actualPct != null && (
-            <div ref={driftRef} style={{ position: "relative", flexShrink: 0 }}>
-              <button
-                onClick={() => setDriftOpen((o) => !o)}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  padding: "1px 4px",
-                  fontSize: 10,
-                  fontFamily: FONT_MONO,
-                  color: driftColor,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                  letterSpacing: "0.04em",
-                }}
-              >
-                <DriftIcon size={9} strokeWidth={2.5} />
-                {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(1)}%` : fmtPct(actualPct)}
-              </button>
-              {driftOpen && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 6px)",
-                    left: 0,
-                    zIndex: 200,
-                    background: T.cardElev,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 4,
-                    padding: "10px 12px",
-                    minWidth: 220,
-                    boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
-                  }}
-                >
-                  {holding.target > 0 ? (
-                    <>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
-                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
-                        <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
-                      </div>
-                      {driftUSD != null && (
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
-                          <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
-                            {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
-                          </span>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Allocated</span>
-                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.gold }}>{fmtPct(actualPct)}</span>
-                    </div>
-                  )}
-                  <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
-                    {editingPopupClass ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <input
-                          value={draftPopupClass}
-                          onChange={(e) => setDraftPopupClass(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null });
-                              setEditingPopupClass(false);
-                            }
-                            if (e.key === "Escape") setEditingPopupClass(false);
-                          }}
-                          autoFocus
-                          placeholder="Class"
-                          style={{ background: T.bg, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, flex: 1, minWidth: 0 }}
-                        />
-                        <button
-                          onClick={() => { onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null }); setEditingPopupClass(false); }}
-                          style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}
-                        >
-                          Save
-                        </button>
-                        <button
-                          onClick={() => setEditingPopupClass(false)}
-                          style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-                        {!locked ? (
-                          <button
-                            onClick={() => { setDraftPopupClass(holding.assetClass || ""); setEditingPopupClass(true); }}
-                            style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
-                          >
-                            {holding.assetClass || "Manual"}
-                            <Pencil size={7} />
-                          </button>
-                        ) : (
-                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, color: T.gold, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                            {holding.assetClass || "Manual"}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+          {drift != null && (
+            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0, display: "flex", alignItems: "center", gap: 3 }}>
+              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Drift </span>
+              <DriftIcon size={9} strokeWidth={2.5} />
+              {drift > 0 ? "+" : ""}{drift.toFixed(1)}%
+            </span>
           )}
         </div>
         <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
