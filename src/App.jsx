@@ -2185,42 +2185,42 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
                   />
                   {!trackedCollapsed && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {filteredHoldings.map((h) =>
-                        h.type === "manual" ? (
-                          <ManualHoldingRow
-                            key={h.id}
-                            holding={h}
-                            totalValue={totalValue}
-                            valuesHidden={valuesHidden}
-                            onUpdate={(patch) => updateManualHolding(h.id, patch)}
-                            onRemove={() => removeHolding(h.id)}
-                          />
-                        ) : (
-                          <HoldingRow
-                            key={h.id}
-                            holding={h}
-                            totalValue={totalValue}
-                            busy={!!busyIds[h.id]}
-                            valuesHidden={valuesHidden}
-                            onRefresh={() => refreshOne(h.id, h.ticker)}
-                            onRemove={() => removeHolding(h.id)}
-                            onUpdate={(patch) => updateHolding(h.id, patch)}
-                            editingClass={editingClassId === h.id}
-                            editingClassValue={editingClassValue}
-                            onEditClass={() => {
-                              setEditingClassId(h.id);
-                              setEditingClassValue(h.assetClassOverride || h.assetClass || "");
-                            }}
-                            onSaveClass={() => saveAssetClass(h.id)}
-                            onCancelEditClass={() => {
-                              setEditingClassId(null);
-                              setEditingClassValue("");
-                            }}
-                            onChangeEditClassValue={setEditingClassValue}
-                          />
-                        )
-                      )}
+                    <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, overflow: "hidden" }}>
+                      {filteredHoldings.map((h, i) => (
+                        <div key={h.id} style={i > 0 ? { borderTop: `1px solid ${T.borderSoft}` } : {}}>
+                          {h.type === "manual" ? (
+                            <ManualHoldingRow
+                              holding={h}
+                              totalValue={totalValue}
+                              valuesHidden={valuesHidden}
+                              onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                              onRemove={() => removeHolding(h.id)}
+                            />
+                          ) : (
+                            <HoldingRow
+                              holding={h}
+                              totalValue={totalValue}
+                              busy={!!busyIds[h.id]}
+                              valuesHidden={valuesHidden}
+                              onRefresh={() => refreshOne(h.id, h.ticker)}
+                              onRemove={() => removeHolding(h.id)}
+                              onUpdate={(patch) => updateHolding(h.id, patch)}
+                              editingClass={editingClassId === h.id}
+                              editingClassValue={editingClassValue}
+                              onEditClass={() => {
+                                setEditingClassId(h.id);
+                                setEditingClassValue(h.assetClassOverride || h.assetClass || "");
+                              }}
+                              onSaveClass={() => saveAssetClass(h.id)}
+                              onCancelEditClass={() => {
+                                setEditingClassId(null);
+                                setEditingClassValue("");
+                              }}
+                              onChangeEditClassValue={setEditingClassValue}
+                            />
+                          )}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </>
@@ -2236,17 +2236,18 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 onToggle={() => setCashCollapsed(!cashCollapsed)}
               />
               {!cashCollapsed && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {cashAccounts.map((h) => (
-                    <ManualHoldingRow
-                      key={h.id}
-                      holding={h}
-                      totalValue={totalValue}
-                      valuesHidden={valuesHidden}
-                      onUpdate={(patch) => updateManualHolding(h.id, patch)}
-                      onRemove={() => removeHolding(h.id)}
-                      locked={h.id === CASH_ID}
-                    />
+                <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, overflow: "hidden" }}>
+                  {cashAccounts.map((h, i) => (
+                    <div key={h.id} style={i > 0 ? { borderTop: `1px solid ${T.borderSoft}` } : {}}>
+                      <ManualHoldingRow
+                        holding={h}
+                        totalValue={totalValue}
+                        valuesHidden={valuesHidden}
+                        onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                        onRemove={() => removeHolding(h.id)}
+                        locked={h.id === CASH_ID}
+                      />
+                    </div>
                   ))}
                 </div>
               )}
@@ -3063,217 +3064,184 @@ function HoldingRow({
     drift == null ? Minus : Math.abs(drift) < 1 ? Minus : drift > 0 ? TrendingUp : TrendingDown;
 
   return (
-    <div
-      className="card-enter"
-      style={{
-        background: T.card,
-        border: `1px solid ${T.borderSoft}`,
-        borderRadius: 4,
-        padding: 16,
-        position: "relative",
-      }}
-    >
-      {/* Header row */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 10,
-          marginBottom: 10,
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div
+    <div className="card-enter" style={{ padding: "10px 14px" }}>
+      {/* Line 1: ticker + name | value + day change */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 7, minWidth: 0, overflow: "hidden" }}>
+          <span
             style={{
               fontFamily: FONT_MONO,
-              fontSize: 16,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
+              fontSize: 13,
+              fontWeight: 700,
+              letterSpacing: "0.05em",
               color: T.text,
-              marginBottom: 2,
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flexWrap: "wrap",
+              flexShrink: 0,
             }}
           >
             {holding.ticker}
-            {holding.market === "B3" && (
-              <span
-                style={{
-                  fontSize: 8,
-                  fontWeight: 600,
-                  letterSpacing: "0.12em",
-                  color: "#7898a9",
-                  background: "rgba(120, 152, 169, 0.12)",
-                  border: "1px solid rgba(120, 152, 169, 0.4)",
-                  padding: "1px 5px",
-                  borderRadius: 1,
-                }}
-              >
-                B3 · BRL
-              </span>
-            )}
-          </div>
-          {holding.name && (
-            <div
+          </span>
+          {holding.market === "B3" && (
+            <span
               style={{
-                fontSize: 12,
+                fontSize: 8,
+                fontWeight: 600,
+                letterSpacing: "0.1em",
+                color: "#7898a9",
+                background: "rgba(120,152,169,0.12)",
+                border: "1px solid rgba(120,152,169,0.4)",
+                padding: "1px 4px",
+                borderRadius: 1,
+                flexShrink: 0,
+              }}
+            >
+              B3
+            </span>
+          )}
+          {holding.name && (
+            <span
+              style={{
+                fontSize: 11,
                 color: T.textDim,
                 fontFamily: FONT_DISPLAY,
                 fontStyle: "italic",
-                whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
             >
               {holding.name}
-            </div>
+            </span>
           )}
-          {/* Asset class chip / edit */}
-          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
-            {editingClass ? (
-              <>
-                <input
-                  value={editingClassValue}
-                  onChange={(e) => onChangeEditClassValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") onSaveClass();
-                    if (e.key === "Escape") onCancelEditClass();
-                  }}
-                  autoFocus
-                  placeholder="Asset class"
-                  style={{
-                    background: T.cardElev,
-                    border: `1px solid ${T.gold}`,
-                    color: T.text,
-                    padding: "3px 6px",
-                    fontSize: 10,
-                    fontFamily: FONT_MONO,
-                    borderRadius: 1,
-                    minWidth: 0,
-                    flex: 1,
-                    maxWidth: 180,
-                  }}
-                />
-                <button
-                  onClick={onSaveClass}
-                  style={{
-                    background: T.gold,
-                    color: T.bg,
-                    border: "none",
-                    padding: "3px 6px",
-                    fontSize: 10,
-                    borderRadius: 1,
-                    fontWeight: 600,
-                  }}
-                >
-                  Save
-                </button>
-                <button
-                  onClick={onCancelEditClass}
-                  style={{
-                    background: "transparent",
-                    border: `1px solid ${T.border}`,
-                    color: T.textDim,
-                    padding: "3px 6px",
-                    fontSize: 10,
-                    borderRadius: 1,
-                  }}
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={onEditClass}
-                title="Edit asset class"
-                style={{
-                  background: "rgba(201, 169, 97, 0.08)",
-                  border: `1px solid ${T.goldDim}55`,
-                  color: T.gold,
-                  padding: "2px 7px",
-                  fontSize: 9,
-                  fontFamily: FONT_MONO,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  borderRadius: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                {holding.assetClass || "Uncategorized"}
-                <Pencil size={8} />
-              </button>
-            )}
-          </div>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexShrink: 0 }}>
+          {dayChangePct != null && (
+            <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: dayColor, letterSpacing: "0.04em" }}>
+              {dayChangePct > 0 ? "+" : ""}
+              {dayChangePct.toFixed(2)}%
+            </span>
+          )}
+          <span
             style={{
               fontFamily: FONT_DISPLAY,
-              fontSize: 20,
+              fontSize: 15,
               fontWeight: 500,
-              letterSpacing: "-0.01em",
               color: T.text,
-              lineHeight: 1.1,
+              letterSpacing: "-0.01em",
             }}
           >
             {value != null ? maskMoney(value, valuesHidden) : busy ? "…" : "—"}
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: T.textDim,
-              fontFamily: FONT_MONO,
-              marginTop: 2,
-            }}
-          >
-            {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
-          </div>
-          {holding.originalCurrency === "BRL" && holding.originalPrice != null && (
-            <div
-              style={{
-                fontSize: 10,
-                color: T.textFaint,
-                fontFamily: FONT_MONO,
-                marginTop: 2,
-                letterSpacing: "0.04em",
-              }}
-            >
-              {valuesHidden ? "R$ ••••" : `R$ ${holding.originalPrice.toFixed(2)}`}
-              {holding.fxRate ? ` · ${holding.fxRate.toFixed(2)} BRL/USD` : ""}
-            </div>
-          )}
-          {dayChangePct != null && (
-            <div
-              style={{
-                fontSize: 10,
-                fontFamily: FONT_MONO,
-                marginTop: 2,
-                color: dayColor,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-                gap: 3,
-                letterSpacing: "0.04em",
-              }}
-            >
-              {dayChangePct > 0 ? (
-                <TrendingUp size={9} strokeWidth={2.5} />
-              ) : dayChangePct < 0 ? (
-                <TrendingDown size={9} strokeWidth={2.5} />
-              ) : (
-                <Minus size={9} strokeWidth={2.5} />
-              )}
-              {dayChangePct > 0 ? "+" : ""}
-              {dayChangePct.toFixed(2)}% today
-            </div>
-          )}
+          </span>
         </div>
       </div>
+
+      {/* Line 2: qty×price + class chip + alloc | action buttons */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+          <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
+            {fmtNum(holding.qty)} × {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
+          </span>
+          {holding.originalCurrency === "BRL" && holding.originalPrice != null && (
+            <span style={{ fontSize: 10, color: T.textFaint, fontFamily: FONT_MONO, flexShrink: 0 }}>
+              R${valuesHidden ? "••••" : holding.originalPrice.toFixed(2)}
+            </span>
+          )}
+          <button
+            onClick={onEditClass}
+            title="Edit asset class"
+            style={{
+              background: "rgba(201,169,97,0.08)",
+              border: `1px solid ${T.goldDim}55`,
+              color: T.gold,
+              padding: "1px 6px",
+              fontSize: 9,
+              fontFamily: FONT_MONO,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              borderRadius: 1,
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              flexShrink: 0,
+            }}
+          >
+            {holding.assetClass || "Uncategorized"}
+            <Pencil size={7} />
+          </button>
+          {actualPct != null && (
+            <span style={{ fontSize: 10, color: T.textFaint, fontFamily: FONT_MONO, flexShrink: 0 }}>
+              {fmtPct(actualPct)}
+              {holding.target > 0 ? ` · ${fmtPct(holding.target)} tgt` : ""}
+            </span>
+          )}
+          {holding.error && (
+            <span
+              style={{
+                fontSize: 10,
+                color: T.red,
+                fontFamily: FONT_MONO,
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                flexShrink: 0,
+              }}
+            >
+              <AlertCircle size={9} />
+              {holding.error}
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+          <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
+            <Pencil size={12} />
+          </IconButton>
+          <IconButton onClick={onRefresh} disabled={busy} label="Refresh">
+            <RefreshCw size={12} className={busy ? "spin" : ""} />
+          </IconButton>
+          <IconButton onClick={onRemove} label="Remove" danger>
+            <Trash2 size={12} />
+          </IconButton>
+        </div>
+      </div>
+
+      {/* Asset class inline edit — expands below rows */}
+      {editingClass && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+          <input
+            value={editingClassValue}
+            onChange={(e) => onChangeEditClassValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onSaveClass();
+              if (e.key === "Escape") onCancelEditClass();
+            }}
+            autoFocus
+            placeholder="Asset class"
+            style={{
+              background: T.cardElev,
+              border: `1px solid ${T.gold}`,
+              color: T.text,
+              padding: "3px 6px",
+              fontSize: 10,
+              fontFamily: FONT_MONO,
+              borderRadius: 1,
+              minWidth: 0,
+              flex: 1,
+              maxWidth: 180,
+            }}
+          />
+          <button
+            onClick={onSaveClass}
+            style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}
+          >
+            Save
+          </button>
+          <button
+            onClick={onCancelEditClass}
+            style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Inline edit panel for qty + target */}
       {editing && (
@@ -3283,18 +3251,10 @@ function HoldingRow({
             border: `1px solid ${T.border}`,
             borderRadius: 2,
             padding: 10,
-            marginTop: 10,
-            marginBottom: 4,
+            marginTop: 8,
           }}
         >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 8,
-              marginBottom: 8,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <div>
               <label
                 style={{
@@ -3309,13 +3269,7 @@ function HoldingRow({
               >
                 Quantity
               </label>
-              <Input
-                value={draftQty}
-                onChange={(e) => setDraftQty(e.target.value)}
-                onEnter={saveEdit}
-                inputMode="decimal"
-                autoFocus
-              />
+              <Input value={draftQty} onChange={(e) => setDraftQty(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
             </div>
             <div>
               <label
@@ -3331,12 +3285,7 @@ function HoldingRow({
               >
                 Target %
               </label>
-              <Input
-                value={draftTarget}
-                onChange={(e) => setDraftTarget(e.target.value)}
-                onEnter={saveEdit}
-                inputMode="decimal"
-              />
+              <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -3377,112 +3326,6 @@ function HoldingRow({
           </div>
         </div>
       )}
-
-      {/* Allocation bar */}
-      {holding.target > 0 && (
-        <div style={{ marginTop: 12, marginBottom: 4 }}>
-          <div
-            style={{
-              position: "relative",
-              height: 6,
-              background: T.cardElev,
-              borderRadius: 1,
-              overflow: "hidden",
-            }}
-          >
-            {/* Actual */}
-            {actualPct != null && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  height: "100%",
-                  width: `${Math.min(actualPct, 100)}%`,
-                  background: T.gold,
-                  transition: "width 0.4s ease",
-                }}
-              />
-            )}
-            {/* Target marker */}
-            <div
-              style={{
-                position: "absolute",
-                top: -2,
-                left: `${Math.min(holding.target, 100)}%`,
-                width: 2,
-                height: 10,
-                background: T.text,
-                transform: "translateX(-1px)",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginTop: 6,
-              fontSize: 11,
-              fontFamily: FONT_MONO,
-              color: T.textDim,
-            }}
-          >
-            <span>
-              Actual <span style={{ color: T.gold }}>{fmtPct(actualPct)}</span>
-            </span>
-            <span>
-              Target <span style={{ color: T.text }}>{fmtPct(holding.target)}</span>
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4, color: driftColor }}>
-              <DriftIcon size={10} strokeWidth={2.5} />
-              {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)}` : "—"}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Footer / actions */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginTop: 14,
-          paddingTop: 10,
-          borderTop: `1px solid ${T.borderSoft}`,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 10,
-            color: T.textFaint,
-            fontFamily: FONT_MONO,
-            letterSpacing: "0.05em",
-          }}
-        >
-          {holding.error ? (
-            <span style={{ color: T.red, display: "flex", alignItems: "center", gap: 4 }}>
-              <AlertCircle size={10} />
-              {holding.error}
-            </span>
-          ) : busy ? (
-            "Fetching price…"
-          ) : (
-            `Updated ${timeAgo(holding.lastUpdated)}`
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 4 }}>
-          <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
-            <Pencil size={13} />
-          </IconButton>
-          <IconButton onClick={onRefresh} disabled={busy} label="Refresh">
-            <RefreshCw size={13} className={busy ? "spin" : ""} />
-          </IconButton>
-          <IconButton onClick={onRemove} label="Remove" danger>
-            <Trash2 size={13} />
-          </IconButton>
-        </div>
-      </div>
     </div>
   );
 }
@@ -4108,98 +3951,77 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
   }
 
   return (
-    <div
-      className="card-enter"
-      style={{
-        background: T.card,
-        border: `1px solid ${T.borderSoft}`,
-        borderRadius: 4,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 10,
-          marginBottom: 10,
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div
-            style={{
-              fontFamily: FONT_DISPLAY,
-              fontSize: 18,
-              fontWeight: 500,
-              fontStyle: "italic",
-              color: T.text,
-              marginBottom: 2,
-              letterSpacing: "-0.01em",
-            }}
-          >
-            {holding.name}
-          </div>
-          <div
-            style={{
-              marginTop: 4,
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <span
-              style={{
-                background: "rgba(201, 169, 97, 0.08)",
-                border: `1px solid ${T.goldDim}55`,
-                color: T.gold,
-                padding: "2px 7px",
-                fontSize: 9,
-                fontFamily: FONT_MONO,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                borderRadius: 1,
-              }}
-            >
-              {holding.assetClass || "Manual"}
-            </span>
-            <span
-              style={{
-                fontSize: 9,
-                color: T.textFaint,
-                fontFamily: FONT_MONO,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
-              · {holding.manualMode === "value" ? "Total value" : "Qty × price"}
-            </span>
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div
-            style={{
-              fontFamily: FONT_DISPLAY,
-              fontSize: 20,
-              fontWeight: 500,
-              letterSpacing: "-0.01em",
-              color: T.text,
-              lineHeight: 1.1,
-            }}
-          >
-            {maskMoney(value, valuesHidden)}
-          </div>
+    <div className="card-enter" style={{ padding: "10px 14px" }}>
+      {/* Line 1: name | value */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span
+          style={{
+            fontFamily: FONT_DISPLAY,
+            fontSize: 13,
+            fontWeight: 500,
+            fontStyle: "italic",
+            color: T.text,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {holding.name}
+        </span>
+        <span
+          style={{
+            fontFamily: FONT_DISPLAY,
+            fontSize: 15,
+            fontWeight: 500,
+            color: T.text,
+            flexShrink: 0,
+            letterSpacing: "-0.01em",
+          }}
+        >
+          {maskMoney(value, valuesHidden)}
+        </span>
+      </div>
+
+      {/* Line 2: qty×price + class chip + alloc | action buttons */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
           {holding.manualMode === "qty_price" && (
-            <div
-              style={{
-                fontSize: 11,
-                color: T.textDim,
-                fontFamily: FONT_MONO,
-                marginTop: 2,
-              }}
-            >
+            <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_MONO, flexShrink: 0 }}>
               {fmtNum(holding.qty)} × {maskMoney(holding.manualPrice, valuesHidden)}
-            </div>
+            </span>
+          )}
+          <span
+            style={{
+              background: "rgba(201,169,97,0.08)",
+              border: `1px solid ${T.goldDim}55`,
+              color: T.gold,
+              padding: "1px 6px",
+              fontSize: 9,
+              fontFamily: FONT_MONO,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              borderRadius: 1,
+              flexShrink: 0,
+            }}
+          >
+            {holding.assetClass || "Manual"}
+          </span>
+          {actualPct != null && (
+            <span style={{ fontSize: 10, color: T.textFaint, fontFamily: FONT_MONO, flexShrink: 0 }}>
+              {fmtPct(actualPct)}
+              {holding.target > 0 ? ` · ${fmtPct(holding.target)} tgt` : ""}
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+          <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
+            <Pencil size={12} />
+          </IconButton>
+          {!locked && (
+            <IconButton onClick={onRemove} label="Remove" danger>
+              <Trash2 size={12} />
+            </IconButton>
           )}
         </div>
       </div>
@@ -4212,7 +4034,7 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
             border: `1px solid ${T.border}`,
             borderRadius: 2,
             padding: 10,
-            marginBottom: 10,
+            marginTop: 8,
           }}
         >
           {holding.manualMode === "value" ? (
@@ -4225,33 +4047,14 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
             />
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <Input
-                placeholder="Quantity"
-                value={draftQty}
-                onChange={(e) => setDraftQty(e.target.value)}
-                inputMode="decimal"
-              />
-              <Input
-                placeholder="Price"
-                value={draftPrice}
-                onChange={(e) => setDraftPrice(e.target.value)}
-                inputMode="decimal"
-              />
+              <Input placeholder="Quantity" value={draftQty} onChange={(e) => setDraftQty(e.target.value)} inputMode="decimal" />
+              <Input placeholder="Price" value={draftPrice} onChange={(e) => setDraftPrice(e.target.value)} inputMode="decimal" />
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: locked ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <Input
-              placeholder="Target %"
-              value={draftTarget}
-              onChange={(e) => setDraftTarget(e.target.value)}
-              inputMode="decimal"
-            />
+            <Input placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
             {!locked && (
-              <Input
-                placeholder="Class"
-                value={draftClass}
-                onChange={(e) => setDraftClass(e.target.value)}
-              />
+              <Input placeholder="Class" value={draftClass} onChange={(e) => setDraftClass(e.target.value)} />
             )}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -4292,100 +4095,6 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
           </div>
         </div>
       )}
-
-      {/* Allocation bar */}
-      {holding.target > 0 && (
-        <div style={{ marginTop: 12, marginBottom: 4 }}>
-          <div
-            style={{
-              position: "relative",
-              height: 6,
-              background: T.cardElev,
-              borderRadius: 1,
-              overflow: "hidden",
-            }}
-          >
-            {actualPct != null && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  height: "100%",
-                  width: `${Math.min(actualPct, 100)}%`,
-                  background: T.gold,
-                  transition: "width 0.4s ease",
-                }}
-              />
-            )}
-            <div
-              style={{
-                position: "absolute",
-                top: -2,
-                left: `${Math.min(holding.target, 100)}%`,
-                width: 2,
-                height: 10,
-                background: T.text,
-                transform: "translateX(-1px)",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginTop: 6,
-              fontSize: 11,
-              fontFamily: FONT_MONO,
-              color: T.textDim,
-            }}
-          >
-            <span>
-              Actual <span style={{ color: T.gold }}>{fmtPct(actualPct)}</span>
-            </span>
-            <span>
-              Target <span style={{ color: T.text }}>{fmtPct(holding.target)}</span>
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4, color: driftColor }}>
-              <DriftIcon size={10} strokeWidth={2.5} />
-              {drift != null ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)}` : "—"}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Footer / actions */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginTop: 14,
-          paddingTop: 10,
-          borderTop: `1px solid ${T.borderSoft}`,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 10,
-            color: T.textFaint,
-            fontFamily: FONT_MONO,
-            letterSpacing: "0.05em",
-          }}
-        >
-          {holding.lastUpdated ? `Updated ${timeAgo(holding.lastUpdated)}` : "Manual"}
-        </div>
-        <div style={{ display: "flex", gap: 4 }}>
-          <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
-            <Pencil size={13} />
-          </IconButton>
-          {!locked && (
-            <IconButton onClick={onRemove} label="Remove" danger>
-              <Trash2 size={13} />
-            </IconButton>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
