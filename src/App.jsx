@@ -1847,11 +1847,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       ? fmtPct(chartData.totalTarget)
                       : "100%"
                   }
+                  valuesHidden={valuesHidden}
                 />
                 <DonutChart
                   slices={chartData.actualSlices}
                   centerLabel="Actual"
                   centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
+                  valuesHidden={valuesHidden}
                 />
               </div>
 
@@ -3138,9 +3140,9 @@ function HoldingRow({
                     </div>
                     {driftUSD != null && (
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
+                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Delta Alloc</span>
                         <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
-                          {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
+                          {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(2)}%)
                         </span>
                       </div>
                     )}
@@ -3226,10 +3228,9 @@ function HoldingRow({
             {holding.price != null ? maskMoney(holding.price, valuesHidden) : "—"}
           </span>
           {drift != null && (
-            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0, display: "flex", alignItems: "center", gap: 3 }}>
-              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Drift </span>
-              <DriftIcon size={9} strokeWidth={2.5} />
-              {drift > 0 ? "+" : ""}{drift.toFixed(1)}%
+            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0 }}>
+              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Delta Alloc </span>
+              {drift > 0 ? "+" : ""}{drift.toFixed(2)}%
             </span>
           )}
           {holding.error && (
@@ -4055,9 +4056,9 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
                   </div>
                   {driftUSD != null && (
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Drift</span>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Delta Alloc</span>
                       <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor }}>
-                        {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(1)}%)
+                        {driftUSD > 0 ? "+" : ""}{maskMoney(driftUSD, valuesHidden)} ({drift > 0 ? "+" : ""}{drift.toFixed(2)}%)
                       </span>
                     </div>
                   )}
@@ -4126,10 +4127,9 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, onUpdate, onRemov
             </>
           )}
           {drift != null && (
-            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0, display: "flex", alignItems: "center", gap: 3 }}>
-              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Drift </span>
-              <DriftIcon size={9} strokeWidth={2.5} />
-              {drift > 0 ? "+" : ""}{drift.toFixed(1)}%
+            <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: driftColor, flexShrink: 0 }}>
+              <span style={{ fontSize: 9, color: T.textFaint, letterSpacing: "0.08em", textTransform: "uppercase" }}>Delta Alloc </span>
+              {drift > 0 ? "+" : ""}{drift.toFixed(2)}%
             </span>
           )}
         </div>
@@ -4240,7 +4240,7 @@ function ToggleButton({ active, onClick, label }) {
   );
 }
 
-function DonutChart({ slices, centerLabel, centerValue }) {
+function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
   const size = 140;
   const cx = size / 2;
   const cy = size / 2;
@@ -4448,7 +4448,7 @@ function DonutChart({ slices, centerLabel, centerValue }) {
               {fmtPct(hoveredSlice.pct)}
               {hoveredSlice.value != null && (
                 <span style={{ color: T.textDim, marginLeft: 6, fontSize: 11 }}>
-                  · {fmtMoney(hoveredSlice.value, { short: true })}
+                  · {maskMoney(hoveredSlice.value, valuesHidden, { short: true })}
                 </span>
               )}
             </div>
@@ -4500,7 +4500,7 @@ function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap }) {
         <div></div>
         <div style={{ textAlign: "right", minWidth: colMin }}>Target</div>
         <div style={{ textAlign: "right", minWidth: colMin }}>Actual</div>
-        <div style={{ textAlign: "right", minWidth: colMin + 8 }}>Drift</div>
+        <div style={{ textAlign: "right", minWidth: colMin + 8 }}>Delta Alloc</div>
         <div style={{ textAlign: "right", minWidth: colMin + 8 }}>Day</div>
       </div>
 
@@ -4514,8 +4514,8 @@ function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap }) {
             : Math.abs(drift) < 0.5
             ? T.textDim
             : drift > 0
-            ? T.green
-            : T.red;
+            ? T.red
+            : T.green;
 
         const day = dayChangeMap?.get(key);
         const dayColor =
