@@ -112,6 +112,30 @@ function fmtDate(dateStr) {
   }
 }
 
+function fmtYear(dateStr) {
+  return dateStr ? dateStr.slice(0, 4) : dateStr;
+}
+
+// Returns up to 6 evenly-spaced date strings from data, deduped by their displayed label.
+function getXTicks(data, yearOnly) {
+  if (data.length === 0) return [];
+  const MAX = 6;
+  const n = data.length;
+  const fmt = yearOnly ? fmtYear : fmtDate;
+  const seen = new Set();
+  const ticks = [];
+  for (let i = 0; i < MAX; i++) {
+    const idx = Math.round((i / (MAX - 1)) * (n - 1));
+    const date = data[idx].date;
+    const label = fmt(date);
+    if (!seen.has(label)) {
+      seen.add(label);
+      ticks.push(date);
+    }
+  }
+  return ticks;
+}
+
 function kpiColor(n) {
   if (n == null || isNaN(n)) return T.textDim;
   if (n > 0) return T.green;
@@ -300,6 +324,14 @@ export default function PerformanceView({ auth, onAuthFail }) {
 
   // If API response has no USD values (old cache), force comparison mode.
   const effectiveComparing = comparing || !hasUSD;
+
+  const yearOnly = useMemo(() => {
+    if (chartData.length < 2) return false;
+    const spanDays = (new Date(chartData[chartData.length - 1].date) - new Date(chartData[0].date)) / 86400000;
+    return spanDays > 365 * 2;
+  }, [chartData]);
+
+  const xTicks = useMemo(() => getXTicks(chartData, yearOnly), [chartData, yearOnly]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -515,18 +547,18 @@ export default function PerformanceView({ auth, onAuthFail }) {
                 paddingLeft: 8,
               }}
             >
-              Performance vs S&amp;P 500
+              {effectiveComparing ? "Portfolio VS S&P 500" : "Net Worth Growth"}
             </div>
             <ResponsiveContainer width="100%" height={320}>
               <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                 <XAxis
                   dataKey="date"
-                  tickFormatter={fmtDate}
+                  ticks={xTicks}
+                  tickFormatter={yearOnly ? fmtYear : fmtDate}
                   tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                   tickLine={false}
                   axisLine={{ stroke: T.border }}
-                  interval="preserveStartEnd"
                   angle={-45}
                   textAnchor="end"
                   height={60}
