@@ -2,7 +2,7 @@
 // Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
 // switches to a TWR % comparison chart.
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   LineChart,
   Line,
@@ -238,69 +238,6 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function DiagnosticsPanel({ meta }) {
-  const [copied, setCopied] = useState(false);
-  const text = JSON.stringify(meta, null, 2);
-  const copy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [text]);
-
-  return (
-    <details style={{ marginTop: 8 }}>
-      <summary
-        style={{
-          cursor: "pointer",
-          color: T.textFaint,
-          fontSize: 11,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-        }}
-      >
-        Diagnostics
-      </summary>
-      <div style={{ position: "relative", marginTop: 10 }}>
-        <button
-          onClick={copy}
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            fontFamily: FONT_MONO,
-            fontSize: 10,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            background: copied ? T.green + "22" : T.cardElev,
-            color: copied ? T.green : T.textFaint,
-            border: `1px solid ${copied ? T.green + "44" : T.border}`,
-            borderRadius: 3,
-            padding: "4px 8px",
-            cursor: "pointer",
-            transition: "color 0.2s, background 0.2s, border-color 0.2s",
-          }}
-        >
-          {copied ? "Copied!" : "Copy"}
-        </button>
-        <pre
-          style={{
-            margin: 0,
-            fontSize: 11,
-            color: T.textFaint,
-            background: T.bg,
-            padding: "12px 12px 12px 12px",
-            borderRadius: 4,
-            overflow: "auto",
-            maxHeight: 240,
-          }}
-        >
-          {text}
-        </pre>
-      </div>
-    </details>
-  );
-}
 
 export default function PerformanceView({ auth, onAuthFail }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
@@ -462,7 +399,6 @@ export default function PerformanceView({ auth, onAuthFail }) {
               ? "Could not fetch enough historical price data to build a chart."
               : "No performance data available."}
           </div>
-          {meta && <DiagnosticsPanel meta={meta} />}
         </div>
       )}
 
@@ -520,7 +456,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                 transition: "color 0.15s, background 0.15s, border-color 0.15s",
               }}
             >
-              {effectiveComparing ? "← Portfolio Value" : "Compare vs S&P 500"}
+              {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
             </button>
           </div>
 
@@ -534,7 +470,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
             }}
           >
             <KpiCard
-              label="Current Value"
+              label="Net Worth"
               value={fmtUSD(lastUSD)}
               color={T.text}
             />
@@ -568,15 +504,32 @@ export default function PerformanceView({ auth, onAuthFail }) {
               padding: "20px 8px 8px",
             }}
           >
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.16em",
+                textTransform: "uppercase",
+                color: T.textDim,
+                marginBottom: 8,
+                paddingLeft: 8,
+              }}
+            >
+              Performance vs S&amp;P 500
+            </div>
             <ResponsiveContainer width="100%" height={320}>
               <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                 <XAxis
-                  dataKey="label"
+                  dataKey="date"
+                  tickFormatter={fmtDate}
                   tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                   tickLine={false}
                   axisLine={{ stroke: T.border }}
-                  interval={0}
+                  interval="preserveStartEnd"
+                  angle={-45}
+                  textAnchor="end"
+                  height={60}
                 />
                 {effectiveComparing ? (
                   <YAxis
@@ -595,7 +548,13 @@ export default function PerformanceView({ auth, onAuthFail }) {
                     width={64}
                   />
                 )}
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip
+                  content={<CustomTooltip />}
+                  labelFormatter={(label) => {
+                    const d = new Date(label);
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                  }}
+                />
                 {effectiveComparing && (
                   <Legend
                     wrapperStyle={{
@@ -644,11 +603,6 @@ export default function PerformanceView({ auth, onAuthFail }) {
         </>
       )}
 
-      {state === "done" && meta && rawData.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <DiagnosticsPanel meta={meta} />
-        </div>
-      )}
     </div>
   );
 }
