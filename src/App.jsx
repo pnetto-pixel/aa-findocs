@@ -1191,7 +1191,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Build allocation chart data: target vs actual, grouped by class or per holding
   const chartData = useMemo(() => {
     const keyOf = (h) =>
-      chartGrouping === "class" ? h.assetClass || "Uncategorized" : h.name || h.ticker;
+      chartGrouping === "class" ? h.assetClass || "Uncategorized" : h.ticker || h.name;
 
     const targetMap = new Map();
     const actualMap = new Map();
