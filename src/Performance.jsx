@@ -103,37 +103,60 @@ function fmtUSDAxis(n) {
   return `$${n.toFixed(0)}`;
 }
 
-function fmtDate(dateStr) {
-  try {
-    const d = new Date(dateStr + "T00:00:00Z");
-    return d.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
-  } catch {
-    return dateStr;
-  }
-}
+// Computes X-axis tick timestamps and formatter for a given period.
+// Uses calendar boundaries (weeks / months / years) so ticks always land on
+// natural dates and recharts' numeric time scale spaces them proportionally.
+function computeXAxis(data, period) {
+  if (!data.length) return { ticks: [], tickFormatter: () => "" };
 
-function fmtYear(dateStr) {
-  return dateStr ? dateStr.slice(0, 4) : dateStr;
-}
+  const firstTs = data[0].dateTs;
+  const lastTs  = data[data.length - 1].dateTs;
+  const first   = new Date(firstTs);
+  const last    = new Date(lastTs);
+  const ticks   = [];
 
-// Returns up to 6 evenly-spaced date strings from data, deduped by their displayed label.
-function getXTicks(data, yearOnly) {
-  if (data.length === 0) return [];
-  const MAX = 6;
-  const n = data.length;
-  const fmt = yearOnly ? fmtYear : fmtDate;
-  const seen = new Set();
-  const ticks = [];
-  for (let i = 0; i < MAX; i++) {
-    const idx = Math.round((i / (MAX - 1)) * (n - 1));
-    const date = data[idx].date;
-    const label = fmt(date);
-    if (!seen.has(label)) {
-      seen.add(label);
-      ticks.push(date);
+  if (period === "1M") {
+    // Weekly ticks aligned to the next Monday inside the range
+    const d = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate()));
+    const dow = d.getUTCDay(); // 0=Sun … 6=Sat
+    d.setUTCDate(d.getUTCDate() + (dow === 1 ? 7 : (8 - dow) % 7 || 7));
+    while (d.getTime() <= lastTs) {
+      ticks.push(d.getTime());
+      d.setUTCDate(d.getUTCDate() + 7);
     }
+    return {
+      ticks,
+      tickFormatter: (ts) =>
+        new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+    };
   }
-  return ticks;
+
+  if (period === "5Y" || period === "MAX") {
+    const spanYears = (lastTs - firstTs) / (365.25 * 86400000);
+    const step = spanYears > 8 ? 2 : 1;
+    for (let y = first.getUTCFullYear() + 1; y <= last.getUTCFullYear(); y++) {
+      if ((y - first.getUTCFullYear() - 1) % step === 0) ticks.push(Date.UTC(y, 0, 1));
+    }
+    return {
+      ticks,
+      tickFormatter: (ts) => String(new Date(ts).getUTCFullYear()),
+    };
+  }
+
+  // 6M, YTD, 1Y — first-of-month ticks; 1Y skips every other month (~6 labels)
+  const monthStep = period === "1Y" ? 2 : 1;
+  const d = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 1));
+  let count = 0;
+  while (d.getTime() <= lastTs) {
+    if (count % monthStep === 0) ticks.push(d.getTime());
+    count++;
+    d.setUTCMonth(d.getUTCMonth() + 1);
+  }
+  return {
+    ticks,
+    tickFormatter: (ts) =>
+      new Date(ts).toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+  };
 }
 
 function kpiColor(n) {
@@ -144,13 +167,11 @@ function kpiColor(n) {
 }
 
 const PERIODS = [
-  { label: "1M", days: 30 },
-  { label: "3M", days: 91 },
-  { label: "6M", days: 182 },
+  { label: "1M",  days: 30 },
+  { label: "6M",  days: 182 },
   { label: "YTD", ytd: true },
-  { label: "1Y", days: 365 },
-  { label: "3Y", days: 1095 },
-  { label: "5Y", days: 1825 },
+  { label: "1Y",  days: 365 },
+  { label: "5Y",  days: 1825 },
   { label: "MAX", days: Infinity },
 ];
 
@@ -179,10 +200,9 @@ function getWindowData(rawData, period) {
   const baseS = slice[0].spy;
   const toWin = (v, base) => +((((1 + v / 100) / (1 + base / 100) - 1) * 100).toFixed(2));
 
-  const step = Math.max(1, Math.floor(slice.length / 10));
-  const data = slice.map((d, i) => ({
+  const data = slice.map((d) => ({
     date: d.date,
-    label: i % step === 0 ? fmtDate(d.date) : "",
+    dateTs: new Date(d.date + "T00:00:00Z").getTime(),
     portfolio: toWin(d.portfolio, baseP),
     spy: toWin(d.spy, baseS),
     usd: d.usd,
@@ -325,13 +345,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
   // If API response has no USD values (old cache), force comparison mode.
   const effectiveComparing = comparing || !hasUSD;
 
-  const yearOnly = useMemo(() => {
-    if (chartData.length < 2) return false;
-    const spanDays = (new Date(chartData[chartData.length - 1].date) - new Date(chartData[0].date)) / 86400000;
-    return spanDays > 365 * 2;
-  }, [chartData]);
-
-  const xTicks = useMemo(() => getXTicks(chartData, yearOnly), [chartData, yearOnly]);
+  const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -553,9 +567,12 @@ export default function PerformanceView({ auth, onAuthFail }) {
               <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                 <XAxis
-                  dataKey="date"
-                  ticks={xTicks}
-                  tickFormatter={yearOnly ? fmtYear : fmtDate}
+                  dataKey="dateTs"
+                  type="number"
+                  scale="time"
+                  domain={["dataMin", "dataMax"]}
+                  ticks={xAxis.ticks}
+                  tickFormatter={xAxis.tickFormatter}
                   tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                   tickLine={false}
                   axisLine={{ stroke: T.border }}
@@ -582,10 +599,11 @@ export default function PerformanceView({ auth, onAuthFail }) {
                 )}
                 <Tooltip
                   content={<CustomTooltip />}
-                  labelFormatter={(label) => {
-                    const d = new Date(label);
-                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                  }}
+                  labelFormatter={(ts) =>
+                    new Date(ts).toLocaleDateString("en-US", {
+                      month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+                    })
+                  }
                 />
                 {effectiveComparing && (
                   <Legend
