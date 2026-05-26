@@ -155,7 +155,7 @@ function computeXAxis(data, period) {
   return {
     ticks,
     tickFormatter: (ts) =>
-      new Date(ts).toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+      new Date(ts).toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }),
   };
 }
 
@@ -258,6 +258,10 @@ function KpiCard({ label, value, color }) {
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
+  // label arrives as a Unix-ms timestamp when XAxis type="number"
+  const dateLabel = typeof label === "number"
+    ? new Date(label).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : label;
   return (
     <div
       style={{
@@ -269,7 +273,7 @@ function CustomTooltip({ active, payload, label }) {
         fontSize: 12,
       }}
     >
-      <div style={{ color: T.textDim, marginBottom: 6 }}>{label}</div>
+      <div style={{ color: T.textDim, marginBottom: 6 }}>{dateLabel}</div>
       {payload.map((p) => (
         <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
           {p.name}:{" "}
@@ -597,14 +601,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                     width={64}
                   />
                 )}
-                <Tooltip
-                  content={<CustomTooltip />}
-                  labelFormatter={(ts) =>
-                    new Date(ts).toLocaleDateString("en-US", {
-                      month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
-                    })
-                  }
-                />
+                <Tooltip content={<CustomTooltip />} />
                 {effectiveComparing && (
                   <Legend
                     wrapperStyle={{
