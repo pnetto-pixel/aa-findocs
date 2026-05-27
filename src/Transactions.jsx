@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -2986,7 +2986,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
 
 // --- Main view -------------------------------------------------------------
 
-export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }) {
+export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
@@ -2994,7 +2994,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
-  const [valuesHidden, setValuesHidden] = useState(false);
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
@@ -3164,22 +3163,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
           {saving && " - saving..."}
         </div>
         {!formOpen && !editing && (
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button
-              onClick={() => setValuesHidden((v) => !v)}
-              title={valuesHidden ? "Show values" : "Hide values"}
-              style={{
-                background: "transparent",
-                border: `1px solid ${T.border}`,
-                color: T.textDim,
-                padding: "8px 10px",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              {valuesHidden ? <EyeOff size={13} /> : <Eye size={13} />}
-            </button>
+          <div style={{ display: "flex", gap: 6 }}>
             <button
               onClick={() => setImportOpen(true)}
               title="Import from CSV or paste"
