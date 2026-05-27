@@ -1629,6 +1629,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             <TransactionsView
               auth={auth}
               onAuthFail={onAuthFail}
+              valuesHidden={valuesHidden}
               knownTickers={Array.from(
                 new Set(
                   holdings
@@ -1656,7 +1657,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               }
             >
-              <PerformanceView auth={auth} onAuthFail={onAuthFail} />
+              <PerformanceView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
             </Suspense>
           )}
 

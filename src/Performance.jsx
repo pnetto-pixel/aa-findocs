@@ -3,7 +3,6 @@
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo } from "react";
-import { Eye, EyeOff } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -257,7 +256,7 @@ function KpiCard({ label, value, color }) {
   );
 }
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload, label, valuesHidden }) {
   if (!active || !payload?.length) return null;
   // label arrives as a Unix-ms timestamp when XAxis type="number"
   const dateLabel = typeof label === "number"
@@ -279,7 +278,7 @@ function CustomTooltip({ active, payload, label }) {
         <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
           {p.name}:{" "}
           {p.dataKey === "usd"
-            ? fmtUSD(p.value)
+            ? (valuesHidden ? "$ ••••" : fmtUSD(p.value))
             : `${p.value > 0 ? "+" : ""}${p.value?.toFixed(2)}%`}
         </div>
       ))}
@@ -288,14 +287,13 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 
-export default function PerformanceView({ auth, onAuthFail }) {
+export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
   const [rawData, setRawData] = useState([]); // all dates, unfiltered
   const [meta, setMeta] = useState(null);
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
-  const [valuesHidden, setValuesHidden] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -493,41 +491,23 @@ export default function PerformanceView({ auth, onAuthFail }) {
               })}
             </div>
 
-            <div style={{ display: "flex", gap: 6 }}>
-              <button
-                onClick={() => setComparing((c) => !c)}
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  padding: "5px 12px",
-                  border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
-                  borderRadius: 3,
-                  background: effectiveComparing ? T.orange + "18" : "transparent",
-                  color: effectiveComparing ? T.orange : T.textDim,
-                  cursor: "pointer",
-                  transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                }}
-              >
-                {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
-              </button>
-              <button
-                onClick={() => setValuesHidden((v) => !v)}
-                title={valuesHidden ? "Show values" : "Hide values"}
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${T.border}`,
-                  borderRadius: 3,
-                  color: T.textDim,
-                  padding: "5px 8px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
-                {valuesHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
+            <button
+              onClick={() => setComparing((c) => !c)}
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.08em",
+                padding: "5px 12px",
+                border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
+                borderRadius: 3,
+                background: effectiveComparing ? T.orange + "18" : "transparent",
+                color: effectiveComparing ? T.orange : T.textDim,
+                cursor: "pointer",
+                transition: "color 0.15s, background 0.15s, border-color 0.15s",
+              }}
+            >
+              {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
+            </button>
           </div>
 
           {/* KPI cards */}
@@ -546,20 +526,20 @@ export default function PerformanceView({ auth, onAuthFail }) {
             />
             <KpiCard
               label={`Portfolio ${period}`}
-              value={valuesHidden ? "••••%" : fmt(lastPortfolio)}
-              color={valuesHidden ? T.textDim : kpiColor(lastPortfolio)}
+              value={fmt(lastPortfolio)}
+              color={kpiColor(lastPortfolio)}
             />
             {effectiveComparing && (
               <>
                 <KpiCard
                   label={`S&P 500 ${period}`}
-                  value={valuesHidden ? "••••%" : fmt(lastSpy)}
-                  color={valuesHidden ? T.textDim : kpiColor(lastSpy)}
+                  value={fmt(lastSpy)}
+                  color={kpiColor(lastSpy)}
                 />
                 <KpiCard
                   label="Alpha"
-                  value={valuesHidden ? "••••%" : fmt(alpha)}
-                  color={valuesHidden ? T.textDim : kpiColor(alpha)}
+                  value={fmt(alpha)}
+                  color={kpiColor(alpha)}
                 />
               </>
             )}
@@ -621,7 +601,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
                     width={64}
                   />
                 )}
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={(props) => <CustomTooltip {...props} valuesHidden={valuesHidden} />} />
                 {effectiveComparing && (
                   <Legend
                     wrapperStyle={{
