@@ -1209,6 +1209,7 @@ function TransactionTable({
       <table
         style={{
           width: "100%",
+          minWidth: 760,
           borderCollapse: "collapse",
           fontFamily: FONT_MONO,
           fontSize: 11,
@@ -1216,16 +1217,16 @@ function TransactionTable({
         }}
       >
         <colgroup>
-          <col style={{ width: "26px" }} />
-          <col style={{ width: "72px" }} />
-          <col style={{ width: "34px" }} />
-          <col style={{ width: "66px" }} />
-          <col style={{ width: "50px" }} />
+          <col style={{ width: "28px" }} />
+          <col style={{ width: "90px" }} />
           <col style={{ width: "36px" }} />
-          <col style={{ width: "64px" }} />
-          <col style={{ width: "48px" }} />
+          <col style={{ width: "110px" }} />
+          <col style={{ width: "74px" }} />
+          <col style={{ width: "56px" }} />
+          <col style={{ width: "80px" }} />
+          <col style={{ width: "70px" }} />
           <col style={{ width: "auto" }} />
-          <col style={{ width: "48px" }} />
+          <col style={{ width: "56px" }} />
         </colgroup>
         <thead>
           <tr>
@@ -1254,7 +1255,7 @@ function TransactionTable({
             <HeaderCell col="date" label="Date" />
             <HeaderCell col="side" label="B/S" />
             <HeaderCell col="assetClass" label="Class" />
-            <HeaderCell col="ticker" label="Tkr" />
+            <HeaderCell col="ticker" label="Ticker" />
             <HeaderCell col="qty" label="Qty" align="right" />
             <HeaderCell col="price" label="Price" align="right" />
             <HeaderCell col="fee" label="Fee" align="right" />
@@ -1567,7 +1568,7 @@ function TransactionTable({
                   </td>
                   <td
                     style={{
-                      padding: "8px 2px",
+                      padding: "8px 10px",
                       color: tx.notes ? T.textDim : T.textFaint,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
