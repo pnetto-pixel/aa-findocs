@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download, Eye, EyeOff } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -773,6 +773,7 @@ function TransactionTable({
   onBulkDelete,
   onBulkAssetClass,
   busy,
+  valuesHidden,
 }) {
   const [openCol, setOpenCol] = useState(null); // column key for popover
   const [anchor, setAnchor] = useState(null);
@@ -1203,6 +1204,7 @@ function TransactionTable({
         </div>
       )}
 
+    <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
     <div style={{ position: "relative", border: `1px solid ${T.borderSoft}` }}>
       <table
         style={{
@@ -1544,24 +1546,24 @@ function TransactionTable({
                   <td
                     style={{
                       padding: "8px 4px",
-                      color: T.text,
+                      color: valuesHidden ? T.textFaint : T.text,
                       textAlign: "right",
                       whiteSpace: "nowrap",
                       fontSize: 10,
                     }}
                   >
-                    {fmtPrice(tx.price, cur)}
+                    {valuesHidden ? "••••" : fmtPrice(tx.price, cur)}
                   </td>
                   <td
                     style={{
                       padding: "8px 4px",
-                      color: tx.fee ? T.text : T.textFaint,
+                      color: valuesHidden ? T.textFaint : tx.fee ? T.text : T.textFaint,
                       textAlign: "right",
                       whiteSpace: "nowrap",
                       fontSize: 10,
                     }}
                   >
-                    {tx.fee ? fmtPrice(tx.fee, cur) : "—"}
+                    {valuesHidden ? "••••" : tx.fee ? fmtPrice(tx.fee, cur) : "—"}
                   </td>
                   <td
                     style={{
@@ -1658,6 +1660,7 @@ function TransactionTable({
           />
         );
       })()}
+    </div>
     </div>
     </div>
   );
@@ -2991,6 +2994,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
+  const [valuesHidden, setValuesHidden] = useState(false);
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
@@ -3160,7 +3164,22 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
           {saving && " - saving..."}
         </div>
         {!formOpen && !editing && (
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button
+              onClick={() => setValuesHidden((v) => !v)}
+              title={valuesHidden ? "Show values" : "Hide values"}
+              style={{
+                background: "transparent",
+                border: `1px solid ${T.border}`,
+                color: T.textDim,
+                padding: "8px 10px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              {valuesHidden ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
             <button
               onClick={() => setImportOpen(true)}
               title="Import from CSV or paste"
@@ -3255,6 +3274,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [] }
         onBulkDelete={handleBulkDelete}
         onBulkAssetClass={handleBulkAssetClass}
         busy={saving}
+        valuesHidden={valuesHidden}
       />
 
       <ImportModal

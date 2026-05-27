@@ -3,6 +3,7 @@
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -294,6 +295,7 @@ export default function PerformanceView({ auth, onAuthFail }) {
   const [meta, setMeta] = useState(null);
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
+  const [valuesHidden, setValuesHidden] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,23 +493,41 @@ export default function PerformanceView({ auth, onAuthFail }) {
               })}
             </div>
 
-            <button
-              onClick={() => setComparing((c) => !c)}
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 11,
-                letterSpacing: "0.08em",
-                padding: "5px 12px",
-                border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
-                borderRadius: 3,
-                background: effectiveComparing ? T.orange + "18" : "transparent",
-                color: effectiveComparing ? T.orange : T.textDim,
-                cursor: "pointer",
-                transition: "color 0.15s, background 0.15s, border-color 0.15s",
-              }}
-            >
-              {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
-            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => setComparing((c) => !c)}
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  padding: "5px 12px",
+                  border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
+                  borderRadius: 3,
+                  background: effectiveComparing ? T.orange + "18" : "transparent",
+                  color: effectiveComparing ? T.orange : T.textDim,
+                  cursor: "pointer",
+                  transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                }}
+              >
+                {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
+              </button>
+              <button
+                onClick={() => setValuesHidden((v) => !v)}
+                title={valuesHidden ? "Show values" : "Hide values"}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 3,
+                  color: T.textDim,
+                  padding: "5px 8px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                {valuesHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
           </div>
 
           {/* KPI cards */}
@@ -521,25 +541,25 @@ export default function PerformanceView({ auth, onAuthFail }) {
           >
             <KpiCard
               label="Net Worth"
-              value={fmtUSD(lastUSD)}
+              value={valuesHidden ? "$ ••••" : fmtUSD(lastUSD)}
               color={T.text}
             />
             <KpiCard
               label={`Portfolio ${period}`}
-              value={fmt(lastPortfolio)}
-              color={kpiColor(lastPortfolio)}
+              value={valuesHidden ? "••••%" : fmt(lastPortfolio)}
+              color={valuesHidden ? T.textDim : kpiColor(lastPortfolio)}
             />
             {effectiveComparing && (
               <>
                 <KpiCard
                   label={`S&P 500 ${period}`}
-                  value={fmt(lastSpy)}
-                  color={kpiColor(lastSpy)}
+                  value={valuesHidden ? "••••%" : fmt(lastSpy)}
+                  color={valuesHidden ? T.textDim : kpiColor(lastSpy)}
                 />
                 <KpiCard
                   label="Alpha"
-                  value={fmt(alpha)}
-                  color={kpiColor(alpha)}
+                  value={valuesHidden ? "••••%" : fmt(alpha)}
+                  color={valuesHidden ? T.textDim : kpiColor(alpha)}
                 />
               </>
             )}
