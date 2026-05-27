@@ -594,11 +594,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
                   />
                 ) : (
                   <YAxis
-                    tickFormatter={fmtUSDAxis}
+                    tickFormatter={valuesHidden ? () => "" : fmtUSDAxis}
                     tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                     tickLine={false}
                     axisLine={false}
-                    width={64}
+                    width={valuesHidden ? 16 : 64}
                   />
                 )}
                 <Tooltip content={(props) => <CustomTooltip {...props} valuesHidden={valuesHidden} />} />
