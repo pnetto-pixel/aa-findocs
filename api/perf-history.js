@@ -29,8 +29,8 @@ function isBrazilianTicker(t) {
 
 function perfKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
-  // v10: portfolioUSD[] added to response.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v10');
+  // v11: INCLUDED_CLASSES expanded to Bonds, Bank Bonds, BRA Fixed Income.
+  return auth.storageKey.replace(/:holdings$/, ':perf-history:v11');
 }
 
 // Returns seconds until the next US market close (≈21:00 UTC = 4 PM ET).

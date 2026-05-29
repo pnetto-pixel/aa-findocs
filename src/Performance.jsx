@@ -758,6 +758,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const lastDate = rawData.length > 0 ? rawData[rawData.length - 1].date : null;
 
+  // Live net worth: sum of all priced positions using current holdings prices.
+  // This matches the Position Performance total and is always up-to-date,
+  // unlike the chart's lastUSD which comes from cached historical candles.
+  const liveNetWorth = useMemo(
+    () => positionRows.length > 0 ? positionRows.reduce((s, r) => s + r.totalValue, 0) : null,
+    [positionRows]
+  );
+
   // Shared card header button style (matches Rebalance Suggestions in Holdings tab).
   function cardHeaderStyle(open) {
     return {
@@ -964,7 +972,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 >
                   <KpiCard
                     label="Net Worth"
-                    value={valuesHidden ? "$ ••••" : fmtUSD(lastUSD)}
+                    value={valuesHidden ? "$ ••••" : fmtUSD(liveNetWorth ?? lastUSD)}
                     color={T.text}
                   />
                   <KpiCard
