@@ -709,7 +709,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     for (const tx of transactions) {
       const ticker = tx.ticker?.toUpperCase();
       if (!ticker) continue;
-      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null };
+      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null, lastBuyDate: null, lastBuyNotes: null };
       const pos = positions[ticker];
       // Asset class comes from the transactions themselves (last non-empty wins),
       // not from the current holding.
@@ -724,6 +724,10 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (tx.side === "buy") {
         pos.totalQty += qty;
         pos.totalCost += qty * price;
+        if (!pos.lastBuyDate || tx.date > pos.lastBuyDate) {
+          pos.lastBuyDate = tx.date;
+          pos.lastBuyNotes = tx.notes || "";
+        }
       } else if (tx.side === "sell") {
         const avgBefore = pos.totalQty > 0 ? pos.totalCost / pos.totalQty : 0;
         pos.totalQty -= qty;
@@ -735,6 +739,30 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     for (const [ticker, pos] of Object.entries(positions)) {
       if (pos.totalQty < 0.0001) continue;
       if (pos.noFx) continue;
+      const assetClass = pos.assetClass || "Uncategorized";
+
+      // Bank Bonds: calculate accrued value locally; no live price fetch.
+      if (assetClass === "Bank Bonds") {
+        const avgCost = pos.totalCost / pos.totalQty;
+        const totalCost = avgCost * pos.totalQty;
+        let totalValue = totalCost; // fallback: face value
+        if (pos.lastBuyNotes && pos.lastBuyDate) {
+          const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
+          const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
+          if (couponM && maturityM) {
+            const annualRate = parseFloat(couponM[1]) / 100;
+            const purchaseTs = new Date(pos.lastBuyDate + "T00:00:00").getTime();
+            const todayTs = Date.now();
+            const daysSincePurchase = (todayTs - purchaseTs) / 86400000;
+            totalValue = totalCost + totalCost * annualRate * (daysSincePurchase / 365);
+          }
+        }
+        const totalGainLoss = totalValue - totalCost;
+        const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
+        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct });
+        continue;
+      }
+
       const entry = priceMap[ticker];
       const currentPrice = entry?.price;
       if (currentPrice == null) continue;
@@ -743,7 +771,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const totalValue = currentPrice * pos.totalQty;
       const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      const assetClass = pos.assetClass || "Uncategorized";
       rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
     }
     return rows;
