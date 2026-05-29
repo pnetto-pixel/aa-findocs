@@ -120,6 +120,7 @@ function fmtPrice(n, currency = "USD") {
 // Each entry: { id, currency }. UI uses sorted ids.
 const ASSET_CLASSES = [
   { id: "Alternative", currency: "USD" },
+  { id: "Bank Bonds", currency: "USD" },
   { id: "Bonds", currency: "USD" },
   { id: "BRA Fixed Income", currency: "BRL" },
   { id: "BRA Stocks", currency: "BRL" },
@@ -514,6 +515,9 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
 // B3 ticker pattern: 4 letters + 1-2 digits (BBSE3, TAEE11, XPLG11, BOVA11).
 const B3_RX = /^[A-Z]{4}\d{1,2}$/;
 
+// CUSIP pattern: 9 alphanumeric chars (e.g. 949764WE0 for CDs / Bank Bonds).
+const CUSIP_RX = /^[A-Z0-9]{9}$/;
+
 // Infer currency from ticker. Returns "USD" | "BRL" | null (ambiguous).
 // Cash/Tesouro/CD style tickers (with hyphen or non-standard format) -> null.
 function inferCurrency(ticker) {
@@ -539,13 +543,15 @@ const REAL_ESTATE_ETFS = new Set([
 ]);
 
 // Returns the best-guess asset class for a ticker.
-// Known fixed-income / REIT ETFs win; then B3 pattern → BRA Stocks; then US pattern → Stocks.
+// Known fixed-income / REIT ETFs win; then CUSIP → Bank Bonds;
+// then B3 pattern → BRA Stocks; then US pattern → Stocks.
 function inferAssetClass(ticker) {
   if (!ticker) return null;
   const t = String(ticker).trim().toUpperCase();
   if (!t) return null;
   if (FIXED_INCOME_ETFS.has(t)) return 'Bonds';
   if (REAL_ESTATE_ETFS.has(t)) return 'Real Estate';
+  if (CUSIP_RX.test(t)) return 'Bank Bonds';
   const currency = inferCurrency(t);
   if (currency === 'BRL') return 'BRA Stocks';
   if (currency === 'USD') return 'Stocks';
@@ -2131,6 +2137,7 @@ function parseFidelityCSV(text) {
   const idxDate = colOf("Run Date");
   const idxAction = colOf("Action");
   const idxSymbol = colOf("Symbol");
+  const idxDesc = colOf("Symbol Description");
   const idxPrice = colOf("Price ($)");
   const idxQty = colOf("Quantity");
   const idxFees = colOf("Fees ($)");
@@ -2189,8 +2196,18 @@ function parseFidelityCSV(text) {
       if (isFinite(fn) && fn > 0) fee = fn;
     }
 
-    // Infer asset class from the symbol; fall back to "Stocks" for plain US tickers
-    // and unrecognised symbols (e.g. CD cusips like 949764WE0 that need manual review).
+    // Extract coupon rate and maturity date from the Symbol Description field.
+    let notes = "";
+    if (idxDesc >= 0) {
+      const desc = String(arr[idxDesc] || "");
+      const couponM = desc.match(/(\d+\.\d+)%/);
+      const maturityM = desc.match(/(\d{2}\/\d{2}\/\d{4})$/);
+      if (couponM && maturityM) {
+        notes = `${couponM[1]}% | ${maturityM[1]}`;
+      }
+    }
+
+    // Infer asset class from the symbol; fall back to "Stocks" for plain US tickers.
     const tx = {
       id: newId(),
       date: isoDate,
@@ -2201,7 +2218,7 @@ function parseFidelityCSV(text) {
       price: priceN,
       currency: "USD",
       fee,
-      notes: "",
+      notes,
       createdAt: new Date().toISOString(),
     };
 
@@ -2778,9 +2795,10 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     }}
                   >
                     Imports only YOU BOUGHT / YOU SOLD rows. Dividends,
-                    contributions, interest, and redemptions are skipped. All
-                    transactions are assigned to USD and Asset Class "Stocks"
-                    (you can edit CDs/bonds afterward).
+                    contributions, interest, and redemptions are skipped.
+                    CUSIP symbols are classified as Bank Bonds with coupon and
+                    maturity extracted from the description. All other
+                    transactions default to "Stocks".
                   </div>
                   {fileError && (
                     <div
