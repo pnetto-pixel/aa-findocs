@@ -33,6 +33,17 @@ function perfKeyFromAuth(auth) {
   return auth.storageKey.replace(/:holdings$/, ':perf-history:v10');
 }
 
+// Returns seconds until the next US market close (≈21:00 UTC = 4 PM ET).
+// Cache is valid until the next close so data always reflects the last settled day.
+function secondsUntilNextMarketClose() {
+  const now = Date.now();
+  const MS_PER_DAY = 86400000;
+  const todayMidnightUTC = now - (now % MS_PER_DAY);
+  const todayClose = todayMidnightUTC + 21 * 3600000; // 21:00 UTC ≈ 4 PM ET
+  const nextClose = now < todayClose ? todayClose : todayClose + MS_PER_DAY;
+  return Math.max(1800, Math.round((nextClose - now) / 1000)); // minimum 30 min
+}
+
 function toDateStr(unixSec) {
   return new Date(unixSec * 1000).toISOString().slice(0, 10);
 }
@@ -485,7 +496,7 @@ export default async function handler(req, res) {
 
   if (cacheKey && result.dates.length > 0) {
     try {
-      await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
+      await redis.set(cacheKey, JSON.stringify(result), 'EX', secondsUntilNextMarketClose());
     } catch {}
   }
 
