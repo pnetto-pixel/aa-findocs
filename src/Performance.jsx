@@ -1,9 +1,9 @@
-// src/Performance.jsx — Performance (TEST ONLY) view
+// src/Performance.jsx — Performance view
 // Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo, Fragment } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, TrendingUp, BarChart2 } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -102,6 +102,14 @@ function fmtUSDAxis(n) {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
   return `$${n.toFixed(0)}`;
+}
+
+function fmtDateLabel(isoDate) {
+  if (!isoDate) return null;
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
 }
 
 // Computes X-axis tick timestamps and formatter for a given period.
@@ -243,7 +251,7 @@ function KpiCard({ label, value, color }) {
   return (
     <div
       style={{
-        background: T.card,
+        background: T.cardElev,
         border: `1px solid ${T.borderSoft}`,
         borderRadius: 4,
         padding: "18px 20px",
@@ -307,7 +315,6 @@ function CustomTooltip({ active, payload, label, valuesHidden }) {
     </div>
   );
 }
-
 
 // Width reserved for the frozen Ticker column (kept in sync between header,
 // body and TOTAL row so the sticky offset lines up).
@@ -478,91 +485,128 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   }
 
   return (
-    <div style={{ marginTop: 32 }}>
-      {/* Section header: title + collapse chevron + Group toggle */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 14 }}>
-        <button
-          onClick={onToggle}
-          style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+    <div style={{ marginTop: 28 }}>
+      {/* Card header — same pattern as Rebalance Suggestions */}
+      <button
+        onClick={onToggle}
+        style={{
+          width: "100%",
+          background: T.card,
+          border: `1px solid ${T.borderSoft}`,
+          borderRadius: open ? "4px 4px 0 0" : 4,
+          padding: "14px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: T.text,
+          cursor: "pointer",
+        }}
+      >
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            fontFamily: FONT_MONO,
+            fontSize: 11,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: T.gold,
+          }}
         >
-          <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: T.textDim }}>
-            Position Performance
-          </span>
-          <ChevronDown
-            size={13}
-            color={T.textFaint}
-            style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }}
-          />
-        </button>
-        {open && (
-          <button
-            onClick={() => setGrouped((g) => !g)}
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.1em",
-              padding: "4px 10px",
-              border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
-              borderRadius: 3,
-              background: grouped ? T.gold + "14" : "transparent",
-              color: grouped ? T.gold : T.textFaint,
-              cursor: "pointer",
-              transition: "color 0.15s, background 0.15s, border-color 0.15s",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {grouped ? "Flat view" : "Group by class"}
-          </button>
-        )}
-      </div>
+          <BarChart2 size={14} strokeWidth={2} />
+          Position Performance
+        </span>
+        <ChevronDown
+          size={16}
+          style={{
+            color: T.textDim,
+            transform: open ? "rotate(180deg)" : "none",
+            transition: "transform 0.2s",
+          }}
+        />
+      </button>
 
       {open && (
-        <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, overflowX: "auto" }}>
-          <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                {COLS.map((col) => (
-                  <th
-                    key={col.key}
-                    onClick={() => handleSort(col.key)}
-                    style={{
-                      ...thBase,
-                      ...(col.key === "ticker" ? stickyCol(T.card, 3) : null),
-                      textAlign: col.align,
-                      color: col.key === sortCol ? T.textDim : T.textFaint,
-                    }}
-                  >
-                    {col.label}
-                    <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {/* Always-visible TOTAL row */}
-              <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
+        <div
+          style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderTop: "none",
+            borderRadius: "0 0 4px 4px",
+            marginTop: -1,
+            overflow: "hidden",
+          }}
+        >
+          {/* Group by toggle */}
+          <div style={{ padding: "12px 16px 0", display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={() => setGrouped((g) => !g)}
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                padding: "4px 10px",
+                border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
+                borderRadius: 3,
+                background: grouped ? T.gold + "14" : "transparent",
+                color: grouped ? T.gold : T.textFaint,
+                cursor: "pointer",
+                transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {grouped ? "Flat view" : "Group by class"}
+            </button>
+          </div>
 
-              {grouped && classGroups ? (
-                classGroups.map(({ cls, rows: clsRows, ...agg }) => {
-                  const isCollapsed = collapsedClasses.has(cls);
-                  return (
-                    <Fragment key={`cls-${cls}`}>
-                      <tr onClick={() => toggleClass(cls)} style={{ cursor: "pointer" }}>
-                        {renderSummaryRow(cls, agg, T.bg, 2, true, isCollapsed)}
-                      </tr>
-                      {!isCollapsed && clsRows.map((row) => (
-                        <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                      ))}
-                    </Fragment>
-                  );
-                })
-              ) : (
-                sortedRows.map((row) => (
-                  <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                ))
-              )}
-            </tbody>
-          </table>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {COLS.map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      style={{
+                        ...thBase,
+                        ...(col.key === "ticker" ? stickyCol(T.card, 3) : null),
+                        textAlign: col.align,
+                        color: col.key === sortCol ? T.textDim : T.textFaint,
+                      }}
+                    >
+                      {col.label}
+                      <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Always-visible TOTAL row */}
+                <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
+
+                {grouped && classGroups ? (
+                  classGroups.map(({ cls, rows: clsRows, ...agg }) => {
+                    const isCollapsed = collapsedClasses.has(cls);
+                    return (
+                      <Fragment key={`cls-${cls}`}>
+                        <tr onClick={() => toggleClass(cls)} style={{ cursor: "pointer" }}>
+                          {renderSummaryRow(cls, agg, T.bg, 2, true, isCollapsed)}
+                        </tr>
+                        {!isCollapsed && clsRows.map((row) => (
+                          <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                        ))}
+                      </Fragment>
+                    );
+                  })
+                ) : (
+                  sortedRows.map((row) => (
+                    <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
@@ -577,6 +621,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
   const [transactions, setTransactions] = useState([]);
+  const [perfCardOpen, setPerfCardOpen] = useState(true);
   const [posTableOpen, setPosTableOpen] = useState(true);
 
   useEffect(() => {
@@ -711,6 +756,33 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       ? +(lastPortfolio - lastSpy).toFixed(2)
       : null;
 
+  const lastDate = rawData.length > 0 ? rawData[rawData.length - 1].date : null;
+
+  // Shared card header button style (matches Rebalance Suggestions in Holdings tab).
+  function cardHeaderStyle(open) {
+    return {
+      width: "100%",
+      background: T.card,
+      border: `1px solid ${T.borderSoft}`,
+      borderRadius: open ? "4px 4px 0 0" : 4,
+      padding: "14px 16px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      color: T.text,
+      cursor: "pointer",
+    };
+  }
+
+  const cardBodyStyle = {
+    background: T.card,
+    border: `1px solid ${T.borderSoft}`,
+    borderTop: "none",
+    borderRadius: "0 0 4px 4px",
+    padding: 20,
+    marginTop: -1,
+  };
+
   return (
     <div style={{ paddingBottom: 40 }}>
       {/* Page title */}
@@ -720,291 +792,323 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           fontWeight: 500,
           fontSize: 44,
           lineHeight: 1,
-          margin: "12px 0 4px",
+          margin: "12px 0 20px",
           letterSpacing: "-0.02em",
           fontStyle: "italic",
           color: T.text,
         }}
       >
-        Performance{" "}
-        <span
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 13,
-            fontStyle: "normal",
-            fontWeight: 400,
-            letterSpacing: "0.1em",
-            color: T.gold,
-            verticalAlign: "middle",
-          }}
-        >
-          TEST ONLY
-        </span>
+        Performance
       </h1>
 
-      {/* Disclaimer */}
-      <p
-        style={{
-          fontFamily: FONT_MONO,
-          fontSize: 11,
-          color: T.textFaint,
-          margin: "0 0 24px",
-          letterSpacing: "0.04em",
-        }}
-      >
-        Excludes fixed income &amp; unallocated assets
-      </p>
-
-      {state === "loading" && (
-        <div
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 13,
-            color: T.textDim,
-            padding: "40px 0",
-            textAlign: "center",
-          }}
+      {/* Portfolio Performance & Net Worth card */}
+      <section>
+        <button
+          onClick={() => setPerfCardOpen((o) => !o)}
+          style={cardHeaderStyle(perfCardOpen)}
         >
-          Loading performance data…
-        </div>
-      )}
-
-      {state === "error" && (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${T.red}44`,
-            borderRadius: 4,
-            padding: "16px 20px",
-            fontFamily: FONT_MONO,
-            fontSize: 13,
-            color: T.red,
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {state === "done" && rawData.length === 0 && (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${T.borderSoft}`,
-            borderRadius: 4,
-            padding: "20px 24px",
-            fontFamily: FONT_MONO,
-            fontSize: 13,
-            color: T.textDim,
-          }}
-        >
-          <div style={{ marginBottom: 12 }}>
-            {meta?.reason === "no-eligible-transactions"
-              ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate)."
-              : meta?.reason === "no-priced-days"
-              ? "Could not fetch enough historical price data to build a chart."
-              : "No performance data available."}
-          </div>
-        </div>
-      )}
-
-      {state === "done" && rawData.length > 0 && (
-        <>
-          {/* Period selector + compare toggle */}
-          <div
+          <span
             style={{
               display: "flex",
               alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 16,
-              flexWrap: "wrap",
-              gap: 8,
+              gap: 10,
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              color: T.gold,
             }}
           >
-            <div style={{ display: "flex", gap: 2 }}>
-              {PERIODS.map(({ label }) => {
-                const active = period === label;
-                return (
+            <TrendingUp size={14} strokeWidth={2} />
+            Portfolio Performance &amp; Net Worth
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {state === "loading" && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
+                Loading…
+              </span>
+            )}
+            {state === "done" && lastDate && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
+                as of {fmtDateLabel(lastDate)}
+              </span>
+            )}
+            <ChevronDown
+              size={16}
+              style={{
+                color: T.textDim,
+                transform: perfCardOpen ? "rotate(180deg)" : "none",
+                transition: "transform 0.2s",
+              }}
+            />
+          </div>
+        </button>
+
+        {perfCardOpen && (
+          <div style={cardBodyStyle}>
+            {state === "loading" && (
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 13,
+                  color: T.textDim,
+                  padding: "32px 0",
+                  textAlign: "center",
+                }}
+              >
+                Loading performance data…
+              </div>
+            )}
+
+            {state === "error" && (
+              <div
+                style={{
+                  background: T.cardElev,
+                  border: `1px solid ${T.red}44`,
+                  borderRadius: 4,
+                  padding: "16px 20px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 13,
+                  color: T.red,
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            {state === "done" && rawData.length === 0 && (
+              <div
+                style={{
+                  background: T.cardElev,
+                  borderRadius: 4,
+                  padding: "20px 24px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 13,
+                  color: T.textDim,
+                }}
+              >
+                {meta?.reason === "no-eligible-transactions"
+                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, BRA Fixed Income)."
+                  : meta?.reason === "no-priced-days"
+                  ? "Could not fetch enough historical price data to build a chart."
+                  : "No performance data available."}
+              </div>
+            )}
+
+            {state === "done" && rawData.length > 0 && (
+              <>
+                {/* Period selector + compare toggle */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 20,
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 2 }}>
+                    {PERIODS.map(({ label }) => {
+                      const active = period === label;
+                      return (
+                        <button
+                          key={label}
+                          onClick={() => setPeriod(label)}
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 11,
+                            letterSpacing: "0.08em",
+                            padding: "5px 10px",
+                            border: `1px solid ${active ? T.blue + "66" : T.border}`,
+                            borderRadius: 3,
+                            background: active ? T.blue + "18" : "transparent",
+                            color: active ? T.blue : T.textDim,
+                            cursor: "pointer",
+                            transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   <button
-                    key={label}
-                    onClick={() => setPeriod(label)}
+                    onClick={() => setComparing((c) => !c)}
                     style={{
                       fontFamily: FONT_MONO,
                       fontSize: 11,
                       letterSpacing: "0.08em",
-                      padding: "5px 10px",
-                      border: `1px solid ${active ? T.blue + "66" : T.border}`,
+                      padding: "5px 12px",
+                      border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
                       borderRadius: 3,
-                      background: active ? T.blue + "18" : "transparent",
-                      color: active ? T.blue : T.textDim,
+                      background: effectiveComparing ? T.orange + "18" : "transparent",
+                      color: effectiveComparing ? T.orange : T.textDim,
                       cursor: "pointer",
                       transition: "color 0.15s, background 0.15s, border-color 0.15s",
                     }}
                   >
-                    {label}
+                    {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
                   </button>
-                );
-              })}
-            </div>
+                </div>
 
-            <button
-              onClick={() => setComparing((c) => !c)}
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 11,
-                letterSpacing: "0.08em",
-                padding: "5px 12px",
-                border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
-                borderRadius: 3,
-                background: effectiveComparing ? T.orange + "18" : "transparent",
-                color: effectiveComparing ? T.orange : T.textDim,
-                cursor: "pointer",
-                transition: "color 0.15s, background 0.15s, border-color 0.15s",
-              }}
-            >
-              {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
-            </button>
-          </div>
+                {/* KPI cards */}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 12,
+                    marginBottom: 24,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <KpiCard
+                    label="Net Worth"
+                    value={valuesHidden ? "$ ••••" : fmtUSD(lastUSD)}
+                    color={T.text}
+                  />
+                  <KpiCard
+                    label={`Portfolio ${period}`}
+                    value={fmt(lastPortfolio)}
+                    color={kpiColor(lastPortfolio)}
+                  />
+                  {effectiveComparing && (
+                    <>
+                      <KpiCard
+                        label={`S&P 500 ${period}`}
+                        value={fmt(lastSpy)}
+                        color={kpiColor(lastSpy)}
+                      />
+                      <KpiCard
+                        label="Alpha"
+                        value={fmt(alpha)}
+                        color={kpiColor(alpha)}
+                      />
+                    </>
+                  )}
+                </div>
 
-          {/* KPI cards */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              marginBottom: 24,
-              flexWrap: "wrap",
-            }}
-          >
-            <KpiCard
-              label="Net Worth"
-              value={valuesHidden ? "$ ••••" : fmtUSD(lastUSD)}
-              color={T.text}
-            />
-            <KpiCard
-              label={`Portfolio ${period}`}
-              value={fmt(lastPortfolio)}
-              color={kpiColor(lastPortfolio)}
-            />
-            {effectiveComparing && (
-              <>
-                <KpiCard
-                  label={`S&P 500 ${period}`}
-                  value={fmt(lastSpy)}
-                  color={kpiColor(lastSpy)}
-                />
-                <KpiCard
-                  label="Alpha"
-                  value={fmt(alpha)}
-                  color={kpiColor(alpha)}
-                />
+                {/* Chart */}
+                <div
+                  style={{
+                    background: T.cardElev,
+                    border: `1px solid ${T.borderSoft}`,
+                    borderRadius: 4,
+                    padding: "20px 8px 8px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      letterSpacing: "0.16em",
+                      textTransform: "uppercase",
+                      color: T.textDim,
+                      marginBottom: 8,
+                      paddingLeft: 8,
+                    }}
+                  >
+                    {effectiveComparing ? "Portfolio VS S&P 500" : "Net Worth Growth"}
+                  </div>
+                  <ResponsiveContainer width="100%" height={320}>
+                    <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                      <XAxis
+                        dataKey="dateTs"
+                        type="number"
+                        scale="time"
+                        domain={["dataMin", "dataMax"]}
+                        ticks={xAxis.ticks}
+                        tickFormatter={xAxis.tickFormatter}
+                        tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                        tickLine={false}
+                        axisLine={{ stroke: T.border }}
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                      />
+                      {effectiveComparing ? (
+                        <YAxis
+                          tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
+                          tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                          tickLine={false}
+                          axisLine={false}
+                          width={52}
+                        />
+                      ) : (
+                        <YAxis
+                          tickFormatter={valuesHidden ? () => "" : fmtUSDAxis}
+                          tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                          tickLine={false}
+                          axisLine={false}
+                          width={valuesHidden ? 16 : 64}
+                        />
+                      )}
+                      <Tooltip content={(props) => <CustomTooltip {...props} valuesHidden={valuesHidden} />} />
+                      {effectiveComparing && (
+                        <Legend
+                          wrapperStyle={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 11,
+                            paddingTop: 8,
+                            color: T.textDim,
+                          }}
+                        />
+                      )}
+                      {effectiveComparing ? (
+                        <>
+                          <Line
+                            type="monotone"
+                            dataKey="portfolio"
+                            name="Portfolio"
+                            stroke={T.blue}
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 4, fill: T.blue }}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="spy"
+                            name="S&P 500"
+                            stroke={T.orange}
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 4, fill: T.orange }}
+                          />
+                        </>
+                      ) : (
+                        <Line
+                          type="monotone"
+                          dataKey="usd"
+                          name="Portfolio"
+                          stroke={T.blue}
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4, fill: T.blue }}
+                        />
+                      )}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    color: T.textFaint,
+                    marginTop: 12,
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  Excludes Cash and Unallocated assets. Updated daily after US market close.
+                </div>
               </>
             )}
           </div>
+        )}
+      </section>
 
-          {/* Chart */}
-          <div
-            style={{
-              background: T.card,
-              border: `1px solid ${T.borderSoft}`,
-              borderRadius: 4,
-              padding: "20px 8px 8px",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 10,
-                letterSpacing: "0.16em",
-                textTransform: "uppercase",
-                color: T.textDim,
-                marginBottom: 8,
-                paddingLeft: 8,
-              }}
-            >
-              {effectiveComparing ? "Portfolio VS S&P 500" : "Net Worth Growth"}
-            </div>
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
-                <XAxis
-                  dataKey="dateTs"
-                  type="number"
-                  scale="time"
-                  domain={["dataMin", "dataMax"]}
-                  ticks={xAxis.ticks}
-                  tickFormatter={xAxis.tickFormatter}
-                  tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
-                  tickLine={false}
-                  axisLine={{ stroke: T.border }}
-                  angle={-45}
-                  textAnchor="end"
-                  height={60}
-                />
-                {effectiveComparing ? (
-                  <YAxis
-                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
-                    tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
-                    tickLine={false}
-                    axisLine={false}
-                    width={52}
-                  />
-                ) : (
-                  <YAxis
-                    tickFormatter={valuesHidden ? () => "" : fmtUSDAxis}
-                    tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
-                    tickLine={false}
-                    axisLine={false}
-                    width={valuesHidden ? 16 : 64}
-                  />
-                )}
-                <Tooltip content={(props) => <CustomTooltip {...props} valuesHidden={valuesHidden} />} />
-                {effectiveComparing && (
-                  <Legend
-                    wrapperStyle={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 11,
-                      paddingTop: 8,
-                      color: T.textDim,
-                    }}
-                  />
-                )}
-                {effectiveComparing ? (
-                  <>
-                    <Line
-                      type="monotone"
-                      dataKey="portfolio"
-                      name="Portfolio"
-                      stroke={T.blue}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: T.blue }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="spy"
-                      name="S&P 500"
-                      stroke={T.orange}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: T.orange }}
-                    />
-                  </>
-                ) : (
-                  <Line
-                    type="monotone"
-                    dataKey="usd"
-                    name="Portfolio"
-                    stroke={T.blue}
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4, fill: T.blue }}
-                  />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </>
-      )}
-
+      {/* Position Performance card */}
       {state === "done" && positionRows.length > 0 && (
         <PositionPerformanceTable
           rows={positionRows}
@@ -1013,7 +1117,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           onToggle={() => setPosTableOpen((v) => !v)}
         />
       )}
-
     </div>
   );
 }
