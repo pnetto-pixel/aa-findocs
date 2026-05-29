@@ -2195,7 +2195,14 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
   const [fileError, setFileError] = useState("");
+  const [checkedRows, setCheckedRows] = useState(new Set());
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
   const fileInputRef = useRef(null);
+
+  function initAllChecked(results) {
+    setCheckedRows(new Set(results.map((_, i) => i)));
+  }
 
   useEffect(() => {
     if (!open) {
@@ -2206,6 +2213,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setMode("append");
       setFileError("");
       setTab("upload");
+      setCheckedRows(new Set());
+      setEditingIdx(null);
+      setEditDraft(null);
     }
   }, [open]);
 
@@ -2221,6 +2231,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       // Hold the parse result; show prompt offering BR auto-fix.
       const results = out.rows.map((r) => parseRow(r));
       setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+      initAllChecked(results);
+      setEditingIdx(null);
+      setEditDraft(null);
       setStructuralPrompt(true);
       setDecimalPrompt(false);
       setFileError("");
@@ -2229,6 +2242,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     const results = out.rows.map((r) => parseRow(r));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+    initAllChecked(results);
+    setEditingIdx(null);
+    setEditDraft(null);
     setDecimalPrompt(ambiguousCount > 0);
     setStructuralPrompt(false);
     setFileError("");
@@ -2257,6 +2273,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
           ? `${out.fixedRows} row(s) fixed, ${out.unfixableRows} could not be auto-fixed.`
           : null,
     });
+    initAllChecked(results);
+    setEditingIdx(null);
+    setEditDraft(null);
     setDecimalPrompt(ambiguousCount > 0);
   }
 
@@ -2321,6 +2340,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
         sourceText: content,
         sourceLabel: "Fidelity",
       });
+      initAllChecked(out.results);
+      setEditingIdx(null);
+      setEditDraft(null);
       setDecimalPrompt(false);
       setStructuralPrompt(false);
       setFileError("");
@@ -2331,20 +2353,87 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
 
   function handleConfirm() {
     if (!parsed) return;
-    const validTx = parsed.results.filter((r) => r.ok).map((r) => r.tx);
+    const validTx = parsed.results
+      .filter((r, i) => r.ok && checkedRows.has(i))
+      .map((r) => r.tx);
     if (validTx.length === 0) return;
     onConfirm(validTx, mode);
+  }
+
+  function startPreviewEdit(idx) {
+    const r = parsed?.results[idx];
+    setEditingIdx(idx);
+    setEditDraft({
+      date: r?.tx?.date || todayISO(),
+      side: r?.tx?.side || "buy",
+      ticker: r?.tx?.ticker || "",
+      assetClass: r?.tx?.assetClass || "",
+      qty: r?.tx ? String(r.tx.qty) : "",
+      price: r?.tx ? String(r.tx.price) : "",
+      fee: r?.tx?.fee ? String(r.tx.fee) : "",
+      notes: r?.tx?.notes || "",
+    });
+  }
+
+  function cancelPreviewEdit() {
+    setEditingIdx(null);
+    setEditDraft(null);
+  }
+
+  function commitPreviewEdit() {
+    if (editDraft === null || editingIdx === null || !parsed) return;
+    const qn = parseFloat(editDraft.qty);
+    const pn = parseFloat(editDraft.price);
+    const feeN = editDraft.fee ? parseFloat(editDraft.fee) : 0;
+    if (!editDraft.date) return;
+    if (!isFinite(qn) || qn <= 0) return;
+    if (!isFinite(pn) || pn < 0) return;
+    if (editDraft.fee && (!isFinite(feeN) || feeN < 0)) return;
+    if (!editDraft.assetClass) return;
+    const tkr = editDraft.ticker.trim().toUpperCase();
+    if (!tkr) return;
+    const existing = parsed.results[editingIdx];
+    const cur = currencyForAssetClass(editDraft.assetClass) || "USD";
+    const updatedResult = {
+      ok: true,
+      needsAssetClass: false,
+      errors: [],
+      ambiguous: false,
+      rawNumbers: existing?.rawNumbers,
+      tx: {
+        id: existing?.tx?.id || newId(),
+        date: editDraft.date,
+        side: editDraft.side,
+        ticker: tkr,
+        assetClass: editDraft.assetClass,
+        qty: qn,
+        price: pn,
+        currency: cur,
+        fee: feeN,
+        notes: editDraft.notes.trim(),
+        createdAt: existing?.tx?.createdAt || new Date().toISOString(),
+      },
+    };
+    const newResults = parsed.results.map((r, i) => (i === editingIdx ? updatedResult : r));
+    setParsed({ ...parsed, results: newResults });
+    setEditingIdx(null);
+    setEditDraft(null);
   }
 
   if (!open) return null;
 
   const validCount = parsed ? parsed.results.filter((r) => r.ok).length : 0;
+  const checkedValidCount = parsed
+    ? parsed.results.filter((r, i) => r.ok && checkedRows.has(i)).length
+    : 0;
+  const totalCount = parsed ? parsed.results.length : 0;
   const errorCount = parsed
     ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass).length
     : 0;
   const needsAssetClassCount = parsed
     ? parsed.results.filter((r) => r.needsAssetClass).length
     : 0;
+  const allChecked = parsed ? parsed.results.every((_, i) => checkedRows.has(i)) : false;
 
   return (
     <div
@@ -2774,6 +2863,29 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 >
                   <thead>
                     <tr style={{ background: T.card }}>
+                      <th
+                        style={{
+                          padding: "8px 8px",
+                          borderBottom: `1px solid ${T.border}`,
+                          position: "sticky",
+                          top: 0,
+                          background: T.card,
+                          textAlign: "center",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={allChecked}
+                          onChange={() => {
+                            if (allChecked) {
+                              setCheckedRows(new Set());
+                            } else {
+                              setCheckedRows(new Set(parsed.results.map((_, i) => i)));
+                            }
+                          }}
+                          style={{ accentColor: T.gold, cursor: "pointer" }}
+                        />
+                      </th>
                       {["#", "date", "side", "ticker", "qty", "price", "class", ""].map((h) => (
                         <th
                           key={h}
@@ -2797,80 +2909,250 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {parsed.results.map((r, idx) => (
-                      <tr
-                        key={idx}
-                        style={{
-                          background: r.ok ? "transparent" : "rgba(232, 140, 140, 0.05)",
-                          borderBottom: `1px solid ${T.borderSoft}`,
-                        }}
-                      >
-                        <td style={{ padding: "6px 10px", color: T.textFaint }}>
-                          {idx + 1}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.text }}>
-                          {r.ok ? r.tx.date : "—"}
-                        </td>
-                        <td
+                    {parsed.results.map((r, idx) => {
+                      const isChecked = checkedRows.has(idx);
+                      const isEditingThis = editingIdx === idx;
+
+                      if (isEditingThis && editDraft) {
+                        const cellS = { padding: "4px 3px", verticalAlign: "middle" };
+                        const inS = {
+                          width: "100%",
+                          boxSizing: "border-box",
+                          background: T.cardElev,
+                          border: `1px solid ${T.gold}`,
+                          color: T.text,
+                          padding: "3px 4px",
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          outline: "none",
+                        };
+                        const onKey = (e) => {
+                          if (e.key === "Enter") commitPreviewEdit();
+                          else if (e.key === "Escape") cancelPreviewEdit();
+                        };
+                        return (
+                          <tr
+                            key={idx}
+                            style={{
+                              borderBottom: `1px solid ${T.gold}`,
+                              background: "rgba(201, 169, 97, 0.04)",
+                            }}
+                          >
+                            <td style={{ ...cellS, textAlign: "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() =>
+                                  setCheckedRows((cur) => {
+                                    const next = new Set(cur);
+                                    if (next.has(idx)) next.delete(idx);
+                                    else next.add(idx);
+                                    return next;
+                                  })
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ accentColor: T.gold, cursor: "pointer" }}
+                              />
+                            </td>
+                            <td style={{ ...cellS, color: T.textFaint, fontSize: 10 }}>{idx + 1}</td>
+                            <td style={cellS}>
+                              <input
+                                type="date"
+                                value={editDraft.date}
+                                onChange={(e) => setEditDraft({ ...editDraft, date: e.target.value })}
+                                onKeyDown={onKey}
+                                style={inS}
+                              />
+                            </td>
+                            <td style={cellS}>
+                              <select
+                                value={editDraft.side}
+                                onChange={(e) => setEditDraft({ ...editDraft, side: e.target.value })}
+                                onKeyDown={onKey}
+                                style={{ ...inS, cursor: "pointer" }}
+                              >
+                                <option value="buy">buy</option>
+                                <option value="sell">sell</option>
+                              </select>
+                            </td>
+                            <td style={cellS}>
+                              <input
+                                type="text"
+                                value={editDraft.ticker}
+                                onChange={(e) => setEditDraft({ ...editDraft, ticker: e.target.value.toUpperCase() })}
+                                onKeyDown={onKey}
+                                style={{ ...inS, textTransform: "uppercase" }}
+                              />
+                            </td>
+                            <td style={cellS}>
+                              <input
+                                type="number"
+                                step="any"
+                                inputMode="decimal"
+                                value={editDraft.qty}
+                                onChange={(e) => setEditDraft({ ...editDraft, qty: e.target.value })}
+                                onKeyDown={onKey}
+                                style={{ ...inS, textAlign: "right" }}
+                              />
+                            </td>
+                            <td style={cellS}>
+                              <input
+                                type="number"
+                                step="any"
+                                inputMode="decimal"
+                                value={editDraft.price}
+                                onChange={(e) => setEditDraft({ ...editDraft, price: e.target.value })}
+                                onKeyDown={onKey}
+                                style={{ ...inS, textAlign: "right" }}
+                              />
+                            </td>
+                            <td style={cellS}>
+                              <select
+                                value={editDraft.assetClass}
+                                onChange={(e) => setEditDraft({ ...editDraft, assetClass: e.target.value })}
+                                onKeyDown={onKey}
+                                style={{ ...inS, cursor: "pointer" }}
+                              >
+                                <option value="">— pick —</option>
+                                {ASSET_CLASS_IDS.map((id) => (
+                                  <option key={id} value={id}>{id}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td style={{ padding: "4px 3px", textAlign: "right", whiteSpace: "nowrap" }}>
+                              <button
+                                onClick={commitPreviewEdit}
+                                title="Save (Enter)"
+                                style={{
+                                  background: "transparent",
+                                  border: `1px solid ${T.green}`,
+                                  color: T.green,
+                                  padding: "2px 4px",
+                                  marginRight: 2,
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <Check size={10} />
+                              </button>
+                              <button
+                                onClick={cancelPreviewEdit}
+                                title="Cancel (Esc)"
+                                style={{
+                                  background: "transparent",
+                                  border: `1px solid ${T.border}`,
+                                  color: T.textDim,
+                                  padding: "2px 4px",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <X size={10} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return (
+                        <tr
+                          key={idx}
+                          onDoubleClick={() => startPreviewEdit(idx)}
                           style={{
-                            padding: "6px 10px",
-                            color: r.ok
-                              ? r.tx.side === "buy"
-                                ? T.green
-                                : T.red
-                              : T.textDim,
+                            background: isEditingThis
+                              ? "rgba(201, 169, 97, 0.04)"
+                              : r.ok
+                              ? "transparent"
+                              : "rgba(232, 140, 140, 0.05)",
+                            borderBottom: `1px solid ${T.borderSoft}`,
+                            cursor: "default",
                           }}
                         >
-                          {r.ok ? r.tx.side : "—"}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.text }}>
-                          {r.ok ? r.tx.ticker : "—"}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.text }}>
-                          {r.ok ? fmtNum(r.tx.qty) : "—"}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.text }}>
-                          {r.ok ? fmtNum(r.tx.price, 2) : "—"}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.textDim }}>
-                          {r.needsAssetClass ? (
-                            <select
-                              value=""
-                              onChange={(e) =>
-                                e.target.value && pickAssetClass(idx, e.target.value)
+                          <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() =>
+                                setCheckedRows((cur) => {
+                                  const next = new Set(cur);
+                                  if (next.has(idx)) next.delete(idx);
+                                  else next.add(idx);
+                                  return next;
+                                })
                               }
-                              style={{
-                                background: T.cardElev,
-                                border: `1px solid ${T.gold}`,
-                                color: T.gold,
-                                padding: "2px 4px",
-                                fontFamily: FONT_MONO,
-                                fontSize: 10,
-                                cursor: "pointer",
-                                maxWidth: 130,
-                              }}
-                            >
-                              <option value="">— pick —</option>
-                              {ASSET_CLASS_IDS.map((id) => (
-                                <option key={id} value={id}>
-                                  {id}
-                                </option>
-                              ))}
-                            </select>
-                          ) : r.ok ? (
-                            r.tx.assetClass || "—"
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
-                          {!r.ok && !r.needsAssetClass && r.errors.join("; ")}
-                          {r.needsAssetClass && (
-                            <span style={{ color: T.gold }}>pick class</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ accentColor: T.gold, cursor: "pointer" }}
+                            />
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.textFaint }}>
+                            {idx + 1}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.text }}>
+                            {r.ok ? r.tx.date : "—"}
+                          </td>
+                          <td
+                            style={{
+                              padding: "6px 10px",
+                              color: r.ok
+                                ? r.tx.side === "buy"
+                                  ? T.green
+                                  : T.red
+                                : T.textDim,
+                            }}
+                          >
+                            {r.ok ? r.tx.side : "—"}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.text }}>
+                            {r.ok ? r.tx.ticker : "—"}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.text }}>
+                            {r.ok ? fmtNum(r.tx.qty) : "—"}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.text }}>
+                            {r.ok ? fmtNum(r.tx.price, 2) : "—"}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.textDim }}>
+                            {r.needsAssetClass ? (
+                              <select
+                                value=""
+                                onChange={(e) =>
+                                  e.target.value && pickAssetClass(idx, e.target.value)
+                                }
+                                style={{
+                                  background: T.cardElev,
+                                  border: `1px solid ${T.gold}`,
+                                  color: T.gold,
+                                  padding: "2px 4px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  cursor: "pointer",
+                                  maxWidth: 130,
+                                }}
+                              >
+                                <option value="">— pick —</option>
+                                {ASSET_CLASS_IDS.map((id) => (
+                                  <option key={id} value={id}>
+                                    {id}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : r.ok ? (
+                              r.tx.assetClass || "—"
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
+                            {!r.ok && !r.needsAssetClass && r.errors.join("; ")}
+                            {r.needsAssetClass && (
+                              <span style={{ color: T.gold }}>pick class</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2941,7 +3223,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={handleConfirm}
-                  disabled={validCount === 0}
+                  disabled={checkedValidCount === 0}
                   style={{
                     background: T.gold,
                     border: "none",
@@ -2951,16 +3233,18 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     fontSize: 11,
                     letterSpacing: "0.15em",
                     textTransform: "uppercase",
-                    cursor: validCount > 0 ? "pointer" : "default",
-                    opacity: validCount > 0 ? 1 : 0.4,
+                    cursor: checkedValidCount > 0 ? "pointer" : "default",
+                    opacity: checkedValidCount > 0 ? 1 : 0.4,
                   }}
                 >
-                  Import {validCount}
+                  Import {checkedValidCount} of {totalCount} rows
                 </button>
                 <button
                   onClick={() => {
                     setParsed(null);
                     setDecimalPrompt(false);
+                    setEditingIdx(null);
+                    setEditDraft(null);
                   }}
                   style={{
                     background: "transparent",
