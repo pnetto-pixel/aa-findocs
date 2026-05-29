@@ -1657,7 +1657,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               }
             >
-              <PerformanceView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
+              <PerformanceView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} holdings={holdings} />
             </Suspense>
           )}
 

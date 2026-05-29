@@ -3,6 +3,7 @@
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo } from "react";
+import { ChevronDown } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -159,6 +160,27 @@ function computeXAxis(data, period) {
   };
 }
 
+function isBrazilianTicker(t) {
+  return /^[A-Z]{4}\d{1,2}$/i.test(t);
+}
+
+function fmtPrice(n) {
+  if (n == null || isNaN(n)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function fmtQty(n) {
+  if (n == null || isNaN(n)) return "—";
+  const r = Math.round(n * 10000) / 10000;
+  if (Number.isInteger(r)) return String(r);
+  return r.toFixed(4).replace(/\.?0+$/, "");
+}
+
 function kpiColor(n) {
   if (n == null || isNaN(n)) return T.textDim;
   if (n > 0) return T.green;
@@ -287,13 +309,150 @@ function CustomTooltip({ active, payload, label, valuesHidden }) {
 }
 
 
-export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
+function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
+  const thStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: T.textFaint,
+    fontWeight: 500,
+    padding: "8px 12px",
+    textAlign: "right",
+    borderBottom: `1px solid ${T.border}`,
+    whiteSpace: "nowrap",
+  };
+  const tdBase = {
+    fontFamily: FONT_MONO,
+    fontSize: 12,
+    padding: "9px 12px",
+    textAlign: "right",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    color: T.text,
+  };
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <button
+        onClick={onToggle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: "0 0 14px",
+          width: "100%",
+          textAlign: "left",
+        }}
+      >
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.16em",
+            textTransform: "uppercase",
+            color: T.textDim,
+          }}
+        >
+          Position Performance
+        </span>
+        <ChevronDown
+          size={13}
+          color={T.textFaint}
+          style={{
+            transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            transition: "transform 0.2s",
+            flexShrink: 0,
+          }}
+        />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderRadius: 4,
+            overflowX: "auto",
+          }}
+        >
+          <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {[
+                  ["Ticker", "left"],
+                  ["Avg Cost", "right"],
+                  ["Current Price", "right"],
+                  ["Qty", "right"],
+                  ["Total Gain/Loss", "right"],
+                  ["Gain/Loss %", "right"],
+                ].map(([col, align]) => (
+                  <th key={col} style={{ ...thStyle, textAlign: align }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const gainColor =
+                  row.totalGainLoss > 0 ? T.green : row.totalGainLoss < 0 ? T.red : T.textDim;
+                const pctColor =
+                  row.gainLossPct > 0 ? T.green : row.gainLossPct < 0 ? T.red : T.textDim;
+                const gainSign = row.totalGainLoss > 0 ? "+" : "";
+                const pctSign = row.gainLossPct > 0 ? "+" : "";
+                return (
+                  <tr key={row.ticker}>
+                    <td
+                      style={{
+                        ...tdBase,
+                        textAlign: "left",
+                        color: T.gold,
+                        letterSpacing: "0.06em",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {row.ticker}
+                    </td>
+                    <td style={tdBase}>
+                      {valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}
+                    </td>
+                    <td style={tdBase}>
+                      {valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}
+                    </td>
+                    <td style={tdBase}>{fmtQty(row.qty)}</td>
+                    <td style={{ ...tdBase, color: gainColor }}>
+                      {valuesHidden
+                        ? "$ ••••"
+                        : `${gainSign}${fmtUSD(row.totalGainLoss)}`}
+                    </td>
+                    <td style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>
+                      {row.gainLossPct != null
+                        ? `${pctSign}${row.gainLossPct.toFixed(2)}%`
+                        : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdings }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
   const [rawData, setRawData] = useState([]); // all dates, unfiltered
   const [meta, setMeta] = useState(null);
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
+  const [transactions, setTransactions] = useState([]);
+  const [posTableOpen, setPosTableOpen] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,8 +461,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
 
     (async () => {
       try {
-        const transactions = await loadTransactions(auth);
-        const result = await loadPerfHistory(auth, transactions);
+        const txs = await loadTransactions(auth);
+        if (!cancelled) setTransactions(txs);
+        const result = await loadPerfHistory(auth, txs);
         const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = result;
 
         if (cancelled) return;
@@ -348,6 +508,53 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
 
   // If API response has no USD values (old cache), force comparison mode.
   const effectiveComparing = comparing || !hasUSD;
+
+  const priceMap = useMemo(() => {
+    const map = {};
+    for (const h of holdings || []) {
+      if (!h.ticker) continue;
+      const tk = h.ticker.toUpperCase();
+      if (h.type !== "manual" && h.price != null) {
+        map[tk] = h.price;
+      } else if (h.manualMode === "qty_price" && h.manualPrice != null) {
+        map[tk] = h.manualPrice;
+      }
+    }
+    return map;
+  }, [holdings]);
+
+  const positionRows = useMemo(() => {
+    if (!transactions.length) return [];
+    const positions = {};
+    for (const tx of transactions) {
+      const ticker = tx.ticker?.toUpperCase();
+      if (!ticker || isBrazilianTicker(ticker)) continue;
+      const qty = Number(tx.qty) || 0;
+      const price = Number(tx.price) || 0;
+      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0 };
+      const pos = positions[ticker];
+      if (tx.side === "buy") {
+        pos.totalQty += qty;
+        pos.totalCost += qty * price;
+      } else if (tx.side === "sell") {
+        const avgBefore = pos.totalQty > 0 ? pos.totalCost / pos.totalQty : 0;
+        pos.totalQty -= qty;
+        pos.totalCost -= avgBefore * qty;
+        if (pos.totalQty < 0.0001) { pos.totalQty = 0; pos.totalCost = 0; }
+      }
+    }
+    const rows = [];
+    for (const [ticker, pos] of Object.entries(positions)) {
+      if (pos.totalQty < 0.0001) continue;
+      const currentPrice = priceMap[ticker];
+      if (currentPrice == null) continue;
+      const avgCost = pos.totalCost / pos.totalQty;
+      const totalGainLoss = (currentPrice - avgCost) * pos.totalQty;
+      const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
+      rows.push({ ticker, qty: pos.totalQty, avgCost, currentPrice, totalGainLoss, gainLossPct });
+    }
+    return rows.sort((a, b) => b.currentPrice * b.qty - a.currentPrice * a.qty);
+  }, [transactions, priceMap]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
@@ -648,6 +855,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden }) {
             </ResponsiveContainer>
           </div>
         </>
+      )}
+
+      {state === "done" && positionRows.length > 0 && (
+        <PositionPerformanceTable
+          rows={positionRows}
+          valuesHidden={valuesHidden}
+          open={posTableOpen}
+          onToggle={() => setPosTableOpen((v) => !v)}
+        />
       )}
 
     </div>
