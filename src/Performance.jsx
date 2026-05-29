@@ -309,6 +309,10 @@ function CustomTooltip({ active, payload, label, valuesHidden }) {
 }
 
 
+// Width reserved for the frozen Ticker column (kept in sync between header,
+// body and TOTAL row so the sticky offset lines up).
+const TICKER_COL_WIDTH = 92;
+
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("totalValue");
   const [sortDir, setSortDir] = useState("desc");
@@ -326,6 +330,15 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     });
   }, [rows, sortCol, sortDir]);
 
+  // Portfolio-wide totals — shown in a pinned row at the top, unaffected by sort.
+  const totals = useMemo(() => {
+    const totalCost = rows.reduce((s, r) => s + r.totalCost, 0);
+    const totalValue = rows.reduce((s, r) => s + r.totalValue, 0);
+    const totalGainLoss = totalValue - totalCost;
+    const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
+    return { totalCost, totalValue, totalGainLoss, gainLossPct };
+  }, [rows]);
+
   function handleSort(col) {
     if (col === sortCol) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -336,12 +349,12 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   }
 
   const COLS = [
-    { key: "ticker",       label: "Ticker",         align: "left"  },
-    { key: "avgCost",      label: "Avg Cost",        align: "right" },
-    { key: "currentPrice", label: "Current Price",   align: "right" },
+    { key: "ticker",       label: "Ticker",          align: "left"  },
     { key: "qty",          label: "Qty",             align: "right" },
+    { key: "avgCost",      label: "Avg Cost",        align: "right" },
+    { key: "currentPrice", label: "Price",           align: "right" },
     { key: "totalCost",    label: "Total Cost",      align: "right" },
-    { key: "totalValue",   label: "Total Value",     align: "right" },
+    { key: "totalValue",   label: "Current Value",   align: "right" },
     { key: "gainLossPct",  label: "Gain/Loss %",     align: "right" },
     { key: "totalGainLoss",label: "Total Gain/Loss", align: "right" },
   ];
@@ -365,7 +378,22 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     textAlign: "right",
     borderBottom: `1px solid ${T.borderSoft}`,
     color: T.text,
+    whiteSpace: "nowrap",
   };
+
+  // Sticky styling for the frozen first column. `bg` must match the row's own
+  // background so scrolled cells don't bleed through underneath.
+  function stickyCol(bg, zIndex = 1) {
+    return {
+      position: "sticky",
+      left: 0,
+      zIndex,
+      background: bg,
+      width: TICKER_COL_WIDTH,
+      minWidth: TICKER_COL_WIDTH,
+      borderRight: `1px solid ${T.border}`,
+    };
+  }
 
   function sortIndicator(col) {
     if (col !== sortCol) return " ↕";
@@ -378,16 +406,16 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     switch (col.key) {
       case "ticker":
         return (
-          <td key={col.key} style={{ ...tdBase, textAlign: "left", color: T.gold, letterSpacing: "0.06em", fontWeight: 600 }}>
+          <td key={col.key} style={{ ...tdBase, ...stickyCol(T.card), textAlign: "left", color: T.gold, letterSpacing: "0.06em", fontWeight: 600 }}>
             {row.ticker}
           </td>
         );
+      case "qty":
+        return <td key={col.key} style={tdBase}>{fmtQty(row.qty)}</td>;
       case "avgCost":
         return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}</td>;
       case "currentPrice":
         return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}</td>;
-      case "qty":
-        return <td key={col.key} style={tdBase}>{fmtQty(row.qty)}</td>;
       case "totalCost":
         return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalCost)}</td>;
       case "totalValue":
@@ -406,6 +434,46 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
         );
       default:
         return <td key={col.key} style={tdBase}>—</td>;
+    }
+  }
+
+  // TOTAL row: per-share columns (Qty/Avg Cost/Price) are blank — only the
+  // aggregate columns carry meaning across mixed tickers.
+  function renderTotalCell(col) {
+    const totalTd = {
+      ...tdBase,
+      borderBottom: `1px solid ${T.border}`,
+      borderTop: `1px solid ${T.border}`,
+      background: T.cardElev,
+      fontWeight: 600,
+    };
+    const gainColor = totals.totalGainLoss > 0 ? T.green : totals.totalGainLoss < 0 ? T.red : T.textDim;
+    const pctColor  = totals.gainLossPct  > 0 ? T.green : totals.gainLossPct  < 0 ? T.red : T.textDim;
+    switch (col.key) {
+      case "ticker":
+        return (
+          <td key={col.key} style={{ ...totalTd, ...stickyCol(T.cardElev, 2), textAlign: "left", color: T.text, letterSpacing: "0.12em" }}>
+            TOTAL
+          </td>
+        );
+      case "totalCost":
+        return <td key={col.key} style={totalTd}>{valuesHidden ? "$ ••••" : fmtUSD(totals.totalCost)}</td>;
+      case "totalValue":
+        return <td key={col.key} style={totalTd}>{valuesHidden ? "$ ••••" : fmtUSD(totals.totalValue)}</td>;
+      case "gainLossPct":
+        return (
+          <td key={col.key} style={{ ...totalTd, color: pctColor }}>
+            {totals.gainLossPct != null ? `${totals.gainLossPct > 0 ? "+" : ""}${totals.gainLossPct.toFixed(2)}%` : "—"}
+          </td>
+        );
+      case "totalGainLoss":
+        return (
+          <td key={col.key} style={{ ...totalTd, color: gainColor }}>
+            {valuesHidden ? "$ ••••" : `${totals.totalGainLoss > 0 ? "+" : ""}${fmtUSD(totals.totalGainLoss)}`}
+          </td>
+        );
+      default:
+        return <td key={col.key} style={totalTd} />;
     }
   }
 
@@ -459,25 +527,32 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {COLS.map((col) => (
-                  <th
-                    key={col.key}
-                    onClick={() => handleSort(col.key)}
-                    style={{
-                      ...thBase,
-                      textAlign: col.align,
-                      color: col.key === sortCol ? T.textDim : T.textFaint,
-                    }}
-                  >
-                    {col.label}
-                    <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>
-                      {sortIndicator(col.key)}
-                    </span>
-                  </th>
-                ))}
+                {COLS.map((col) => {
+                  const isTicker = col.key === "ticker";
+                  return (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      style={{
+                        ...thBase,
+                        ...(isTicker ? stickyCol(T.card, 3) : null),
+                        textAlign: col.align,
+                        color: col.key === sortCol ? T.textDim : T.textFaint,
+                      }}
+                    >
+                      {col.label}
+                      <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>
+                        {sortIndicator(col.key)}
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
+              <tr>
+                {COLS.map((col) => renderTotalCell(col))}
+              </tr>
               {sortedRows.map((row) => (
                 <tr key={row.ticker}>
                   {COLS.map((col) => renderCell(row, col))}
@@ -561,10 +636,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     for (const h of holdings || []) {
       if (!h.ticker) continue;
       const tk = h.ticker.toUpperCase();
+      // fxRate = BRL per USD (only present for B3 holdings). Used to convert
+      // BRL-denominated transaction prices into USD at today's rate.
       if (h.type !== "manual" && h.price != null) {
-        map[tk] = h.price;
+        map[tk] = { price: h.price, fxRate: h.fxRate ?? null };
       } else if (h.manualMode === "qty_price" && h.manualPrice != null) {
-        map[tk] = h.manualPrice;
+        map[tk] = { price: h.manualPrice, fxRate: null };
       }
     }
     return map;
@@ -575,11 +652,18 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     const positions = {};
     for (const tx of transactions) {
       const ticker = tx.ticker?.toUpperCase();
-      if (!ticker || isBrazilianTicker(ticker)) continue;
-      const qty = Number(tx.qty) || 0;
-      const price = Number(tx.price) || 0;
-      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0 };
+      if (!ticker) continue;
+      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false };
       const pos = positions[ticker];
+      const qty = Number(tx.qty) || 0;
+      let price = Number(tx.price) || 0;
+      // Brazilian tickers store transaction prices in BRL — convert to USD at
+      // today's rate so all figures share one currency.
+      if (isBrazilianTicker(ticker)) {
+        const fxRate = priceMap[ticker]?.fxRate ?? null;
+        if (!fxRate) pos.noFx = true;
+        else price = price / fxRate;
+      }
       if (tx.side === "buy") {
         pos.totalQty += qty;
         pos.totalCost += qty * price;
@@ -593,7 +677,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     const rows = [];
     for (const [ticker, pos] of Object.entries(positions)) {
       if (pos.totalQty < 0.0001) continue;
-      const currentPrice = priceMap[ticker];
+      if (pos.noFx) continue; // BR ticker without an FX rate — can't convert to USD
+      const currentPrice = priceMap[ticker]?.price;
       if (currentPrice == null) continue;
       const avgCost = pos.totalCost / pos.totalQty;
       const totalCost = avgCost * pos.totalQty;
