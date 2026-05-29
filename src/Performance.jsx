@@ -2,7 +2,7 @@
 // Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
 // switches to a TWR % comparison chart.
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Fragment } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   LineChart,
@@ -325,6 +325,15 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("totalValue");
   const [sortDir, setSortDir] = useState("desc");
   const [grouped, setGrouped] = useState(false);
+  const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+
+  function toggleClass(cls) {
+    setCollapsedClasses((prev) => {
+      const next = new Set(prev);
+      next.has(cls) ? next.delete(cls) : next.add(cls);
+      return next;
+    });
+  }
 
   function sortRows(arr) {
     return [...arr].sort((a, b) => {
@@ -432,15 +441,29 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     }
   }
 
-  // Renders a summary row (TOTAL or per-class header). `label` appears in the sticky Ticker cell.
-  function renderSummaryRow(label, agg, bg, zIndex = 2) {
+  // Renders a summary row (TOTAL or per-class header). `label` appears in the sticky
+  // Ticker cell. When `collapsible` is set, a chevron is shown to expand/collapse.
+  function renderSummaryRow(label, agg, bg, zIndex = 2, collapsible = false, collapsed = false) {
     const summaryTd = { ...tdBase, background: bg, fontWeight: 600, borderBottom: `1px solid ${T.border}`, borderTop: `1px solid ${T.border}` };
     const gainColor = agg.totalGainLoss > 0 ? T.green : agg.totalGainLoss < 0 ? T.red : T.textDim;
     const pctColor  = agg.gainLossPct  > 0 ? T.green : agg.gainLossPct  < 0 ? T.red : T.textDim;
     return COLS.map((col) => {
       switch (col.key) {
         case "ticker":
-          return <td key={col.key} style={{ ...summaryTd, ...stickyCol(bg, zIndex), textAlign: "left", color: T.text, letterSpacing: "0.08em", fontSize: 11 }}>{label}</td>;
+          return (
+            <td key={col.key} style={{ ...summaryTd, ...stickyCol(bg, zIndex), textAlign: "left", color: T.text, letterSpacing: "0.08em", fontSize: 11 }}>
+              {collapsible ? (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <ChevronDown
+                    size={11}
+                    color={T.textFaint}
+                    style={{ transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.15s", flexShrink: 0 }}
+                  />
+                  {label}
+                </span>
+              ) : label}
+            </td>
+          );
         case "totalCost":
           return <td key={col.key} style={summaryTd}>{valuesHidden ? "$ ••••" : fmtUSD(agg.totalCost)}</td>;
         case "totalValue":
@@ -520,14 +543,19 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
               <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
 
               {grouped && classGroups ? (
-                classGroups.map(({ cls, rows: clsRows, ...agg }) => (
-                  <>
-                    <tr key={`cls-${cls}`}>{renderSummaryRow(cls, agg, T.bg, 2)}</tr>
-                    {clsRows.map((row) => (
-                      <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                    ))}
-                  </>
-                ))
+                classGroups.map(({ cls, rows: clsRows, ...agg }) => {
+                  const isCollapsed = collapsedClasses.has(cls);
+                  return (
+                    <Fragment key={`cls-${cls}`}>
+                      <tr onClick={() => toggleClass(cls)} style={{ cursor: "pointer" }}>
+                        {renderSummaryRow(cls, agg, T.bg, 2, true, isCollapsed)}
+                      </tr>
+                      {!isCollapsed && clsRows.map((row) => (
+                        <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                      ))}
+                    </Fragment>
+                  );
+                })
               ) : (
                 sortedRows.map((row) => (
                   <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
@@ -636,8 +664,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     for (const tx of transactions) {
       const ticker = tx.ticker?.toUpperCase();
       if (!ticker) continue;
-      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false };
+      if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null };
       const pos = positions[ticker];
+      // Asset class comes from the transactions themselves (last non-empty wins),
+      // not from the current holding.
+      if (tx.assetClass) pos.assetClass = tx.assetClass;
       const qty = Number(tx.qty) || 0;
       let price = Number(tx.price) || 0;
       if (isBrazilianTicker(ticker)) {
@@ -667,7 +698,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const totalValue = currentPrice * pos.totalQty;
       const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      const assetClass = entry?.assetClass || "Uncategorized";
+      const assetClass = pos.assetClass || "Uncategorized";
       rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
     }
     return rows;
