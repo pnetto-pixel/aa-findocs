@@ -213,6 +213,14 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
       .slice(0, 6);
   }, [ticker, knownTickers]);
 
+  // Auto-fill asset class from ticker when the field is still empty.
+  useEffect(() => {
+    if (assetClass) return;
+    const inferred = inferAssetClass(ticker.trim());
+    if (inferred) setAssetClass(inferred);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticker]);
+
   function handleSubmit() {
     setError("");
     const tkr = ticker.trim().toUpperCase();
@@ -515,6 +523,32 @@ function inferCurrency(ticker) {
   if (B3_RX.test(t)) return "BRL";
   // Pure A-Z 1-5 chars looks like a US ticker (AAPL, SPY, BRK).
   if (/^[A-Z]{1,5}$/.test(t)) return "USD";
+  return null;
+}
+
+// --- ETF auto-classification maps -----------------------------------------
+
+const FIXED_INCOME_ETFS = new Set([
+  'BND', 'AGG', 'SCHZ', 'IAGG', 'BNDX', 'VCIT', 'VCSH', 'LQD', 'HYG',
+  'TLT', 'IEF', 'SHY', 'GOVT', 'MUB', 'VTEB', 'BSV', 'BIV', 'BLV',
+  'VGSH', 'VGIT', 'VGLT', 'SPTL', 'SPIB', 'SPAB', 'FBND',
+]);
+
+const REAL_ESTATE_ETFS = new Set([
+  'VNQ', 'XLRE', 'IYR', 'SCHH', 'RWR', 'USRT', 'FREL', 'REM', 'MORT', 'KBWY',
+]);
+
+// Returns the best-guess asset class for a ticker.
+// Known fixed-income / REIT ETFs win; then B3 pattern → BRA Stocks; then US pattern → Stocks.
+function inferAssetClass(ticker) {
+  if (!ticker) return null;
+  const t = String(ticker).trim().toUpperCase();
+  if (!t) return null;
+  if (FIXED_INCOME_ETFS.has(t)) return 'Bonds';
+  if (REAL_ESTATE_ETFS.has(t)) return 'Real Estate';
+  const currency = inferCurrency(t);
+  if (currency === 'BRL') return 'BRA Stocks';
+  if (currency === 'USD') return 'Stocks';
   return null;
 }
 
@@ -1825,9 +1859,8 @@ function parseRow(row, defaultCurrency = "USD") {
   let assetClass = normalizeAssetClass(row.assetClass);
   let needsAssetClass = false;
   if (!assetClass && ticker) {
-    const inferred = inferCurrency(ticker);
-    if (inferred === "BRL") assetClass = "BRA Stocks";
-    else if (inferred === "USD") assetClass = "Stocks";
+    const inferred = inferAssetClass(ticker);
+    if (inferred) assetClass = inferred;
     else needsAssetClass = true;
   } else if (!assetClass) {
     needsAssetClass = true;
@@ -2156,15 +2189,14 @@ function parseFidelityCSV(text) {
       if (isFinite(fn) && fn > 0) fee = fn;
     }
 
-    // Default Fidelity transactions to "Stocks" assetClass. User can edit
-    // afterwards if it's a bond (e.g. CD), since CDs come through as symbols
-    // like 949764WE0 that we can't reliably classify.
+    // Infer asset class from the symbol; fall back to "Stocks" for plain US tickers
+    // and unrecognised symbols (e.g. CD cusips like 949764WE0 that need manual review).
     const tx = {
       id: newId(),
       date: isoDate,
       side,
       ticker: symbol,
-      assetClass: "Stocks",
+      assetClass: inferAssetClass(symbol) || "Stocks",
       qty,
       price: priceN,
       currency: "USD",
@@ -3293,14 +3325,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       .then((data) => {
         if (cancelled) return;
         const raw = Array.isArray(data.transactions) ? data.transactions : [];
-        // Backfill assetClass on legacy records via inferCurrency.
+        // Backfill assetClass on legacy records via inferAssetClass.
         const migrated = raw.map((t) => {
           if (t.assetClass) return t;
-          const inferred = inferCurrency(t.ticker);
-          let cls = null;
-          if (inferred === "BRL") cls = "BRA Stocks";
-          else if (inferred === "USD") cls = "Stocks";
-          else cls = t.currency === "BRL" ? "Unallocated BRL" : "Unallocated USD";
+          const cls = inferAssetClass(t.ticker) || (t.currency === "BRL" ? "Unallocated BRL" : "Unallocated USD");
           return { ...t, assetClass: cls };
         });
         setTransactions(migrated);

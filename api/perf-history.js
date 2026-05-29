@@ -15,6 +15,9 @@ const INCLUDED_CLASSES = new Set([
   'BRA Stocks',
   'Alternative',
   'Real Estate',
+  'Bonds',
+  'Bank Bonds',
+  'BRA Fixed Income',
 ]);
 
 const FETCH_TIMEOUT_MS = 15000;
