@@ -313,39 +313,50 @@ function CustomTooltip({ active, payload, label, valuesHidden }) {
 // body and TOTAL row so the sticky offset lines up).
 const TICKER_COL_WIDTH = 92;
 
+function aggFromRows(rows) {
+  const totalCost = rows.reduce((s, r) => s + r.totalCost, 0);
+  const totalValue = rows.reduce((s, r) => s + r.totalValue, 0);
+  const totalGainLoss = totalValue - totalCost;
+  const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
+  return { totalCost, totalValue, totalGainLoss, gainLossPct };
+}
+
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("totalValue");
   const [sortDir, setSortDir] = useState("desc");
+  const [grouped, setGrouped] = useState(false);
 
-  const sortedRows = useMemo(() => {
-    return [...rows].sort((a, b) => {
-      const av = a[sortCol];
-      const bv = b[sortCol];
-      if (typeof av === "string") {
-        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-      }
+  function sortRows(arr) {
+    return [...arr].sort((a, b) => {
+      const av = a[sortCol], bv = b[sortCol];
+      if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
       const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
       const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
       return sortDir === "asc" ? an - bn : bn - an;
     });
-  }, [rows, sortCol, sortDir]);
+  }
 
-  // Portfolio-wide totals — shown in a pinned row at the top, unaffected by sort.
-  const totals = useMemo(() => {
-    const totalCost = rows.reduce((s, r) => s + r.totalCost, 0);
-    const totalValue = rows.reduce((s, r) => s + r.totalValue, 0);
-    const totalGainLoss = totalValue - totalCost;
-    const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
-    return { totalCost, totalValue, totalGainLoss, gainLossPct };
-  }, [rows]);
+  const sortedRows = useMemo(() => sortRows(rows), [rows, sortCol, sortDir]);
+
+  const totals = useMemo(() => aggFromRows(rows), [rows]);
+
+  // Group rows by assetClass, each group sorted by sortCol.
+  const classGroups = useMemo(() => {
+    if (!grouped) return null;
+    const map = {};
+    for (const row of rows) {
+      const cls = row.assetClass || "Uncategorized";
+      if (!map[cls]) map[cls] = [];
+      map[cls].push(row);
+    }
+    return Object.entries(map)
+      .map(([cls, clsRows]) => ({ cls, rows: sortRows(clsRows), ...aggFromRows(clsRows) }))
+      .sort((a, b) => b.totalValue - a.totalValue);
+  }, [rows, grouped, sortCol, sortDir]);
 
   function handleSort(col) {
-    if (col === sortCol) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortCol(col);
-      setSortDir("desc");
-    }
+    if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortCol(col); setSortDir("desc"); }
   }
 
   const COLS = [
@@ -381,8 +392,6 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     whiteSpace: "nowrap",
   };
 
-  // Sticky styling for the frozen first column. `bg` must match the row's own
-  // background so scrolled cells don't bleed through underneath.
   function stickyCol(bg, zIndex = 1) {
     return {
       position: "sticky",
@@ -410,154 +419,120 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
             {row.ticker}
           </td>
         );
-      case "qty":
-        return <td key={col.key} style={tdBase}>{fmtQty(row.qty)}</td>;
-      case "avgCost":
-        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}</td>;
-      case "currentPrice":
-        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}</td>;
-      case "totalCost":
-        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalCost)}</td>;
-      case "totalValue":
-        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalValue)}</td>;
+      case "qty":           return <td key={col.key} style={tdBase}>{fmtQty(row.qty)}</td>;
+      case "avgCost":       return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}</td>;
+      case "currentPrice":  return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}</td>;
+      case "totalCost":     return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalCost)}</td>;
+      case "totalValue":    return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalValue)}</td>;
       case "gainLossPct":
-        return (
-          <td key={col.key} style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>
-            {row.gainLossPct != null ? `${row.gainLossPct > 0 ? "+" : ""}${row.gainLossPct.toFixed(2)}%` : "—"}
-          </td>
-        );
+        return <td key={col.key} style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>{row.gainLossPct != null ? `${row.gainLossPct > 0 ? "+" : ""}${row.gainLossPct.toFixed(2)}%` : "—"}</td>;
       case "totalGainLoss":
-        return (
-          <td key={col.key} style={{ ...tdBase, color: gainColor }}>
-            {valuesHidden ? "$ ••••" : `${row.totalGainLoss > 0 ? "+" : ""}${fmtUSD(row.totalGainLoss)}`}
-          </td>
-        );
-      default:
-        return <td key={col.key} style={tdBase}>—</td>;
+        return <td key={col.key} style={{ ...tdBase, color: gainColor }}>{valuesHidden ? "$ ••••" : `${row.totalGainLoss > 0 ? "+" : ""}${fmtUSD(row.totalGainLoss)}`}</td>;
+      default: return <td key={col.key} style={tdBase}>—</td>;
     }
   }
 
-  // TOTAL row: per-share columns (Qty/Avg Cost/Price) are blank — only the
-  // aggregate columns carry meaning across mixed tickers.
-  function renderTotalCell(col) {
-    const totalTd = {
-      ...tdBase,
-      borderBottom: `1px solid ${T.border}`,
-      borderTop: `1px solid ${T.border}`,
-      background: T.cardElev,
-      fontWeight: 600,
-    };
-    const gainColor = totals.totalGainLoss > 0 ? T.green : totals.totalGainLoss < 0 ? T.red : T.textDim;
-    const pctColor  = totals.gainLossPct  > 0 ? T.green : totals.gainLossPct  < 0 ? T.red : T.textDim;
-    switch (col.key) {
-      case "ticker":
-        return (
-          <td key={col.key} style={{ ...totalTd, ...stickyCol(T.cardElev, 2), textAlign: "left", color: T.text, letterSpacing: "0.12em" }}>
-            TOTAL
-          </td>
-        );
-      case "totalCost":
-        return <td key={col.key} style={totalTd}>{valuesHidden ? "$ ••••" : fmtUSD(totals.totalCost)}</td>;
-      case "totalValue":
-        return <td key={col.key} style={totalTd}>{valuesHidden ? "$ ••••" : fmtUSD(totals.totalValue)}</td>;
-      case "gainLossPct":
-        return (
-          <td key={col.key} style={{ ...totalTd, color: pctColor }}>
-            {totals.gainLossPct != null ? `${totals.gainLossPct > 0 ? "+" : ""}${totals.gainLossPct.toFixed(2)}%` : "—"}
-          </td>
-        );
-      case "totalGainLoss":
-        return (
-          <td key={col.key} style={{ ...totalTd, color: gainColor }}>
-            {valuesHidden ? "$ ••••" : `${totals.totalGainLoss > 0 ? "+" : ""}${fmtUSD(totals.totalGainLoss)}`}
-          </td>
-        );
-      default:
-        return <td key={col.key} style={totalTd} />;
-    }
+  // Renders a summary row (TOTAL or per-class header). `label` appears in the sticky Ticker cell.
+  function renderSummaryRow(label, agg, bg, zIndex = 2) {
+    const summaryTd = { ...tdBase, background: bg, fontWeight: 600, borderBottom: `1px solid ${T.border}`, borderTop: `1px solid ${T.border}` };
+    const gainColor = agg.totalGainLoss > 0 ? T.green : agg.totalGainLoss < 0 ? T.red : T.textDim;
+    const pctColor  = agg.gainLossPct  > 0 ? T.green : agg.gainLossPct  < 0 ? T.red : T.textDim;
+    return COLS.map((col) => {
+      switch (col.key) {
+        case "ticker":
+          return <td key={col.key} style={{ ...summaryTd, ...stickyCol(bg, zIndex), textAlign: "left", color: T.text, letterSpacing: "0.08em", fontSize: 11 }}>{label}</td>;
+        case "totalCost":
+          return <td key={col.key} style={summaryTd}>{valuesHidden ? "$ ••••" : fmtUSD(agg.totalCost)}</td>;
+        case "totalValue":
+          return <td key={col.key} style={summaryTd}>{valuesHidden ? "$ ••••" : fmtUSD(agg.totalValue)}</td>;
+        case "gainLossPct":
+          return <td key={col.key} style={{ ...summaryTd, color: pctColor }}>{agg.gainLossPct != null ? `${agg.gainLossPct > 0 ? "+" : ""}${agg.gainLossPct.toFixed(2)}%` : "—"}</td>;
+        case "totalGainLoss":
+          return <td key={col.key} style={{ ...summaryTd, color: gainColor }}>{valuesHidden ? "$ ••••" : `${agg.totalGainLoss > 0 ? "+" : ""}${fmtUSD(agg.totalGainLoss)}`}</td>;
+        default: return <td key={col.key} style={summaryTd} />;
+      }
+    });
   }
 
   return (
     <div style={{ marginTop: 32 }}>
-      <button
-        onClick={onToggle}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          padding: "0 0 14px",
-          width: "100%",
-          textAlign: "left",
-        }}
-      >
-        <span
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 10,
-            letterSpacing: "0.16em",
-            textTransform: "uppercase",
-            color: T.textDim,
-          }}
+      {/* Section header: title + collapse chevron + Group toggle */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 14 }}>
+        <button
+          onClick={onToggle}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: 0 }}
         >
-          Position Performance
-        </span>
-        <ChevronDown
-          size={13}
-          color={T.textFaint}
-          style={{
-            transform: open ? "rotate(0deg)" : "rotate(-90deg)",
-            transition: "transform 0.2s",
-            flexShrink: 0,
-          }}
-        />
-      </button>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: T.textDim }}>
+            Position Performance
+          </span>
+          <ChevronDown
+            size={13}
+            color={T.textFaint}
+            style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }}
+          />
+        </button>
+        {open && (
+          <button
+            onClick={() => setGrouped((g) => !g)}
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.1em",
+              padding: "4px 10px",
+              border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
+              borderRadius: 3,
+              background: grouped ? T.gold + "14" : "transparent",
+              color: grouped ? T.gold : T.textFaint,
+              cursor: "pointer",
+              transition: "color 0.15s, background 0.15s, border-color 0.15s",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {grouped ? "Flat view" : "Group by class"}
+          </button>
+        )}
+      </div>
 
       {open && (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${T.borderSoft}`,
-            borderRadius: 4,
-            overflowX: "auto",
-          }}
-        >
+        <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, overflowX: "auto" }}>
           <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {COLS.map((col) => {
-                  const isTicker = col.key === "ticker";
-                  return (
-                    <th
-                      key={col.key}
-                      onClick={() => handleSort(col.key)}
-                      style={{
-                        ...thBase,
-                        ...(isTicker ? stickyCol(T.card, 3) : null),
-                        textAlign: col.align,
-                        color: col.key === sortCol ? T.textDim : T.textFaint,
-                      }}
-                    >
-                      {col.label}
-                      <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>
-                        {sortIndicator(col.key)}
-                      </span>
-                    </th>
-                  );
-                })}
+                {COLS.map((col) => (
+                  <th
+                    key={col.key}
+                    onClick={() => handleSort(col.key)}
+                    style={{
+                      ...thBase,
+                      ...(col.key === "ticker" ? stickyCol(T.card, 3) : null),
+                      textAlign: col.align,
+                      color: col.key === sortCol ? T.textDim : T.textFaint,
+                    }}
+                  >
+                    {col.label}
+                    <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              <tr>
-                {COLS.map((col) => renderTotalCell(col))}
-              </tr>
-              {sortedRows.map((row) => (
-                <tr key={row.ticker}>
-                  {COLS.map((col) => renderCell(row, col))}
-                </tr>
-              ))}
+              {/* Always-visible TOTAL row */}
+              <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
+
+              {grouped && classGroups ? (
+                classGroups.map(({ cls, rows: clsRows, ...agg }) => (
+                  <>
+                    <tr key={`cls-${cls}`}>{renderSummaryRow(cls, agg, T.bg, 2)}</tr>
+                    {clsRows.map((row) => (
+                      <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                    ))}
+                  </>
+                ))
+              ) : (
+                sortedRows.map((row) => (
+                  <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -636,12 +611,20 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     for (const h of holdings || []) {
       if (!h.ticker) continue;
       const tk = h.ticker.toUpperCase();
-      // fxRate = BRL per USD (only present for B3 holdings). Used to convert
-      // BRL-denominated transaction prices into USD at today's rate.
       if (h.type !== "manual" && h.price != null) {
-        map[tk] = { price: h.price, fxRate: h.fxRate ?? null };
+        map[tk] = {
+          price: h.price,
+          // fxRate = BRL per USD. May be null on holdings not yet refreshed
+          // after the field was introduced — derive it from originalPrice/price.
+          fxRate: h.fxRate ?? (h.originalPrice && h.price > 0 ? h.originalPrice / h.price : null),
+          assetClass: h.assetClassOverride || h.assetClass || "Uncategorized",
+        };
       } else if (h.manualMode === "qty_price" && h.manualPrice != null) {
-        map[tk] = { price: h.manualPrice, fxRate: null };
+        map[tk] = {
+          price: h.manualPrice,
+          fxRate: null,
+          assetClass: h.assetClassOverride || h.assetClass || "Uncategorized",
+        };
       }
     }
     return map;
@@ -657,8 +640,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const pos = positions[ticker];
       const qty = Number(tx.qty) || 0;
       let price = Number(tx.price) || 0;
-      // Brazilian tickers store transaction prices in BRL — convert to USD at
-      // today's rate so all figures share one currency.
       if (isBrazilianTicker(ticker)) {
         const fxRate = priceMap[ticker]?.fxRate ?? null;
         if (!fxRate) pos.noFx = true;
@@ -677,15 +658,17 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     const rows = [];
     for (const [ticker, pos] of Object.entries(positions)) {
       if (pos.totalQty < 0.0001) continue;
-      if (pos.noFx) continue; // BR ticker without an FX rate — can't convert to USD
-      const currentPrice = priceMap[ticker]?.price;
+      if (pos.noFx) continue;
+      const entry = priceMap[ticker];
+      const currentPrice = entry?.price;
       if (currentPrice == null) continue;
       const avgCost = pos.totalCost / pos.totalQty;
       const totalCost = avgCost * pos.totalQty;
       const totalValue = currentPrice * pos.totalQty;
       const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      rows.push({ ticker, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
+      const assetClass = entry?.assetClass || "Uncategorized";
+      rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
     }
     return rows;
   }, [transactions, priceMap]);
