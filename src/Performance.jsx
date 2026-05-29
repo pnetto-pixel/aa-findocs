@@ -310,17 +310,53 @@ function CustomTooltip({ active, payload, label, valuesHidden }) {
 
 
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
-  const thStyle = {
+  const [sortCol, setSortCol] = useState("totalValue");
+  const [sortDir, setSortDir] = useState("desc");
+
+  const sortedRows = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const av = a[sortCol];
+      const bv = b[sortCol];
+      if (typeof av === "string") {
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
+      const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
+      return sortDir === "asc" ? an - bn : bn - an;
+    });
+  }, [rows, sortCol, sortDir]);
+
+  function handleSort(col) {
+    if (col === sortCol) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(col);
+      setSortDir("desc");
+    }
+  }
+
+  const COLS = [
+    { key: "ticker",       label: "Ticker",         align: "left"  },
+    { key: "avgCost",      label: "Avg Cost",        align: "right" },
+    { key: "currentPrice", label: "Current Price",   align: "right" },
+    { key: "qty",          label: "Qty",             align: "right" },
+    { key: "totalCost",    label: "Total Cost",      align: "right" },
+    { key: "totalValue",   label: "Total Value",     align: "right" },
+    { key: "gainLossPct",  label: "Gain/Loss %",     align: "right" },
+    { key: "totalGainLoss",label: "Total Gain/Loss", align: "right" },
+  ];
+
+  const thBase = {
     fontFamily: FONT_MONO,
     fontSize: 10,
     letterSpacing: "0.12em",
     textTransform: "uppercase",
-    color: T.textFaint,
     fontWeight: 500,
     padding: "8px 12px",
-    textAlign: "right",
     borderBottom: `1px solid ${T.border}`,
     whiteSpace: "nowrap",
+    cursor: "pointer",
+    userSelect: "none",
   };
   const tdBase = {
     fontFamily: FONT_MONO,
@@ -330,6 +366,48 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     borderBottom: `1px solid ${T.borderSoft}`,
     color: T.text,
   };
+
+  function sortIndicator(col) {
+    if (col !== sortCol) return " ↕";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
+
+  function renderCell(row, col) {
+    const gainColor = row.totalGainLoss > 0 ? T.green : row.totalGainLoss < 0 ? T.red : T.textDim;
+    const pctColor  = row.gainLossPct  > 0 ? T.green : row.gainLossPct  < 0 ? T.red : T.textDim;
+    switch (col.key) {
+      case "ticker":
+        return (
+          <td key={col.key} style={{ ...tdBase, textAlign: "left", color: T.gold, letterSpacing: "0.06em", fontWeight: 600 }}>
+            {row.ticker}
+          </td>
+        );
+      case "avgCost":
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}</td>;
+      case "currentPrice":
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}</td>;
+      case "qty":
+        return <td key={col.key} style={tdBase}>{fmtQty(row.qty)}</td>;
+      case "totalCost":
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalCost)}</td>;
+      case "totalValue":
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtUSD(row.totalValue)}</td>;
+      case "gainLossPct":
+        return (
+          <td key={col.key} style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>
+            {row.gainLossPct != null ? `${row.gainLossPct > 0 ? "+" : ""}${row.gainLossPct.toFixed(2)}%` : "—"}
+          </td>
+        );
+      case "totalGainLoss":
+        return (
+          <td key={col.key} style={{ ...tdBase, color: gainColor }}>
+            {valuesHidden ? "$ ••••" : `${row.totalGainLoss > 0 ? "+" : ""}${fmtUSD(row.totalGainLoss)}`}
+          </td>
+        );
+      default:
+        return <td key={col.key} style={tdBase}>—</td>;
+    }
+  }
 
   return (
     <div style={{ marginTop: 32 }}>
@@ -378,64 +456,33 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
             overflowX: "auto",
           }}
         >
-          <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
+          <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {[
-                  ["Ticker", "left"],
-                  ["Avg Cost", "right"],
-                  ["Current Price", "right"],
-                  ["Qty", "right"],
-                  ["Total Gain/Loss", "right"],
-                  ["Gain/Loss %", "right"],
-                ].map(([col, align]) => (
-                  <th key={col} style={{ ...thStyle, textAlign: align }}>
-                    {col}
+                {COLS.map((col) => (
+                  <th
+                    key={col.key}
+                    onClick={() => handleSort(col.key)}
+                    style={{
+                      ...thBase,
+                      textAlign: col.align,
+                      color: col.key === sortCol ? T.textDim : T.textFaint,
+                    }}
+                  >
+                    {col.label}
+                    <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>
+                      {sortIndicator(col.key)}
+                    </span>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
-                const gainColor =
-                  row.totalGainLoss > 0 ? T.green : row.totalGainLoss < 0 ? T.red : T.textDim;
-                const pctColor =
-                  row.gainLossPct > 0 ? T.green : row.gainLossPct < 0 ? T.red : T.textDim;
-                const gainSign = row.totalGainLoss > 0 ? "+" : "";
-                const pctSign = row.gainLossPct > 0 ? "+" : "";
-                return (
-                  <tr key={row.ticker}>
-                    <td
-                      style={{
-                        ...tdBase,
-                        textAlign: "left",
-                        color: T.gold,
-                        letterSpacing: "0.06em",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {row.ticker}
-                    </td>
-                    <td style={tdBase}>
-                      {valuesHidden ? "$ ••••" : fmtPrice(row.avgCost)}
-                    </td>
-                    <td style={tdBase}>
-                      {valuesHidden ? "$ ••••" : fmtPrice(row.currentPrice)}
-                    </td>
-                    <td style={tdBase}>{fmtQty(row.qty)}</td>
-                    <td style={{ ...tdBase, color: gainColor }}>
-                      {valuesHidden
-                        ? "$ ••••"
-                        : `${gainSign}${fmtUSD(row.totalGainLoss)}`}
-                    </td>
-                    <td style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>
-                      {row.gainLossPct != null
-                        ? `${pctSign}${row.gainLossPct.toFixed(2)}%`
-                        : "—"}
-                    </td>
-                  </tr>
-                );
-              })}
+              {sortedRows.map((row) => (
+                <tr key={row.ticker}>
+                  {COLS.map((col) => renderCell(row, col))}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -549,11 +596,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const currentPrice = priceMap[ticker];
       if (currentPrice == null) continue;
       const avgCost = pos.totalCost / pos.totalQty;
-      const totalGainLoss = (currentPrice - avgCost) * pos.totalQty;
+      const totalCost = avgCost * pos.totalQty;
+      const totalValue = currentPrice * pos.totalQty;
+      const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      rows.push({ ticker, qty: pos.totalQty, avgCost, currentPrice, totalGainLoss, gainLossPct });
+      rows.push({ ticker, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
     }
-    return rows.sort((a, b) => b.currentPrice * b.qty - a.currentPrice * a.qty);
+    return rows;
   }, [transactions, priceMap]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
