@@ -140,17 +140,22 @@ async function handleTesouro(ticker, brapiKey, finnhubKey) {
   if (!brapiKey) throw new Error("BRAPI_API_KEY not configured");
   // brapi Tesouro Direto: /api/v2/treasury/list returns the current snapshot for
   // each bond, with `symbol` (the slug) and `sellPrice` at the result root.
-  const url = `https://brapi.dev/api/v2/treasury/list?symbols=${encodeURIComponent(
-    ticker
-  )}&token=${encodeURIComponent(brapiKey)}`;
+  // We fetch the full list (there are only a few dozen bonds) and match by slug,
+  // because the `symbols` filter is not reliably applied server-side.
+  const url = `https://brapi.dev/api/v2/treasury/list?limit=1000&token=${encodeURIComponent(
+    brapiKey
+  )}`;
   const r = await fetchWithRetry(url);
   if (!r.ok) throw new Error(`brapi treasury ${r.status}`);
   const d = await r.json();
-  const results = Array.isArray(d?.results) ? d.results : [];
-  // Prefer an exact slug match; only fall back to a lone result (server-side filter applied).
+  const results = Array.isArray(d?.results)
+    ? d.results
+    : Array.isArray(d?.treasuries)
+    ? d.treasuries
+    : [];
+  const want = ticker.toLowerCase();
   const result =
-    results.find((x) => (x?.symbol || "").toLowerCase() === ticker.toLowerCase()) ||
-    (results.length === 1 ? results[0] : null);
+    results.find((x) => (x?.symbol || "").toLowerCase() === want) || null;
   const sellPrice = result?.sellPrice;
   if (!result || sellPrice == null) {
     throw new Error("Treasury bond not found");

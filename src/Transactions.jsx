@@ -3419,7 +3419,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const t = tx.ticker.trim().toUpperCase();
       if (seen.has(t)) continue;
       seen.add(t);
-      if (!force && (tickerStatus[t] === "ok" || tickerStatus[t] === "error")) continue;
+      // Only "ok" is cached permanently; re-check "error"/"unknown" every load
+      // (the symbol may have been fixed, or a prior failure was transient).
+      if (!force && tickerStatus[t] === "ok") continue;
       toCheck.push(tx.ticker.trim());
     }
     if (toCheck.length === 0) return;
