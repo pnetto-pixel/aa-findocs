@@ -136,30 +136,14 @@ async function fetchYahooBR(ticker) {
   };
 }
 
-// --- Tesouro Direto (official public source) -------------------------------
-// brapi's Tesouro endpoint requires a paid plan (returns 403 FEATURE_NOT_AVAILABLE),
-// so we use the official Tesouro Direto JSON instead. It needs a browser-like
-// User-Agent or it rejects the request. Returns the current snapshot only.
-const TESOURO_URL =
-  "https://www.tesourodireto.com.br/json/br/com/b3/tesourodireto/service/api/treasurybondsinfo.json";
+// --- Tesouro Direto (official open data: Tesouro Transparente / CKAN) -------
+// brapi's Tesouro endpoint needs a paid plan (403) and the old tesourodireto.com.br
+// JSON was decommissioned (410 Gone). We query the official Tesouro Transparente
+// CKAN datastore via SQL, which lets us fetch just the bond we need (the full
+// dataset is a multi-MB daily CSV). Columns are PT-BR with comma decimals.
+const TESOURO_RESOURCE_ID = "796d2059-14e9-44e3-80c9-2d9e30b405c1";
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-async function fetchTesouroList() {
-  const r = await fetchWithRetry(TESOURO_URL, {
-    headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
-  });
-  let body = null;
-  try {
-    body = await r.json();
-  } catch (e) {
-    body = { _parseError: e.message };
-  }
-  const list = Array.isArray(body?.response?.TrsrBdTradgList)
-    ? body.response.TrsrBdTradgList
-    : [];
-  return { status: r.status, ok: r.ok, list, body };
-}
 
 // Parse a brapi-style slug (e.g. "tesouro-ipca-com-juros-semestrais-15052035")
 // into a maturity date + bond kind + semiannual-coupon flag.
@@ -170,6 +154,7 @@ function parseTesouroSlug(slug) {
   if (!m) return null;
   const type = m[1];
   const d = m[2]; // DDMMYYYY
+  const maturityBR = `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4, 8)}`; // DD/MM/YYYY
   const maturity = `${d.slice(4, 8)}-${d.slice(2, 4)}-${d.slice(0, 2)}`; // YYYY-MM-DD
   const hasJuros = /juros-semestrais/.test(type);
   let kind = null;
@@ -178,64 +163,90 @@ function parseTesouroSlug(slug) {
   else if (/prefixado/.test(type)) kind = "prefixado";
   else if (/renda/.test(type)) kind = "renda";
   else if (/educa/.test(type)) kind = "educa";
-  return { type, maturity, hasJuros, kind };
+  return { type, maturity, maturityBR, hasJuros, kind };
 }
 
-function matchTesouroBond(list, slug) {
-  const p = parseTesouroSlug(slug);
-  if (!p) return null;
-  for (const item of list) {
-    const bd = item?.TrsrBd;
-    if (!bd) continue;
-    if ((bd.mtrtyDt || "").slice(0, 10) !== p.maturity) continue;
-    const nm = (bd.nm || "").toLowerCase();
-    const bondJuros = /juros\s+semestrais/.test(nm);
-    if (bondJuros !== p.hasJuros) continue;
-    if (p.kind && !nm.includes(p.kind)) continue;
-    return bd;
-  }
-  return null;
+// Parse a PT-BR / numeric value. "1.234,56" → 1234.56; "1234.56" → 1234.56.
+function parseBRNumber(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  let s = String(v).trim();
+  if (!s) return null;
+  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
 }
 
-// Redemption (sell) value — field name has varied across versions, so try several.
-function tesouroSellPrice(bd) {
+function tesouroKindIlike(kind) {
   return (
-    bd?.untrRedVal ??
-    bd?.untrRedM ??
-    bd?.unitaryRedemptionValue ??
-    bd?.untrInvstmtVal ??
-    bd?.untrInvstmt ??
-    null
+    { selic: "%selic%", ipca: "%ipca%", prefixado: "%prefixado%", renda: "%renda%", educa: "%educa%" }[
+      kind
+    ] || "%"
   );
 }
 
-// Diagnostic: shows what the official source returns so slugs can be compared.
+// Query the CKAN datastore for the latest morning sell price of one bond.
+async function fetchTesouroCKAN(p) {
+  const jurosCond = p.hasJuros
+    ? `AND "Tipo Titulo" ILIKE '%juros%'`
+    : `AND "Tipo Titulo" NOT ILIKE '%juros%'`;
+  const sql =
+    `SELECT "Tipo Titulo", "Data Base", "PU Venda Manha" ` +
+    `FROM "${TESOURO_RESOURCE_ID}" ` +
+    `WHERE "Data Vencimento" = '${p.maturityBR}' ` +
+    `AND "Tipo Titulo" ILIKE '${tesouroKindIlike(p.kind)}' ${jurosCond} ` +
+    `ORDER BY to_date("Data Base", 'DD/MM/YYYY') DESC LIMIT 1`;
+  const url = `https://www.tesourotransparente.gov.br/ckan/api/3/action/datastore_search_sql?sql=${encodeURIComponent(
+    sql
+  )}`;
+  const r = await fetchWithRetry(url, {
+    headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+  });
+  let body = null;
+  try {
+    body = await r.json();
+  } catch (e) {
+    body = { _parseError: e.message };
+  }
+  const records = Array.isArray(body?.result?.records) ? body.result.records : [];
+  return { status: r.status, ok: r.ok && body?.success !== false, records, body, sql };
+}
+
+// Diagnostic: shows the SQL, upstream status and matched record.
 async function debugTesouro(slug) {
-  const { status, ok, list, body } = await fetchTesouroList();
-  const matched = matchTesouroBond(list, slug);
+  const p = parseTesouroSlug(slug);
+  if (!p || !p.kind) {
+    return { requestedSlug: slug, error: "Unrecognized Tesouro slug", parsed: p };
+  }
+  const { status, ok, records, body, sql } = await fetchTesouroCKAN(p);
+  const rec = records[0] || null;
   return {
     requestedSlug: slug,
-    parsed: parseTesouroSlug(slug),
+    parsed: p,
     upstreamStatus: status,
     upstreamOk: ok,
-    bondCount: list.length,
-    matched: matched
-      ? { nm: matched.nm, mtrtyDt: matched.mtrtyDt, sellPrice: tesouroSellPrice(matched) }
+    recordCount: records.length,
+    matched: rec
+      ? {
+          tipo: rec["Tipo Titulo"],
+          dataBase: rec["Data Base"],
+          sellPriceRaw: rec["PU Venda Manha"],
+          sellPrice: parseBRNumber(rec["PU Venda Manha"]),
+        }
       : null,
-    sampleFields: list[0]?.TrsrBd ? Object.keys(list[0].TrsrBd) : [],
-    availableBonds: list
-      .map((i) => ({ nm: i?.TrsrBd?.nm, mtrtyDt: (i?.TrsrBd?.mtrtyDt || "").slice(0, 10) }))
-      .filter((b) => b.nm),
-    rawSnippet: list.length === 0 ? JSON.stringify(body).slice(0, 500) : undefined,
+    sql,
+    rawSnippet: records.length === 0 ? JSON.stringify(body).slice(0, 600) : undefined,
   };
 }
 
 async function handleTesouro(slug, brapiKey, finnhubKey) {
-  const { ok, status, list } = await fetchTesouroList();
+  const p = parseTesouroSlug(slug);
+  if (!p || !p.kind) throw new Error("Unrecognized Tesouro slug");
+  const { ok, status, records } = await fetchTesouroCKAN(p);
   if (!ok) throw new Error(`tesouro source ${status}`);
-  const bd = matchTesouroBond(list, slug);
-  const sellPrice = tesouroSellPrice(bd);
-  if (!bd || sellPrice == null) {
+  const rec = records[0];
+  const sellPrice = parseBRNumber(rec?.["PU Venda Manha"]);
+  if (!rec || sellPrice == null) {
     throw new Error("Treasury bond not found");
   }
   const brlPerUsd = await fetchUsdBrlRate(brapiKey, finnhubKey);
@@ -245,7 +256,7 @@ async function handleTesouro(slug, brapiKey, finnhubKey) {
     originalCurrency: "BRL",
     originalPrice: sellPrice,
     fxRate: brlPerUsd,
-    source: "tesouro-direto",
+    source: "tesouro-transparente",
     market: "B3",
   };
 }
