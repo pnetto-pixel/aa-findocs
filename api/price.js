@@ -136,23 +136,63 @@ async function fetchYahooBR(ticker) {
   };
 }
 
+// Fetch the brapi Tesouro Direto list. Returns { status, ok, results, body }.
+async function fetchTreasuryList(brapiKey) {
+  const url = `https://brapi.dev/api/v2/treasury/list?limit=1000&token=${encodeURIComponent(
+    brapiKey
+  )}`;
+  const r = await fetchWithRetry(url, {
+    headers: { Authorization: `Bearer ${brapiKey}` },
+  });
+  let body = null;
+  try {
+    body = await r.json();
+  } catch (e) {
+    body = { _parseError: e.message };
+  }
+  const results = Array.isArray(body?.results)
+    ? body.results
+    : Array.isArray(body?.treasuries)
+    ? body.treasuries
+    : Array.isArray(body)
+    ? body
+    : [];
+  return { status: r.status, ok: r.ok, results, body };
+}
+
+// Diagnostic: returns what brapi actually sends, so we can compare slugs.
+async function debugTesouro(slug, brapiKey) {
+  if (!brapiKey) return { error: "BRAPI_API_KEY not configured" };
+  const { status, ok, results, body } = await fetchTreasuryList(brapiKey);
+  const symbols = results
+    .map((x) => x?.symbol)
+    .filter(Boolean);
+  const want = slug.toLowerCase();
+  const matched = symbols.find((s) => (s || "").toLowerCase() === want) || null;
+  return {
+    requestedSlug: want,
+    upstreamStatus: status,
+    upstreamOk: ok,
+    resultCount: results.length,
+    matched,
+    sampleFields: results[0] ? Object.keys(results[0]) : [],
+    relatedSymbols: symbols
+      .filter((s) => /selic|ipca|prefixado/i.test(s))
+      .slice(0, 40),
+    // Include a small slice of the raw body when the list looks empty/odd.
+    rawSnippet:
+      results.length === 0 ? JSON.stringify(body).slice(0, 500) : undefined,
+  };
+}
+
 async function handleTesouro(ticker, brapiKey, finnhubKey) {
   if (!brapiKey) throw new Error("BRAPI_API_KEY not configured");
   // brapi Tesouro Direto: /api/v2/treasury/list returns the current snapshot for
   // each bond, with `symbol` (the slug) and `sellPrice` at the result root.
   // We fetch the full list (there are only a few dozen bonds) and match by slug,
   // because the `symbols` filter is not reliably applied server-side.
-  const url = `https://brapi.dev/api/v2/treasury/list?limit=1000&token=${encodeURIComponent(
-    brapiKey
-  )}`;
-  const r = await fetchWithRetry(url);
-  if (!r.ok) throw new Error(`brapi treasury ${r.status}`);
-  const d = await r.json();
-  const results = Array.isArray(d?.results)
-    ? d.results
-    : Array.isArray(d?.treasuries)
-    ? d.treasuries
-    : [];
+  const { ok, status, results } = await fetchTreasuryList(brapiKey);
+  if (!ok) throw new Error(`brapi treasury ${status}`);
   const want = ticker.toLowerCase();
   const result =
     results.find((x) => (x?.symbol || "").toLowerCase() === want) || null;
@@ -312,12 +352,22 @@ export default async function handler(req, res) {
   // and longer than the B3/US ticker format — detect them before the standard validation.
   const tesouroRaw = (req.query.ticker || "").toString().trim();
   if (/^tesouro-/i.test(tesouroRaw)) {
+    // Diagnostic mode: ?debug=1 returns what brapi actually sends (no price math).
+    if (req.query.debug === "1" || req.query.debug === "true") {
+      try {
+        const info = await debugTesouro(tesouroRaw.toLowerCase(), brapiKey);
+        return res.status(200).json(info);
+      } catch (e) {
+        return res.status(200).json({ error: e.message || "debug failed" });
+      }
+    }
     try {
       const payload = await handleTesouro(tesouroRaw.toLowerCase(), brapiKey, finnhubKey);
       res.setHeader("Cache-Control", "private, max-age=60");
       return res.status(200).json(payload);
     } catch (e) {
-      return res.status(404).json({ error: "Treasury bond not found" });
+      // Surface the real reason (upstream status / parse / not found) to aid debugging.
+      return res.status(404).json({ error: e.message || "Treasury bond not found" });
     }
   }
 
