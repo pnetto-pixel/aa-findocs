@@ -551,6 +551,7 @@ function inferAssetClass(ticker) {
   if (!t) return null;
   if (FIXED_INCOME_ETFS.has(t)) return 'Bonds';
   if (REAL_ESTATE_ETFS.has(t)) return 'Real Estate';
+  if (/^tesouro-/i.test(t)) return 'BRA Fixed Income';
   if (CUSIP_RX.test(t)) return 'Bank Bonds';
   const currency = inferCurrency(t);
   if (currency === 'BRL') return 'BRA Stocks';

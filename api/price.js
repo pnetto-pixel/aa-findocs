@@ -136,6 +136,31 @@ async function fetchYahooBR(ticker) {
   };
 }
 
+async function handleTesouro(ticker, brapiKey, finnhubKey) {
+  if (!brapiKey) throw new Error("BRAPI_API_KEY not configured");
+  const url = `https://brapi.dev/api/v2/treasury/indicators?symbols=${encodeURIComponent(
+    ticker
+  )}&token=${encodeURIComponent(brapiKey)}`;
+  const r = await fetchWithRetry(url);
+  if (!r.ok) throw new Error(`brapi treasury ${r.status}`);
+  const d = await r.json();
+  const result = Array.isArray(d?.results) ? d.results[0] : null;
+  const sellPrice = result?.sellPrice;
+  if (!result || sellPrice == null) {
+    throw new Error("Treasury bond not found");
+  }
+  const brlPerUsd = await fetchUsdBrlRate(brapiKey, finnhubKey);
+  return {
+    price: sellPrice / brlPerUsd,
+    currency: "USD",
+    originalCurrency: "BRL",
+    originalPrice: sellPrice,
+    fxRate: brlPerUsd,
+    source: "brapi-treasury",
+    market: "B3",
+  };
+}
+
 async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false) {
   const baseTicker = stripSA(ticker).toUpperCase();
 
@@ -270,6 +295,19 @@ export default async function handler(req, res) {
 
   if (!finnhubKey) {
     return res.status(500).json({ error: "FINNHUB_API_KEY not configured" });
+  }
+
+  // Tesouro Direto slugs (e.g. "tesouro-selic-01032027") are lowercase, hyphenated,
+  // and longer than the B3/US ticker format — detect them before the standard validation.
+  const tesouroRaw = (req.query.ticker || "").toString().trim();
+  if (/^tesouro-/i.test(tesouroRaw)) {
+    try {
+      const payload = await handleTesouro(tesouroRaw.toLowerCase(), brapiKey, finnhubKey);
+      res.setHeader("Cache-Control", "private, max-age=60");
+      return res.status(200).json(payload);
+    } catch (e) {
+      return res.status(404).json({ error: "Treasury bond not found" });
+    }
   }
 
   const tickerRaw = (req.query.ticker || "").toString().toUpperCase().trim();
