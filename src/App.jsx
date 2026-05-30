@@ -145,6 +145,54 @@ async function fetchPrice(ticker, auth, quoteOnly = false) {
   return parsed;
 }
 
+// --- Tesouro Direto (Brazilian treasury bonds) live valuation --------------
+// Manual holdings named "Tesouro SELIC" / "Tesouro IPCA" are valued live from
+// the transaction log: net qty per slug ticker × live price (via api/price).
+const TESOURO_GROUPS = {
+  selic: /^tesouro-selic-/i,
+  ipca: /^tesouro-ipca-/i,
+};
+
+function getTesourosGroup(holdingName) {
+  const n = (holdingName || "").toLowerCase();
+  if (n.includes("selic")) return TESOURO_GROUPS.selic;
+  if (n.includes("ipca")) return TESOURO_GROUPS.ipca;
+  return null;
+}
+
+function isTesouroHolding(h) {
+  return (
+    h.type === "manual" &&
+    (h.assetClass || "").trim().toLowerCase() === "bra fixed income" &&
+    getTesourosGroup(h.name) != null
+  );
+}
+
+async function fetchTransactionsList(auth) {
+  const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (!res.ok) throw new Error(`Transactions ${res.status}`);
+  const d = await res.json();
+  return Array.isArray(d) ? d : d?.transactions || [];
+}
+
+// Net quantity per slug ticker for a given group regex.
+function netQtyByTicker(transactions, groupRx) {
+  const net = new Map();
+  for (const tx of transactions || []) {
+    const t = (tx.ticker || "").toString();
+    if (!groupRx.test(t)) continue;
+    const slug = t.toLowerCase();
+    const signed = (tx.side === "sell" ? -1 : 1) * (Number(tx.qty) || 0);
+    net.set(slug, (net.get(slug) || 0) + signed);
+  }
+  return net;
+}
+
 async function fetchIndexQuote(symbol, auth) {
   const res = await fetch(`/api/index-quote?symbol=${encodeURIComponent(symbol)}`, {
     headers: authHeaders(auth),
@@ -382,6 +430,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [target, setTarget] = useState("");
   const [busyIds, setBusyIds] = useState({});
   const [refreshing, setRefreshing] = useState(false);
+  // Tesouro Direto live values: holdingId -> { value, loading, error }
+  const [tesourosLiveValues, setTesourosLiveValues] = useState({});
   const [formError, setFormError] = useState("");
   const [csvStatus, setCsvStatus] = useState(null);
   const [showRebalance, setShowRebalance] = useState(false);
@@ -605,6 +655,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Compute Tesouro Direto live values once holdings are loaded.
+  useEffect(() => {
+    if (!loaded) return;
+    refreshTesouros();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
   // Save holdings: debounced server write + immediate localStorage cache.
   useEffect(() => {
     if (!loaded) return;
@@ -639,6 +696,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Compute current value for any holding type
   function holdingValue(h) {
     if (h.type === "manual") {
+      // Tesouro Direto holdings: prefer the live value computed from transactions,
+      // falling back to manualValue when no matching transactions exist.
+      if (isTesouroHolding(h)) {
+        const live = tesourosLiveValues[h.id];
+        if (live && live.value != null) return live.value;
+        return h.manualValue != null ? h.manualValue : 0;
+      }
       if (h.manualMode === "value") {
         return h.manualValue != null ? h.manualValue : 0;
       }
@@ -658,7 +722,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   const totalValue = useMemo(
     () => holdings.reduce((s, h) => s + holdingValue(h), 0),
-    [holdings]
+    [holdings, tesourosLiveValues]
   );
 
   const totalTarget = useMemo(
@@ -684,7 +748,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       else map.set(x.id, T.textDim);
     });
     return map;
-  }, [holdings, totalValue]);
+  }, [holdings, totalValue, tesourosLiveValues]);
 
   const setBusy = (id, v) =>
     setBusyIds((prev) => {
@@ -767,6 +831,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Background refresh: stages all updates and applies them in a single setState at the end.
   // Shows a non-intrusive toast with progress. No per-row flickering.
   async function refreshAll() {
+    // Refresh Tesouro Direto live values regardless of auto holdings count.
+    refreshTesouros();
+
     const autoHoldings = holdings.filter((h) => h.type !== "manual");
     if (autoHoldings.length === 0) return;
     setRefreshing(true);
@@ -828,6 +895,95 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         message: `${successes} of ${autoHoldings.length} positions updated. ${failures} failed — try refreshing individually.`,
       });
     }
+  }
+
+  // Compute live USD value for each Tesouro holding from the transaction log.
+  // Falls back to the holding's manualValue when no matching transactions exist
+  // (transition period). Respects brapi rate-limit via small batches + delay.
+  async function refreshTesouros() {
+    const tesouros = holdings.filter(isTesouroHolding);
+    if (tesouros.length === 0) return;
+
+    let transactions;
+    try {
+      transactions = await fetchTransactionsList(auth);
+    } catch (e) {
+      if (e.code === 401) {
+        onAuthFail();
+        return;
+      }
+      setTesourosLiveValues((prev) => {
+        const next = { ...prev };
+        for (const h of tesouros) next[h.id] = { ...next[h.id], loading: false, error: e.message };
+        return next;
+      });
+      return;
+    }
+
+    // Mark all as loading.
+    setTesourosLiveValues((prev) => {
+      const next = { ...prev };
+      for (const h of tesouros) next[h.id] = { ...next[h.id], loading: true, error: null };
+      return next;
+    });
+
+    // Collect every distinct slug we need to price across all groups, with net qty.
+    const slugsNeeded = new Map(); // slug -> netQty
+    const perHolding = []; // { h, slugs: Map }
+    for (const h of tesouros) {
+      const rx = getTesourosGroup(h.name);
+      const net = netQtyByTicker(transactions, rx);
+      perHolding.push({ h, net });
+      for (const [slug, qty] of net) {
+        if (qty > 0 && !slugsNeeded.has(slug)) slugsNeeded.set(slug, qty);
+      }
+    }
+
+    // Fetch prices in small batches to respect brapi rate limits.
+    const priceBySlug = new Map();
+    const slugs = Array.from(slugsNeeded.keys());
+    const batchSize = 3;
+    for (let i = 0; i < slugs.length; i += batchSize) {
+      const batch = slugs.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async (slug) => {
+          try {
+            const data = await fetchPrice(slug, auth, true);
+            if (data?.price != null) priceBySlug.set(slug, data.price);
+          } catch (e) {
+            if (e.code === 401) throw e;
+          }
+        })
+      ).catch((e) => {
+        if (e.code === 401) onAuthFail();
+      });
+      if (i + batchSize < slugs.length) {
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }
+
+    setTesourosLiveValues((prev) => {
+      const next = { ...prev };
+      for (const { h, net } of perHolding) {
+        let value = 0;
+        let priced = false;
+        for (const [slug, qty] of net) {
+          if (qty <= 0) continue;
+          const price = priceBySlug.get(slug);
+          if (price != null) {
+            value += qty * price;
+            priced = true;
+          }
+        }
+        if (priced) {
+          next[h.id] = { value, loading: false, error: null };
+        } else {
+          // No matching transactions (or pricing failed) — fall back to manualValue.
+          next[h.id] = { value: null, loading: false, error: null };
+        }
+      }
+      return next;
+    });
   }
 
   async function addHolding() {
