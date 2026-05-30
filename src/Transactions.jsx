@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -28,6 +28,48 @@ function authHeaders(auth) {
   if (auth?.googleToken) h["x-google-token"] = auth.googleToken;
   if (auth?.password) h["x-app-password"] = auth.password;
   return h;
+}
+
+// Verify a ticker resolves against a price source (api/price).
+// Returns "ok" (price found), "error" (source resolved but no such ticker),
+// or "unknown" (transient/network failure — don't flag, retry later).
+async function verifyTickerResolvable(ticker, auth) {
+  try {
+    const params = new URLSearchParams({ ticker, quoteOnly: "1" });
+    const res = await fetch(`/api/price?${params.toString()}`, {
+      headers: authHeaders(auth),
+    });
+    if (res.status === 401) {
+      const err = new Error("Unauthorized");
+      err.code = 401;
+      throw err;
+    }
+    // 400/404/502 → the price source could not identify this ticker.
+    if (res.status === 400 || res.status === 404 || res.status === 502) {
+      return "error";
+    }
+    if (!res.ok) return "unknown"; // 5xx/transient — retry later
+    const d = await res.json();
+    if (d && d.error) return "error";
+    if (d && d.price != null) return "ok";
+    return "error";
+  } catch (e) {
+    if (e.code === 401) throw e;
+    return "unknown"; // network failure — don't flag
+  }
+}
+
+// Tickers we don't expect a price API to resolve (manual instruments).
+// CUSIP-style bank bonds and cash-like classes are user-entered, not market-priced.
+function shouldVerifyTicker(tx) {
+  const t = (tx?.ticker || "").trim();
+  if (!t) return false;
+  if (CUSIP_RX.test(t.toUpperCase())) return false;
+  const cls = (tx?.assetClass || "").toLowerCase();
+  if (cls === "cash" || cls.startsWith("unallocated") || cls === "bank bonds") {
+    return false;
+  }
+  return true;
 }
 
 async function fetchTransactionsFromServer(auth) {
@@ -815,6 +857,8 @@ function TransactionTable({
   onBulkAssetClass,
   busy,
   valuesHidden,
+  tickerStatus = {},
+  checkingTickers,
 }) {
   const [openCol, setOpenCol] = useState(null); // column key for popover
   const [anchor, setAnchor] = useState(null);
@@ -1573,7 +1617,19 @@ function TransactionTable({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {tx.ticker}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      {tickerStatus[(tx.ticker || "").toUpperCase()] === "error" && (
+                        <span
+                          title="Price source could not identify this ticker — check for typos or fix the symbol"
+                          style={{ display: "inline-flex", flexShrink: 0 }}
+                        >
+                          <AlertCircle size={12} style={{ color: T.red }} />
+                        </span>
+                      )}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {tx.ticker}
+                      </span>
+                    </span>
                   </td>
                   <td
                     style={{
@@ -3330,10 +3386,83 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
+  // Ticker resolution status: { [TICKER]: "ok" | "error" } — cached in localStorage
+  // so we don't re-hit the price API for already-validated tickers every load.
+  const [tickerStatus, setTickerStatus] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tickerStatus");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [checkingTickers, setCheckingTickers] = useState(() => new Set());
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
   }, [onAuthFail]);
+
+  // Persist ticker status cache.
+  useEffect(() => {
+    try {
+      localStorage.setItem("tickerStatus", JSON.stringify(tickerStatus));
+    } catch {}
+  }, [tickerStatus]);
+
+  // Verify a set of transactions' tickers against the price API, in small batches
+  // (respecting rate limits). `force` re-checks even already-known tickers.
+  async function verifyTickers(list, { force = false } = {}) {
+    const toCheck = [];
+    const seen = new Set();
+    for (const tx of list) {
+      if (!shouldVerifyTicker(tx)) continue;
+      const t = tx.ticker.trim().toUpperCase();
+      if (seen.has(t)) continue;
+      seen.add(t);
+      if (!force && (tickerStatus[t] === "ok" || tickerStatus[t] === "error")) continue;
+      toCheck.push(tx.ticker.trim());
+    }
+    if (toCheck.length === 0) return;
+
+    setCheckingTickers((prev) => {
+      const next = new Set(prev);
+      toCheck.forEach((t) => next.add(t.toUpperCase()));
+      return next;
+    });
+
+    const batchSize = 3;
+    for (let i = 0; i < toCheck.length; i += batchSize) {
+      const batch = toCheck.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (t) => {
+          try {
+            const status = await verifyTickerResolvable(t, auth);
+            return [t.toUpperCase(), status];
+          } catch (e) {
+            if (e.code === 401 && typeof onAuthFailRef.current === "function") {
+              onAuthFailRef.current();
+            }
+            return [t.toUpperCase(), "unknown"];
+          }
+        })
+      );
+      setTickerStatus((prev) => {
+        const next = { ...prev };
+        for (const [t, status] of results) {
+          if (status === "ok" || status === "error") next[t] = status;
+        }
+        return next;
+      });
+      setCheckingTickers((prev) => {
+        const next = new Set(prev);
+        batch.forEach((t) => next.delete(t.toUpperCase()));
+        return next;
+      });
+      if (i + batchSize < toCheck.length) {
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }
+  }
 
   // Initial load
   useEffect(() => {
@@ -3352,6 +3481,8 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         });
         setTransactions(migrated);
         setLoading(false);
+        // Validate tickers against the price API in the background.
+        verifyTickers(migrated);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -3382,12 +3513,14 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   async function handleAdd(tx) {
     await persist([...transactions, tx]);
     setFormOpen(false);
+    verifyTickers([tx], { force: true });
   }
 
   async function handleUpdate(tx) {
     const next = transactions.map((t) => (t.id === tx.id ? tx : t));
     await persist(next);
     setEditing(null);
+    verifyTickers([tx], { force: true });
   }
 
   async function handleDelete(tx) {
@@ -3414,6 +3547,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
     await persist(next);
     setImportOpen(false);
+    verifyTickers(newTxs);
   }
 
   function handleExport() {
@@ -3591,6 +3725,8 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         onBulkAssetClass={handleBulkAssetClass}
         busy={saving}
         valuesHidden={valuesHidden}
+        tickerStatus={tickerStatus}
+        checkingTickers={checkingTickers}
       />
 
       <ImportModal

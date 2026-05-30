@@ -161,11 +161,10 @@ function getTesourosGroup(holdingName) {
 }
 
 function isTesouroHolding(h) {
-  return (
-    h.type === "manual" &&
-    (h.assetClass || "").trim().toLowerCase() === "bra fixed income" &&
-    getTesourosGroup(h.name) != null
-  );
+  // Manual holding whose name maps to a Tesouro group (SELIC/IPCA). We match by
+  // name rather than assetClass because existing holdings may have been created
+  // with any class label before live valuation existed.
+  return h.type === "manual" && getTesourosGroup(h.name) != null;
 }
 
 async function fetchTransactionsList(auth) {
@@ -967,8 +966,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       for (const { h, net } of perHolding) {
         let value = 0;
         let priced = false;
+        let hadPositions = false;
         for (const [slug, qty] of net) {
           if (qty <= 0) continue;
+          hadPositions = true;
           const price = priceBySlug.get(slug);
           if (price != null) {
             value += qty * price;
@@ -977,8 +978,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         }
         if (priced) {
           next[h.id] = { value, loading: false, error: null };
+        } else if (hadPositions) {
+          // Had open positions but no price could be fetched — surface as an error.
+          next[h.id] = { value: null, loading: false, error: "Price lookup failed" };
         } else {
-          // No matching transactions (or pricing failed) — fall back to manualValue.
+          // No matching transactions — fall back to manualValue (transition period).
           next[h.id] = { value: null, loading: false, error: null };
         }
       }
@@ -2370,6 +2374,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           {h.type === "manual" ? (
                             <ManualHoldingRow
                               holding={h}
+                              liveInfo={isTesouroHolding(h) ? (tesourosLiveValues[h.id] || null) : null}
                               totalValue={totalValue}
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
@@ -4085,7 +4090,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
@@ -4093,10 +4098,18 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, deltaColor, onUpd
   const [draftTarget, setDraftTarget] = useState("");
   const [draftClass, setDraftClass] = useState("");
 
-  const value =
+  // Live-valued holdings (e.g. Tesouro Direto) override manualValue when a value
+  // is available; otherwise we fall back to the manual figure.
+  const liveValue = liveInfo && liveInfo.value != null ? liveInfo.value : null;
+  const liveLoading = !!(liveInfo && liveInfo.loading);
+  const liveError = liveInfo && liveInfo.error ? liveInfo.error : null;
+  const usingFallback = !!liveInfo && liveValue == null && !liveLoading;
+
+  const baseValue =
     holding.manualMode === "value"
       ? holding.manualValue ?? 0
       : (holding.manualPrice ?? 0) * (holding.qty ?? 0);
+  const value = liveValue != null ? liveValue : baseValue;
   const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
@@ -4169,8 +4182,26 @@ function ManualHoldingRow({ holding, totalValue, valuesHidden, deltaColor, onUpd
             />
           </button>
         </div>
-        <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, flexShrink: 0, letterSpacing: "-0.01em" }}>
-          {maskMoney(value, valuesHidden)}
+        <span style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+          {liveLoading && (
+            <RefreshCw size={11} className="spin" style={{ color: T.textFaint }} title="Updating live value…" />
+          )}
+          {!liveLoading && liveError && (
+            <span title={`Live update failed: ${liveError}`} style={{ display: "inline-flex" }}>
+              <AlertCircle size={12} style={{ color: T.red }} />
+            </span>
+          )}
+          {!liveLoading && !liveError && usingFallback && (
+            <span
+              title="No matching transactions found — showing manual value"
+              style={{ display: "inline-flex" }}
+            >
+              <AlertCircle size={12} style={{ color: T.gold }} />
+            </span>
+          )}
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, letterSpacing: "-0.01em" }}>
+            {maskMoney(value, valuesHidden)}
+          </span>
         </span>
       </div>
 
