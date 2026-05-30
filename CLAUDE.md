@@ -35,6 +35,8 @@ There is no linter configured. No other test files exist.
 - `type: "auto"` — ticker-backed, price fetched from Finnhub/brapi
 - `type: "manual"` — user-entered value or qty×price. `manualMode: "value"` | `"qty_price"`. Cash accounts are manual holdings with `assetClass: "Cash"` and are displayed in a separate section.
 
+**BRA Fixed Income (Tesouro Direto):** there is no viable public price source — brapi's Tesouro endpoint requires a paid plan (403), and the official `tesourodireto.com.br` JSON (410) and Tesouro Transparente CKAN datastore APIs (400, disabled) are gone. So these are **manual** holdings. When `assetClass === "BRA Fixed Income"` (value mode), the amount can be entered in **BRL** (`manualCurrency: "BRL"`, e.g. a Nubank balance) and is converted to USD via a live `usdBrlRate`. The rate comes from `GET /api/price?fx=USDBRL` (cascade: Finnhub forex → open.er-api → Frankfurter), is cached in `localStorage`, and refreshes on load and "Refresh all". Tickers matching `tesouro-*` and the `BRA Fixed Income` class are skipped by the Transactions ticker-resolution check (no price source to validate against).
+
 **Auth state shape** (persisted in `localStorage`):
 ```js
 { kind: "google", googleToken, email, name, picture }
