@@ -145,51 +145,29 @@ async function fetchPrice(ticker, auth, quoteOnly = false) {
   return parsed;
 }
 
-// --- Tesouro Direto (Brazilian treasury bonds) live valuation --------------
-// Manual holdings named "Tesouro SELIC" / "Tesouro IPCA" are valued live from
-// the transaction log: net qty per slug ticker × live price (via api/price).
-const TESOURO_GROUPS = {
-  selic: /^tesouro-selic-/i,
-  ipca: /^tesouro-ipca-/i,
-};
-
-function getTesourosGroup(holdingName) {
-  const n = (holdingName || "").toLowerCase();
-  if (n.includes("selic")) return TESOURO_GROUPS.selic;
-  if (n.includes("ipca")) return TESOURO_GROUPS.ipca;
-  return null;
+// --- BRA Fixed Income (manual, entered in BRL) -----------------------------
+// These holdings (e.g. Tesouro balances copied from Nubank) are entered as a
+// total value in BRL; the app converts to USD using a live USD/BRL rate.
+function isBraFixedIncome(h) {
+  return (
+    h.type === "manual" &&
+    (h.assetClass || "").trim().toLowerCase() === "bra fixed income"
+  );
 }
 
-function isTesouroHolding(h) {
-  // Manual holding whose name maps to a Tesouro group (SELIC/IPCA). We match by
-  // name rather than assetClass because existing holdings may have been created
-  // with any class label before live valuation existed.
-  return h.type === "manual" && getTesourosGroup(h.name) != null;
-}
-
-async function fetchTransactionsList(auth) {
-  const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
+// Fetch the current USD/BRL rate (how many BRL per 1 USD).
+async function fetchUsdBrlRate(auth) {
+  const res = await fetch("/api/price?fx=USDBRL", { headers: authHeaders(auth) });
   if (res.status === 401) {
     const err = new Error("Unauthorized");
     err.code = 401;
     throw err;
   }
-  if (!res.ok) throw new Error(`Transactions ${res.status}`);
+  if (!res.ok) throw new Error(`FX ${res.status}`);
   const d = await res.json();
-  return Array.isArray(d) ? d : d?.transactions || [];
-}
-
-// Net quantity per slug ticker for a given group regex.
-function netQtyByTicker(transactions, groupRx) {
-  const net = new Map();
-  for (const tx of transactions || []) {
-    const t = (tx.ticker || "").toString();
-    if (!groupRx.test(t)) continue;
-    const slug = t.toLowerCase();
-    const signed = (tx.side === "sell" ? -1 : 1) * (Number(tx.qty) || 0);
-    net.set(slug, (net.get(slug) || 0) + signed);
-  }
-  return net;
+  const rate = d?.rate ?? d?.fxRate;
+  if (!rate || rate <= 0) throw new Error("No FX rate");
+  return rate;
 }
 
 async function fetchIndexQuote(symbol, auth) {
@@ -429,8 +407,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [target, setTarget] = useState("");
   const [busyIds, setBusyIds] = useState({});
   const [refreshing, setRefreshing] = useState(false);
-  // Tesouro Direto live values: holdingId -> { value, loading, error }
-  const [tesourosLiveValues, setTesourosLiveValues] = useState({});
+  // Live USD/BRL rate (BRL per 1 USD), cached locally for offline/first paint.
+  const [usdBrlRate, setUsdBrlRate] = useState(() => {
+    const v = parseFloat(localStorage.getItem("usdBrlRate"));
+    return isFinite(v) && v > 0 ? v : null;
+  });
   const [formError, setFormError] = useState("");
   const [csvStatus, setCsvStatus] = useState(null);
   const [showRebalance, setShowRebalance] = useState(false);
@@ -448,6 +429,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [manualPriceInput, setManualPriceInput] = useState("");
   const [manualTarget, setManualTarget] = useState("");
   const [manualClass, setManualClass] = useState("");
+  const [manualCurrency, setManualCurrency] = useState("USD"); // USD | BRL (BRA Fixed Income)
   const [manualFormError, setManualFormError] = useState("");
 
   // Filter/sort state
@@ -654,12 +636,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Compute Tesouro Direto live values once holdings are loaded.
+  // Refresh the USD/BRL rate on mount (used to convert BRL manual holdings).
   useEffect(() => {
-    if (!loaded) return;
-    refreshTesouros();
+    refreshUsdBrlRate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
+  }, []);
 
   // Save holdings: debounced server write + immediate localStorage cache.
   useEffect(() => {
@@ -692,18 +673,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdings, loaded]);
 
-  // Compute current value for any holding type
+  // Compute current value for any holding type (always in USD)
   function holdingValue(h) {
     if (h.type === "manual") {
-      // Tesouro Direto holdings: prefer the live value computed from transactions,
-      // falling back to manualValue when no matching transactions exist.
-      if (isTesouroHolding(h)) {
-        const live = tesourosLiveValues[h.id];
-        if (live && live.value != null) return live.value;
-        return h.manualValue != null ? h.manualValue : 0;
-      }
       if (h.manualMode === "value") {
-        return h.manualValue != null ? h.manualValue : 0;
+        const v = h.manualValue != null ? h.manualValue : 0;
+        // BRA Fixed Income values are entered in BRL → convert to USD via live rate.
+        if (h.manualCurrency === "BRL") {
+          return usdBrlRate ? v / usdBrlRate : 0;
+        }
+        return v;
       }
       // manualMode === "qty_price"
       return h.manualPrice != null && h.qty != null ? h.manualPrice * h.qty : 0;
@@ -721,7 +700,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   const totalValue = useMemo(
     () => holdings.reduce((s, h) => s + holdingValue(h), 0),
-    [holdings, tesourosLiveValues]
+    [holdings, usdBrlRate]
   );
 
   const totalTarget = useMemo(
@@ -747,7 +726,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       else map.set(x.id, T.textDim);
     });
     return map;
-  }, [holdings, totalValue, tesourosLiveValues]);
+  }, [holdings, totalValue, usdBrlRate]);
 
   const setBusy = (id, v) =>
     setBusyIds((prev) => {
@@ -830,8 +809,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Background refresh: stages all updates and applies them in a single setState at the end.
   // Shows a non-intrusive toast with progress. No per-row flickering.
   async function refreshAll() {
-    // Refresh Tesouro Direto live values regardless of auto holdings count.
-    refreshTesouros();
+    // Refresh the USD/BRL rate (for BRL-entered holdings) regardless of auto count.
+    refreshUsdBrlRate();
 
     const autoHoldings = holdings.filter((h) => h.type !== "manual");
     if (autoHoldings.length === 0) return;
@@ -896,98 +875,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
   }
 
-  // Compute live USD value for each Tesouro holding from the transaction log.
-  // Falls back to the holding's manualValue when no matching transactions exist
-  // (transition period). Respects brapi rate-limit via small batches + delay.
-  async function refreshTesouros() {
-    const tesouros = holdings.filter(isTesouroHolding);
-    if (tesouros.length === 0) return;
-
-    let transactions;
+  // Refresh the live USD/BRL rate used to convert BRA Fixed Income (BRL) holdings.
+  async function refreshUsdBrlRate() {
     try {
-      transactions = await fetchTransactionsList(auth);
+      const rate = await fetchUsdBrlRate(auth);
+      setUsdBrlRate(rate);
+      try { localStorage.setItem("usdBrlRate", String(rate)); } catch (e) {}
     } catch (e) {
-      if (e.code === 401) {
-        onAuthFail();
-        return;
-      }
-      setTesourosLiveValues((prev) => {
-        const next = { ...prev };
-        for (const h of tesouros) next[h.id] = { ...next[h.id], loading: false, error: e.message };
-        return next;
-      });
-      return;
+      if (e.code === 401) onAuthFail();
+      // otherwise keep the cached rate
     }
-
-    // Mark all as loading.
-    setTesourosLiveValues((prev) => {
-      const next = { ...prev };
-      for (const h of tesouros) next[h.id] = { ...next[h.id], loading: true, error: null };
-      return next;
-    });
-
-    // Collect every distinct slug we need to price across all groups, with net qty.
-    const slugsNeeded = new Map(); // slug -> netQty
-    const perHolding = []; // { h, slugs: Map }
-    for (const h of tesouros) {
-      const rx = getTesourosGroup(h.name);
-      const net = netQtyByTicker(transactions, rx);
-      perHolding.push({ h, net });
-      for (const [slug, qty] of net) {
-        if (qty > 0 && !slugsNeeded.has(slug)) slugsNeeded.set(slug, qty);
-      }
-    }
-
-    // Fetch prices in small batches to respect brapi rate limits.
-    const priceBySlug = new Map();
-    const slugs = Array.from(slugsNeeded.keys());
-    const batchSize = 3;
-    for (let i = 0; i < slugs.length; i += batchSize) {
-      const batch = slugs.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (slug) => {
-          try {
-            const data = await fetchPrice(slug, auth, true);
-            if (data?.price != null) priceBySlug.set(slug, data.price);
-          } catch (e) {
-            if (e.code === 401) throw e;
-          }
-        })
-      ).catch((e) => {
-        if (e.code === 401) onAuthFail();
-      });
-      if (i + batchSize < slugs.length) {
-        await new Promise((r) => setTimeout(r, 800));
-      }
-    }
-
-    setTesourosLiveValues((prev) => {
-      const next = { ...prev };
-      for (const { h, net } of perHolding) {
-        let value = 0;
-        let priced = false;
-        let hadPositions = false;
-        for (const [slug, qty] of net) {
-          if (qty <= 0) continue;
-          hadPositions = true;
-          const price = priceBySlug.get(slug);
-          if (price != null) {
-            value += qty * price;
-            priced = true;
-          }
-        }
-        if (priced) {
-          next[h.id] = { value, loading: false, error: null };
-        } else if (hadPositions) {
-          // Had open positions but no price could be fetched — surface as an error.
-          next[h.id] = { value: null, loading: false, error: "Price lookup failed" };
-        } else {
-          // No matching transactions — fall back to manualValue (transition period).
-          next[h.id] = { value: null, loading: false, error: null };
-        }
-      }
-      return next;
-    });
   }
 
   async function addHolding() {
@@ -1063,6 +960,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         target: tgt,
         assetClass: manualClass.trim() || "Manual",
         assetClassOverride: manualClass.trim() || null,
+        // BRL entry only applies to BRA Fixed Income value-mode holdings.
+        manualCurrency:
+          manualMode === "value" &&
+          manualClass.trim().toLowerCase() === "bra fixed income" &&
+          manualCurrency === "BRL"
+            ? "BRL"
+            : "USD",
         price: null,
         error: null,
         lastUpdated: new Date().toISOString(),
@@ -1075,6 +979,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     setManualPriceInput("");
     setManualTarget("");
     setManualClass("");
+    setManualCurrency("USD");
     setShowManualForm(false);
   }
 
@@ -2374,7 +2279,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           {h.type === "manual" ? (
                             <ManualHoldingRow
                               holding={h}
-                              liveInfo={isTesouroHolding(h) ? (tesourosLiveValues[h.id] || null) : null}
+                              usdBrlRate={usdBrlRate}
                               totalValue={totalValue}
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
@@ -2766,13 +2671,48 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 />
 
                 {manualMode === "value" ? (
-                  <Input
-                    placeholder="Current value (e.g. 5000)"
-                    value={manualValueInput}
-                    onChange={(e) => setManualValueInput(e.target.value)}
-                    inputMode="decimal"
-                    style={{ marginBottom: 8 }}
-                  />
+                  <div style={{ marginBottom: 8 }}>
+                    <Input
+                      placeholder={
+                        manualClass.trim().toLowerCase() === "bra fixed income" &&
+                        manualCurrency === "BRL"
+                          ? "Value in BRL (e.g. Nubank balance)"
+                          : "Current value (e.g. 5000)"
+                      }
+                      value={manualValueInput}
+                      onChange={(e) => setManualValueInput(e.target.value)}
+                      inputMode="decimal"
+                    />
+                    {manualClass.trim().toLowerCase() === "bra fixed income" && (
+                      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                        {["USD", "BRL"].map((c) => {
+                          const active = manualCurrency === c;
+                          return (
+                            <button
+                              key={c}
+                              type="button"
+                              onClick={() => setManualCurrency(c)}
+                              style={{
+                                flex: 1,
+                                background: active ? T.gold : "transparent",
+                                color: active ? T.bg : T.textDim,
+                                border: `1px solid ${active ? T.gold : T.border}`,
+                                padding: "6px 8px",
+                                fontSize: 10,
+                                fontWeight: 600,
+                                letterSpacing: "0.1em",
+                                borderRadius: 2,
+                                fontFamily: FONT_MONO,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {c === "BRL" ? "R$ BRL" : "$ USD"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div
                     style={{
@@ -4090,26 +4030,27 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
   const [draftPrice, setDraftPrice] = useState("");
   const [draftTarget, setDraftTarget] = useState("");
   const [draftClass, setDraftClass] = useState("");
+  const [draftCurrency, setDraftCurrency] = useState("USD");
 
-  // Live-valued holdings (e.g. Tesouro Direto) override manualValue when a value
-  // is available; otherwise we fall back to the manual figure.
-  const liveValue = liveInfo && liveInfo.value != null ? liveInfo.value : null;
-  const liveLoading = !!(liveInfo && liveInfo.loading);
-  const liveError = liveInfo && liveInfo.error ? liveInfo.error : null;
-  const usingFallback = !!liveInfo && liveValue == null && !liveLoading;
+  // BRA Fixed Income holdings are entered in BRL and converted to USD via the live rate.
+  const isBrl = holding.manualMode === "value" && holding.manualCurrency === "BRL";
+  const brlAmount = holding.manualValue ?? 0;
 
-  const baseValue =
+  const value =
     holding.manualMode === "value"
-      ? holding.manualValue ?? 0
+      ? isBrl
+        ? usdBrlRate
+          ? brlAmount / usdBrlRate
+          : 0
+        : holding.manualValue ?? 0
       : (holding.manualPrice ?? 0) * (holding.qty ?? 0);
-  const value = liveValue != null ? liveValue : baseValue;
   const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
@@ -4124,8 +4065,14 @@ function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaCo
     setDraftPrice(holding.manualPrice != null ? String(holding.manualPrice) : "");
     setDraftTarget(holding.target != null ? String(holding.target) : "");
     setDraftClass(holding.assetClass || "");
+    setDraftCurrency(holding.manualCurrency === "BRL" ? "BRL" : "USD");
     setEditing(true);
   }
+
+  // BRL value entry is offered only for BRA Fixed Income holdings.
+  const editClass = locked ? holding.assetClass : draftClass;
+  const allowBrl =
+    (editClass || "").trim().toLowerCase() === "bra fixed income";
 
   function saveEdit() {
     const patch = {
@@ -4138,6 +4085,7 @@ function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaCo
     if (holding.manualMode === "value") {
       const v = parseFloat(draftValue);
       patch.manualValue = isNaN(v) ? 0 : v;
+      patch.manualCurrency = allowBrl && draftCurrency === "BRL" ? "BRL" : "USD";
     } else {
       const q = parseFloat(draftQty);
       const p = parseFloat(draftPrice);
@@ -4183,20 +4131,16 @@ function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaCo
           </button>
         </div>
         <span style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-          {liveLoading && (
-            <RefreshCw size={11} className="spin" style={{ color: T.textFaint }} title="Updating live value…" />
-          )}
-          {!liveLoading && liveError && (
-            <span title={`Live update failed: ${liveError}`} style={{ display: "inline-flex" }}>
-              <AlertCircle size={12} style={{ color: T.red }} />
-            </span>
-          )}
-          {!liveLoading && !liveError && usingFallback && (
+          {isBrl && (
             <span
-              title="No matching transactions found — showing manual value"
-              style={{ display: "inline-flex" }}
+              title={
+                usdBrlRate
+                  ? `R$ ${fmtNum(brlAmount, 2)} ÷ ${usdBrlRate.toFixed(2)} BRL/USD`
+                  : "Awaiting USD/BRL rate"
+              }
+              style={{ fontSize: 9, fontFamily: FONT_MONO, color: T.textFaint, letterSpacing: "0.06em" }}
             >
-              <AlertCircle size={12} style={{ color: T.gold }} />
+              {valuesHidden ? "BRL" : `R$${fmtNum(brlAmount, 0)}`}
             </span>
           )}
           <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, letterSpacing: "-0.01em" }}>
@@ -4324,13 +4268,43 @@ function ManualHoldingRow({ holding, liveInfo, totalValue, valuesHidden, deltaCo
           }}
         >
           {holding.manualMode === "value" ? (
-            <Input
-              placeholder="Current value"
-              value={draftValue}
-              onChange={(e) => setDraftValue(e.target.value)}
-              inputMode="decimal"
-              style={{ marginBottom: 8 }}
-            />
+            <div style={{ marginBottom: 8 }}>
+              <Input
+                placeholder={allowBrl && draftCurrency === "BRL" ? "Value in BRL (e.g. Nubank)" : "Current value"}
+                value={draftValue}
+                onChange={(e) => setDraftValue(e.target.value)}
+                inputMode="decimal"
+              />
+              {allowBrl && (
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  {["USD", "BRL"].map((c) => {
+                    const active = draftCurrency === c;
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setDraftCurrency(c)}
+                        style={{
+                          flex: 1,
+                          background: active ? T.gold : "transparent",
+                          color: active ? T.bg : T.textDim,
+                          border: `1px solid ${active ? T.gold : T.border}`,
+                          padding: "5px 8px",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          letterSpacing: "0.1em",
+                          borderRadius: 2,
+                          fontFamily: FONT_MONO,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {c === "BRL" ? "R$ BRL" : "$ USD"}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
               <Input placeholder="Quantity" value={draftQty} onChange={(e) => setDraftQty(e.target.value)} inputMode="decimal" />
