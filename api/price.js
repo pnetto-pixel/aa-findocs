@@ -136,13 +136,18 @@ async function fetchYahooBR(ticker) {
   };
 }
 
-// Fetch the brapi Tesouro Direto list. Returns { status, ok, results, body }.
-async function fetchTreasuryList(brapiKey) {
-  const url = `https://brapi.dev/api/v2/treasury/list?limit=1000&token=${encodeURIComponent(
-    brapiKey
-  )}`;
-  const r = await fetchWithRetry(url, {
-    headers: { Authorization: `Bearer ${brapiKey}` },
+// --- Tesouro Direto (official public source) -------------------------------
+// brapi's Tesouro endpoint requires a paid plan (returns 403 FEATURE_NOT_AVAILABLE),
+// so we use the official Tesouro Direto JSON instead. It needs a browser-like
+// User-Agent or it rejects the request. Returns the current snapshot only.
+const TESOURO_URL =
+  "https://www.tesourodireto.com.br/json/br/com/b3/tesourodireto/service/api/treasurybondsinfo.json";
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+async function fetchTesouroList() {
+  const r = await fetchWithRetry(TESOURO_URL, {
+    headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
   });
   let body = null;
   try {
@@ -150,54 +155,87 @@ async function fetchTreasuryList(brapiKey) {
   } catch (e) {
     body = { _parseError: e.message };
   }
-  const results = Array.isArray(body?.results)
-    ? body.results
-    : Array.isArray(body?.treasuries)
-    ? body.treasuries
-    : Array.isArray(body)
-    ? body
+  const list = Array.isArray(body?.response?.TrsrBdTradgList)
+    ? body.response.TrsrBdTradgList
     : [];
-  return { status: r.status, ok: r.ok, results, body };
+  return { status: r.status, ok: r.ok, list, body };
 }
 
-// Diagnostic: returns what brapi actually sends, so we can compare slugs.
-async function debugTesouro(slug, brapiKey) {
-  if (!brapiKey) return { error: "BRAPI_API_KEY not configured" };
-  const { status, ok, results, body } = await fetchTreasuryList(brapiKey);
-  const symbols = results
-    .map((x) => x?.symbol)
-    .filter(Boolean);
-  const want = slug.toLowerCase();
-  const matched = symbols.find((s) => (s || "").toLowerCase() === want) || null;
+// Parse a brapi-style slug (e.g. "tesouro-ipca-com-juros-semestrais-15052035")
+// into a maturity date + bond kind + semiannual-coupon flag.
+function parseTesouroSlug(slug) {
+  const m = String(slug || "")
+    .toLowerCase()
+    .match(/^tesouro-(.+)-(\d{8})$/);
+  if (!m) return null;
+  const type = m[1];
+  const d = m[2]; // DDMMYYYY
+  const maturity = `${d.slice(4, 8)}-${d.slice(2, 4)}-${d.slice(0, 2)}`; // YYYY-MM-DD
+  const hasJuros = /juros-semestrais/.test(type);
+  let kind = null;
+  if (/selic/.test(type)) kind = "selic";
+  else if (/ipca/.test(type)) kind = "ipca";
+  else if (/prefixado/.test(type)) kind = "prefixado";
+  else if (/renda/.test(type)) kind = "renda";
+  else if (/educa/.test(type)) kind = "educa";
+  return { type, maturity, hasJuros, kind };
+}
+
+function matchTesouroBond(list, slug) {
+  const p = parseTesouroSlug(slug);
+  if (!p) return null;
+  for (const item of list) {
+    const bd = item?.TrsrBd;
+    if (!bd) continue;
+    if ((bd.mtrtyDt || "").slice(0, 10) !== p.maturity) continue;
+    const nm = (bd.nm || "").toLowerCase();
+    const bondJuros = /juros\s+semestrais/.test(nm);
+    if (bondJuros !== p.hasJuros) continue;
+    if (p.kind && !nm.includes(p.kind)) continue;
+    return bd;
+  }
+  return null;
+}
+
+// Redemption (sell) value — field name has varied across versions, so try several.
+function tesouroSellPrice(bd) {
+  return (
+    bd?.untrRedVal ??
+    bd?.untrRedM ??
+    bd?.unitaryRedemptionValue ??
+    bd?.untrInvstmtVal ??
+    bd?.untrInvstmt ??
+    null
+  );
+}
+
+// Diagnostic: shows what the official source returns so slugs can be compared.
+async function debugTesouro(slug) {
+  const { status, ok, list, body } = await fetchTesouroList();
+  const matched = matchTesouroBond(list, slug);
   return {
-    requestedSlug: want,
+    requestedSlug: slug,
+    parsed: parseTesouroSlug(slug),
     upstreamStatus: status,
     upstreamOk: ok,
-    resultCount: results.length,
-    matched,
-    sampleFields: results[0] ? Object.keys(results[0]) : [],
-    relatedSymbols: symbols
-      .filter((s) => /selic|ipca|prefixado/i.test(s))
-      .slice(0, 40),
-    // Include a small slice of the raw body when the list looks empty/odd.
-    rawSnippet:
-      results.length === 0 ? JSON.stringify(body).slice(0, 500) : undefined,
+    bondCount: list.length,
+    matched: matched
+      ? { nm: matched.nm, mtrtyDt: matched.mtrtyDt, sellPrice: tesouroSellPrice(matched) }
+      : null,
+    sampleFields: list[0]?.TrsrBd ? Object.keys(list[0].TrsrBd) : [],
+    availableBonds: list
+      .map((i) => ({ nm: i?.TrsrBd?.nm, mtrtyDt: (i?.TrsrBd?.mtrtyDt || "").slice(0, 10) }))
+      .filter((b) => b.nm),
+    rawSnippet: list.length === 0 ? JSON.stringify(body).slice(0, 500) : undefined,
   };
 }
 
-async function handleTesouro(ticker, brapiKey, finnhubKey) {
-  if (!brapiKey) throw new Error("BRAPI_API_KEY not configured");
-  // brapi Tesouro Direto: /api/v2/treasury/list returns the current snapshot for
-  // each bond, with `symbol` (the slug) and `sellPrice` at the result root.
-  // We fetch the full list (there are only a few dozen bonds) and match by slug,
-  // because the `symbols` filter is not reliably applied server-side.
-  const { ok, status, results } = await fetchTreasuryList(brapiKey);
-  if (!ok) throw new Error(`brapi treasury ${status}`);
-  const want = ticker.toLowerCase();
-  const result =
-    results.find((x) => (x?.symbol || "").toLowerCase() === want) || null;
-  const sellPrice = result?.sellPrice;
-  if (!result || sellPrice == null) {
+async function handleTesouro(slug, brapiKey, finnhubKey) {
+  const { ok, status, list } = await fetchTesouroList();
+  if (!ok) throw new Error(`tesouro source ${status}`);
+  const bd = matchTesouroBond(list, slug);
+  const sellPrice = tesouroSellPrice(bd);
+  if (!bd || sellPrice == null) {
     throw new Error("Treasury bond not found");
   }
   const brlPerUsd = await fetchUsdBrlRate(brapiKey, finnhubKey);
@@ -207,7 +245,7 @@ async function handleTesouro(ticker, brapiKey, finnhubKey) {
     originalCurrency: "BRL",
     originalPrice: sellPrice,
     fxRate: brlPerUsd,
-    source: "brapi-treasury",
+    source: "tesouro-direto",
     market: "B3",
   };
 }
@@ -355,7 +393,7 @@ export default async function handler(req, res) {
     // Diagnostic mode: ?debug=1 returns what brapi actually sends (no price math).
     if (req.query.debug === "1" || req.query.debug === "true") {
       try {
-        const info = await debugTesouro(tesouroRaw.toLowerCase(), brapiKey);
+        const info = await debugTesouro(tesouroRaw.toLowerCase());
         return res.status(200).json(info);
       } catch (e) {
         return res.status(200).json({ error: e.message || "debug failed" });
