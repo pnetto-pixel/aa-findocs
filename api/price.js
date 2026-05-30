@@ -177,28 +177,29 @@ function parseBRNumber(v) {
   return isFinite(n) ? n : null;
 }
 
-function tesouroKindIlike(kind) {
-  return (
-    { selic: "%selic%", ipca: "%ipca%", prefixado: "%prefixado%", renda: "%renda%", educa: "%educa%" }[
-      kind
-    ] || "%"
-  );
+// DD/MM/YYYY → sortable YYYYMMDD (returns "" if unparseable).
+function brDateSortKey(s) {
+  const m = String(s || "").match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[3]}${m[2]}${m[1]}` : "";
 }
 
-// Query the CKAN datastore for the latest morning sell price of one bond.
+// Does a "Tipo Titulo" string match the slug's bond kind + coupon flag?
+function tipoMatchesSlug(tipo, p) {
+  const t = String(tipo || "").toLowerCase();
+  if (p.kind && !t.includes(p.kind)) return false;
+  const tipoJuros = /juros\s+semestrais/.test(t);
+  if (tipoJuros !== p.hasJuros) return false;
+  return true;
+}
+
+// Query the CKAN datastore (structured search) for one bond's price history,
+// filtering by maturity date; we disambiguate the bond type in code because
+// the exact "Tipo Titulo" label varies and datastore filters are exact-match.
 async function fetchTesouroCKAN(p) {
-  const jurosCond = p.hasJuros
-    ? `AND "Tipo Titulo" ILIKE '%juros%'`
-    : `AND "Tipo Titulo" NOT ILIKE '%juros%'`;
-  const sql =
-    `SELECT "Tipo Titulo", "Data Base", "PU Venda Manha" ` +
-    `FROM "${TESOURO_RESOURCE_ID}" ` +
-    `WHERE "Data Vencimento" = '${p.maturityBR}' ` +
-    `AND "Tipo Titulo" ILIKE '${tesouroKindIlike(p.kind)}' ${jurosCond} ` +
-    `ORDER BY to_date("Data Base", 'DD/MM/YYYY') DESC LIMIT 1`;
-  const url = `https://www.tesourotransparente.gov.br/ckan/api/3/action/datastore_search_sql?sql=${encodeURIComponent(
-    sql
-  )}`;
+  const filters = JSON.stringify({ "Data Vencimento": p.maturityBR });
+  const url =
+    `https://www.tesourotransparente.gov.br/ckan/api/3/action/datastore_search` +
+    `?resource_id=${TESOURO_RESOURCE_ID}&limit=100000&filters=${encodeURIComponent(filters)}`;
   const r = await fetchWithRetry(url, {
     headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
   });
@@ -209,23 +210,39 @@ async function fetchTesouroCKAN(p) {
     body = { _parseError: e.message };
   }
   const records = Array.isArray(body?.result?.records) ? body.result.records : [];
-  return { status: r.status, ok: r.ok && body?.success !== false, records, body, sql };
+  return { status: r.status, ok: r.ok && body?.success !== false, records, body, url };
 }
 
-// Diagnostic: shows the SQL, upstream status and matched record.
+// From all records for a maturity date, pick the most recent one matching the kind.
+function pickLatestTesouroRecord(records, p) {
+  let best = null;
+  let bestKey = "";
+  for (const rec of records) {
+    if (!tipoMatchesSlug(rec["Tipo Titulo"], p)) continue;
+    const key = brDateSortKey(rec["Data Base"]);
+    if (key >= bestKey) {
+      bestKey = key;
+      best = rec;
+    }
+  }
+  return best;
+}
+
+// Diagnostic: shows upstream status and the matched record.
 async function debugTesouro(slug) {
   const p = parseTesouroSlug(slug);
   if (!p || !p.kind) {
     return { requestedSlug: slug, error: "Unrecognized Tesouro slug", parsed: p };
   }
-  const { status, ok, records, body, sql } = await fetchTesouroCKAN(p);
-  const rec = records[0] || null;
+  const { status, ok, records, body, url } = await fetchTesouroCKAN(p);
+  const rec = pickLatestTesouroRecord(records, p);
   return {
     requestedSlug: slug,
     parsed: p,
     upstreamStatus: status,
     upstreamOk: ok,
     recordCount: records.length,
+    distinctTipos: Array.from(new Set(records.map((r) => r["Tipo Titulo"]).filter(Boolean))),
     matched: rec
       ? {
           tipo: rec["Tipo Titulo"],
@@ -234,7 +251,7 @@ async function debugTesouro(slug) {
           sellPrice: parseBRNumber(rec["PU Venda Manha"]),
         }
       : null,
-    sql,
+    url,
     rawSnippet: records.length === 0 ? JSON.stringify(body).slice(0, 600) : undefined,
   };
 }
@@ -244,7 +261,7 @@ async function handleTesouro(slug, brapiKey, finnhubKey) {
   if (!p || !p.kind) throw new Error("Unrecognized Tesouro slug");
   const { ok, status, records } = await fetchTesouroCKAN(p);
   if (!ok) throw new Error(`tesouro source ${status}`);
-  const rec = records[0];
+  const rec = pickLatestTesouroRecord(records, p);
   const sellPrice = parseBRNumber(rec?.["PU Venda Manha"]);
   if (!rec || sellPrice == null) {
     throw new Error("Treasury bond not found");
