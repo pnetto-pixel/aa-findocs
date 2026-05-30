@@ -65,8 +65,9 @@ function shouldVerifyTicker(tx) {
   const t = (tx?.ticker || "").trim();
   if (!t) return false;
   if (CUSIP_RX.test(t.toUpperCase())) return false;
+  if (/^tesouro-/i.test(t)) return false; // no public price source — entered manually
   const cls = (tx?.assetClass || "").toLowerCase();
-  if (cls === "cash" || cls.startsWith("unallocated") || cls === "bank bonds") {
+  if (cls === "cash" || cls.startsWith("unallocated") || cls === "bank bonds" || cls === "bra fixed income") {
     return false;
   }
   return true;
