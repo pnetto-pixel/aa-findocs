@@ -138,13 +138,19 @@ async function fetchYahooBR(ticker) {
 
 async function handleTesouro(ticker, brapiKey, finnhubKey) {
   if (!brapiKey) throw new Error("BRAPI_API_KEY not configured");
-  const url = `https://brapi.dev/api/v2/treasury/indicators?symbols=${encodeURIComponent(
+  // brapi Tesouro Direto: /api/v2/treasury/list returns the current snapshot for
+  // each bond, with `symbol` (the slug) and `sellPrice` at the result root.
+  const url = `https://brapi.dev/api/v2/treasury/list?symbols=${encodeURIComponent(
     ticker
   )}&token=${encodeURIComponent(brapiKey)}`;
   const r = await fetchWithRetry(url);
   if (!r.ok) throw new Error(`brapi treasury ${r.status}`);
   const d = await r.json();
-  const result = Array.isArray(d?.results) ? d.results[0] : null;
+  const results = Array.isArray(d?.results) ? d.results : [];
+  // Prefer an exact slug match; only fall back to a lone result (server-side filter applied).
+  const result =
+    results.find((x) => (x?.symbol || "").toLowerCase() === ticker.toLowerCase()) ||
+    (results.length === 1 ? results[0] : null);
   const sellPrice = result?.sellPrice;
   if (!result || sellPrice == null) {
     throw new Error("Treasury bond not found");
