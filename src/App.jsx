@@ -161,11 +161,10 @@ function getTesourosGroup(holdingName) {
 }
 
 function isTesouroHolding(h) {
-  return (
-    h.type === "manual" &&
-    (h.assetClass || "").trim().toLowerCase() === "bra fixed income" &&
-    getTesourosGroup(h.name) != null
-  );
+  // Manual holding whose name maps to a Tesouro group (SELIC/IPCA). We match by
+  // name rather than assetClass because existing holdings may have been created
+  // with any class label before live valuation existed.
+  return h.type === "manual" && getTesourosGroup(h.name) != null;
 }
 
 async function fetchTransactionsList(auth) {
