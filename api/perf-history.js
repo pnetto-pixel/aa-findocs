@@ -27,10 +27,18 @@ function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
 }
 
-function perfKeyFromAuth(auth) {
+function simpleHash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function perfKeyFromAuth(auth, txsHash) {
   if (!auth?.storageKey) return null;
-  // v11: INCLUDED_CLASSES expanded to Bonds, Bank Bonds, BRA Fixed Income.
-  return auth.storageKey.replace(/:holdings$/, ':perf-history:v11');
+  // v12: cache key includes transaction hash so any change invalidates automatically.
+  return auth.storageKey.replace(/:holdings$/, `:perf-history:v12:${txsHash}`);
 }
 
 // Returns seconds until the next US market close (≈21:00 UTC = 4 PM ET).
@@ -382,15 +390,7 @@ export default async function handler(req, res) {
     return res.status(503).json({ error: `Storage unavailable: ${err.message}` });
   }
 
-  const cacheKey = perfKeyFromAuth(auth);
   const bypassCache = req.query?.refresh === '1';
-
-  if (cacheKey && !bypassCache) {
-    try {
-      const cached = await redis.get(cacheKey);
-      if (cached) return res.status(200).json(JSON.parse(cached));
-    } catch {}
-  }
 
   const { transactions } = req.body || {};
   if (!Array.isArray(transactions)) {
@@ -400,6 +400,7 @@ export default async function handler(req, res) {
   const eligible = transactions.filter(
     (tx) => tx?.assetClass && INCLUDED_CLASSES.has(tx.assetClass)
   );
+
   if (eligible.length === 0) {
     return res.status(200).json({
       dates: [], portfolio: [], spy: [],
@@ -410,6 +411,19 @@ export default async function handler(req, res) {
         sampleAssetClasses: [...new Set(transactions.map((t) => t?.assetClass).filter(Boolean))].slice(0, 10),
       },
     });
+  }
+
+  // Hash over fields that affect the performance calculation so any change busts the cache.
+  const txsHash = simpleHash(
+    eligible.map(t => `${t.id}|${t.date}|${t.side}|${t.ticker}|${t.qty}|${t.price}`).sort().join(',')
+  );
+  const cacheKey = perfKeyFromAuth(auth, txsHash);
+
+  if (cacheKey && !bypassCache) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return res.status(200).json(JSON.parse(cached));
+    } catch {}
   }
 
   eligible.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
