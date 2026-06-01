@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Docs (read these first)
+
+- **[`docs/CONTEXT.md`](docs/CONTEXT.md)** — Identidade do projeto, stack, constraints, decisões técnicas, regras de operação do Claude, deploy pattern, diagnóstico e lições aprendidas. **Leia antes de propor qualquer mudança.**
+- **[`docs/Features_Roadmap.md`](docs/Features_Roadmap.md)** — Backlog completo: features concluídas (com PR de referência) e pendentes (Dividends, Aporte Quinzenal, Events).
+
+> **Atualizar esses dois arquivos** ao final de sessions que mudam features ou decisões técnicas — commitar junto com o PR da feature ou num PR separado de docs.
+
 ## Commands
 
 ```bash
@@ -72,7 +79,7 @@ portfolio:pwd:<sha256(password)[0:16]>:holdings       — password-auth variant
 portfolio:allowlist                                    — SET of allowed emails
 ```
 
-**Cache versioning:** `perf-history` cache includes a version suffix (`v10` currently). Bump the version whenever the response shape changes — old cached responses will be ignored automatically.
+**Cache versioning:** `perf-history` cache includes a version suffix (`v11` currently). Bump the version whenever the response shape changes — old cached responses will be ignored automatically.
 
 ### Performance algorithm (`api/perf-history.js`)
 
