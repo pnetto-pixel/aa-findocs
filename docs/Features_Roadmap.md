@@ -20,6 +20,9 @@
 - **Item 13** (jun/2026): US Bank Bonds live — pesquisa de API gratuita por CUSIP/ticker concluída. Implementado.
 - **Item 11** (jun/2026 — PRs #41–#50): BRA Fixed Income (Tesouro Direto) — tentativas de live pricing via Brapi `/treasury` (403 pago), tesourodireto.com.br (410 descontinuado), CKAN datastore (400 desativado). Pivotou para **entrada manual em BRL com conversão automática para USD**. Holdings `BRA Fixed Income` aceitam `manualCurrency: "BRL"`, convertido via `usdBrlRate` (`GET /api/price?fx=USDBRL`, cascata Finnhub → open.er-api → Frankfurter, cacheado em localStorage). Seletor USD/BRL no form de add/edit. Tickers `tesouro-*` e classe `BRA Fixed Income` pulam validação de ticker.
 - **Item 12** (jun/2026 — PRs #41–#50): `BRA Fixed Income` como asset class BR para Tesouro/CDB — holdings manuais com suporte a valor em BRL. CDB Banco Guanabara permanece manual em BRL até vencimento (out/2028).
+- **Bug fix — Performance não reage a mudanças em Transactions** (jun/2026): Cache Redis de `perf-history` usava key fixa por usuário, ignorando mudanças nas transactions. Fix: cache key agora inclui FNV-1a hash das transactions elegíveis (`id|date|side|ticker|qty|price`). Qualquer adição, remoção ou edição gera hash diferente → cache miss → recalcula automaticamente. Cache bumped v11→v12.
+- **Bug fix — "Bank Bonds" ausente na mensagem de erro de classe elegível** (jun/2026): Mensagem "No transactions in eligible asset classes" em Performance.jsx não listava Bank Bonds. Corrigido.
+- **Fix — Disclaimer Performance.jsx** (jun/2026): Texto "Excludes fixed income & unallocated assets" já estava corrigido no código para "Excludes Cash and Unallocated assets". Roadmap e CONTEXT.md atualizados para refletir.
 
 ---
 
@@ -29,10 +32,8 @@
 - **Novo item**: Validação de slug/ticker ao adicionar transação — lookup na API antes de salvar, para evitar typos em tickers `tesouro-*` e outros ativos live. ⚠️ *Deferred — adicionar quando Tab Dividends ou Tab Events forem implementadas*
 
 ### Tab Performance
-- **Bug fix — Performance não reage a mudanças em Transactions:** Gráfico, KPIs e Position Performance não atualizam ao trocar de tab após salvar transações novas. `transactions` prop em `Performance.jsx` não está disparando re-fetch/re-cálculo quando muda. Fix: detectar mudança em `transactions` (ex: hash/length/lastModified) → invalidar cache local + re-chamar `api/perf-history` automaticamente. *Reproduce: adicionar venda de DELL em Transactions → ir para Performance → qty/Net Worth/gráfico não refletem a venda.*
 - **Item 8**: Gráfico adicional: retorno total incluindo dividendos recebidos
 - **Item 23**: Coluna de dividendos recebidos por asset na tabela de performance (item 1) + coluna Yield on Cost (dividendos acumulados ÷ custo de aquisição). ⚠️ *depende de log de dividendos — ver itens 17–19*
-- **Fix pendente:** Disclaimer "Excludes fixed income & unallocated assets" em Performance.jsx desatualizado após item 16 — corrigir junto com próxima mudança no arquivo.
 
 ### Tab Dividends (nova)
 - **Item 17**: Gráfico de evolução dos pagamentos de dividendos — **barras**, com seletor de view: `Year | 6M | Quarter | Month`

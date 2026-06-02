@@ -242,7 +242,7 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 Elementos principais:
 
 - **Page title:** "Performance" + badge **TEST ONLY** (gold)
-- **Disclaimer:** "Excludes fixed income & unallocated assets" ⚠️ *desatualizado após PR #37 — fixed income agora incluído no filtro*
+- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close." (correto — Cash e Unallocated são os únicos excluídos)
 - **Period selector:** botões `1M | 6M | YTD | 1Y | 5Y | MAX`
 - **Toggle:** "Compare vs S&P 500" ↔ "← Net Worth"
 - **Card colapsável "Portfolio Performance & Net Worth"** (PR #38): mesmo padrão visual do card "Rebalance Suggestions" da aba Holdings — botão full-width, label gold, ícone ChevronDown rotativo. Mostra "as of [data]" no header assim que dados carregam.
@@ -279,6 +279,7 @@ Ticker (sticky) | Avg Cost | Price | Qty | Total Cost | Current Value | Total Ga
 |--------|----------------|
 | v10    | Adicionou `portfolioUSD` à resposta |
 | v11    | `INCLUDED_CLASSES` expandido (PR #37 + #39) |
+| v12    | Cache key inclui hash das transactions — invalida automaticamente quando transactions mudam |
 
 ### Estados especiais
 
@@ -290,7 +291,7 @@ Loading / erro / vazio com mensagens específicas por `meta.reason`.
 - **Fixed income sem preço de mercado:** CDs e Tesouro ignorados silenciosamente no cálculo do gráfico (aparecem na Position Performance via preço manual)
 - **TWR** escolhido vs benchmark; MWR/IRR fica pra Fase 2
 - **Position Performance usa câmbio atual** para ativos BR
-- **Disclaimer "Excludes fixed income"** desatualizado — corrigir em próxima session
+- **Cache v12** com hash de transactions — invalida automaticamente quando transactions mudam (antes, cache de `perf-history` ficava stale após edições)
 
 -----
 
@@ -339,6 +340,7 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 |**Cache versionado em `perf-history`**|Permite invalidar formato antigo silenciosamente|
 |**TTL alinhado ao fechamento do mercado (PR #38)**|Cache expira ~21:00 UTC (16h ET) — dados sempre refletem último pregão|
 |**Net Worth usa soma live de positionRows (PR #39)**|KPI e Position Performance usam mesma fonte (Finnhub live); elimina inconsistência com série histórica cacheada|
+|**Cache `perf-history` usa hash das transactions (v12)**|Cache key = storageKey + FNV-1a hash de `id\|date\|side\|ticker\|qty\|price` de cada tx elegível. Qualquer mudança nas transactions invalida automaticamente o cache sem precisar de bypass manual.|
 |**`inferAssetClass()` com lookup prioritário (PR #37)**|ETFs Fixed Income e Real Estate identificados antes da heurística genérica de ticker|
 |**`INCLUDED_CLASSES` expandido (PR #37)**|Bonds, Bank Bonds, BRA Fixed Income agora entram no cálculo; tickers sem candles já eram ignorados silenciosamente|
 |**Cache bump v10→v11 (PR #39)**|`INCLUDED_CLASSES` expandido muda o `portfolioUSD` calculado; cache antigo daria Net Worth incorreto|

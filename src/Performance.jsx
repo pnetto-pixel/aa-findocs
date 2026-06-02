@@ -923,7 +923,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 }}
               >
                 {meta?.reason === "no-eligible-transactions"
-                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, BRA Fixed Income)."
+                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income)."
                   : meta?.reason === "no-priced-days"
                   ? "Could not fetch enough historical price data to build a chart."
                   : "No performance data available."}
