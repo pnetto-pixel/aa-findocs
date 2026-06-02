@@ -705,8 +705,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const positionRows = useMemo(() => {
     if (!transactions.length) return [];
+    const sorted = [...transactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const positions = {};
-    for (const tx of transactions) {
+    for (const tx of sorted) {
       const ticker = tx.ticker?.toUpperCase();
       if (!ticker) continue;
       if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null, lastBuyDate: null, lastBuyNotes: null };
@@ -861,11 +862,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
             {state === "loading" && (
               <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
                 Loading…
-              </span>
-            )}
-            {state === "done" && lastDate && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
-                as of {fmtDateLabel(lastDate)}
               </span>
             )}
             <ChevronDown
