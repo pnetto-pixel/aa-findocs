@@ -380,7 +380,7 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 | `PUT /api/transactions` | Salva array de transações |
 | `GET /api/price` | Quote real-time de um ticker (Finnhub para US, brapi para B3); `?fx=USDBRL` retorna taxa de câmbio |
 | `GET /api/index-quote` | Quote do SPY |
-| `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v11) |
+| `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v12, key inclui hash das transactions) |
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
 
 -----
@@ -388,7 +388,6 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Próximas sessions:**
-- Fix disclaimer Performance.jsx ("Excludes fixed income" desatualizado)
 - Tab Dividends (itens 17–19, 24)
 - Tab Aporte Quinzenal (itens 25–28) ⭐
 - Tab Events (itens 20–22)
@@ -483,10 +482,12 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 - **KPI e tabela devem usar mesma fonte de dados** (PR #39) — KPI "Net Worth" e Position Performance divergiam porque usavam fontes diferentes (série histórica vs live). Unificar em soma live elimina a inconsistência.
 - **`inferAssetClass()` com lookup prioritário** (PR #37) — lista explícita de ETFs conhecidos antes da heurística genérica evita classificações erradas (ex: TLT sendo classificado como Stocks).
 - **Expandir `INCLUDED_CLASSES` exige bump de cache** — dados calculados mudam; versão antiga do cache retornaria Net Worth incorreto.
-- **Disclaimer desatualizado é dívida técnica** — "Excludes fixed income" ficou errado após PR #37; corrigir junto com próxima mudança em Performance.jsx.
+- **Disclaimer desatualizado é dívida técnica** — "Excludes fixed income" ficou errado após PR #37; corrigido em PR #53.
 - **Cards colapsáveis em Performance** (PR #38) — consistência com padrão visual de Holdings reduz curva de aprendizado do usuário.
 - **Tesouro Direto: validar fonte antes de implementar** (PR #41–#50) — Brapi `/treasury` é pago (403); endpoints oficiais descontinuados; CKAN desativado. Sempre checar disponibilidade real da API antes de desenhar a solução.
 - **Fallback para manual é sempre válido** — quando não há fonte live gratuita, entrada manual em moeda nativa (BRL) + conversão automática é solução pragmática e suficiente para uso pessoal.
+- **Ordenar transactions por data antes de iterar posições** (PR #53) — imports Fidelity chegam em ordem decrescente; sell antes de buy leva qty a negativo, reset a 0, sell ignorada. Sempre `[...txs].sort()` por data antes de computar posições acumuladas.
+- **Cache key com hash das transactions** (PR #53) — cache fixo por usuário é insuficiente; qualquer mudança nas transactions ficava invisível até expirar. Hash de `id|date|side|ticker|qty|price` garante invalidação automática sem bypass manual.
 
 -----
 
