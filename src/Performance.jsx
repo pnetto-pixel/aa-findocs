@@ -864,11 +864,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 Loading…
               </span>
             )}
-            {state === "done" && lastDate && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
-                as of {fmtDateLabel(lastDate)}
-              </span>
-            )}
             <ChevronDown
               size={16}
               style={{
