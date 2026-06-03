@@ -1659,6 +1659,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 marginTop: 14,
                 borderBottom: `1px solid ${T.border}`,
                 overflowX: "auto",
+                overflowY: "hidden",
+                touchAction: "pan-x",
                 WebkitOverflowScrolling: "touch",
                 scrollbarWidth: "none",
                 msOverflowStyle: "none",
