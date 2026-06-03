@@ -821,22 +821,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   return (
     <div style={{ paddingBottom: 40 }}>
-      {/* Page title */}
-      <h1
-        style={{
-          fontFamily: FONT_DISPLAY,
-          fontWeight: 500,
-          fontSize: 44,
-          lineHeight: 1,
-          margin: "12px 0 20px",
-          letterSpacing: "-0.02em",
-          fontStyle: "italic",
-          color: T.text,
-        }}
-      >
-        Performance
-      </h1>
-
       {/* Portfolio Performance & Net Worth card */}
       <section>
         <button
