@@ -1648,7 +1648,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 : activeView === "performance"
                 ? "Performance"
                 : activeView === "aporte"
-                ? "Aporte Quinzenal"
+                ? "Contributions"
                 : "Holdings"}
             </h1>
             {/* View switcher */}
@@ -1658,13 +1658,17 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 gap: 18,
                 marginTop: 14,
                 borderBottom: `1px solid ${T.border}`,
+                overflowX: "auto",
+                WebkitOverflowScrolling: "touch",
+                scrollbarWidth: "none",
+                msOverflowStyle: "none",
               }}
             >
               {[
                 { id: "dashboard", label: "Holdings" },
                 { id: "transactions", label: "Transactions" },
                 { id: "performance", label: "Performance" },
-                { id: "aporte", label: "Aporte Quinzenal" },
+                { id: "aporte", label: "Contributions" },
               ].map((tab) => {
                 const active = activeView === tab.id;
                 return (
@@ -1685,6 +1689,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         ? `1px solid ${T.gold}`
                         : "1px solid transparent",
                       marginBottom: -1,
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
                     }}
                   >
                     {tab.label}

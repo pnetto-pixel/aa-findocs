@@ -1,8 +1,8 @@
 // src/AporteQuinzenal.jsx
-// Tab: Aporte Quinzenal
-// Item 25: calculadora de aporte mensal → split quinzenal
-// Item 26: registro do realizado por quinzena (pendente vs planejado)
-// Item 27: histórico de aportes em barra (buy transactions, converted to USD)
+// Tab: Contributions
+// Item 25: monthly plan → split into two halves
+// Item 26: track invested vs planned per half (this month)
+// Item 27: full contribution history bar chart (buy transactions, excluding DELL vesting)
 
 import { useEffect, useState, useMemo } from "react";
 import { Plus, Trash2, ChevronDown } from "lucide-react";
@@ -98,49 +98,54 @@ function txToUSD(tx, usdBrlRate) {
   return total;
 }
 
-// Returns chart-ready array for the selected period.
-// "Month" → 2 bars (1ª/2ª quinzena of current month)
-// "Quarter"/"6M"/"Year" → monthly bars
-function buildChartData(transactions, usdBrlRate, period) {
-  const now = new Date();
+// Full history from first transaction, grouped by the chosen granularity.
+// DELL buys are excluded (stock vesting, not real contributions).
+// groupBy: "Month" | "Quarter" | "Half" | "Year"
+function buildChartData(transactions, usdBrlRate, groupBy) {
+  const buys = transactions.filter(
+    (tx) => tx.side === "buy" && (tx.ticker || "").toUpperCase() !== "DELL"
+  );
+  if (!buys.length) return [];
 
-  if (period === "Month") {
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    const monthStr = `${year}-${String(month + 1).padStart(2, "0")}`;
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    let q1 = 0;
-    let q2 = 0;
-    for (const tx of transactions) {
-      if (tx.side !== "buy") continue;
-      if (!(tx.date || "").startsWith(monthStr)) continue;
-      const day = parseInt(tx.date.slice(8), 10);
-      const amt = txToUSD(tx, usdBrlRate);
-      if (day <= 15) q1 += amt;
-      else q2 += amt;
+  const byKey = {};
+  for (const tx of buys) {
+    const date = tx.date || "";
+    if (!date) continue;
+    const [yStr, mStr] = date.slice(0, 7).split("-");
+    const y = parseInt(yStr, 10);
+    const m = parseInt(mStr, 10);
+    let key;
+    if (groupBy === "Month") {
+      key = `${yStr}-${mStr}`; // "2025-03"
+    } else if (groupBy === "Quarter") {
+      key = `${y}-Q${Math.ceil(m / 3)}`; // "2025-Q1"
+    } else if (groupBy === "Half") {
+      key = `${y}-H${m <= 6 ? 1 : 2}`; // "2025-H1"
+    } else {
+      key = yStr; // "2025"
     }
-    return [
-      { label: "1–15", value: q1 },
-      { label: `16–${daysInMonth}`, value: q2 },
-    ];
+    byKey[key] = (byKey[key] || 0) + txToUSD(tx, usdBrlRate);
   }
 
-  const numMonths = period === "Quarter" ? 3 : period === "6M" ? 6 : 12;
-  const byMonth = {};
-  for (const tx of transactions) {
-    if (tx.side !== "buy") continue;
-    const key = (tx.date || "").slice(0, 7);
-    if (key) byMonth[key] = (byMonth[key] || 0) + txToUSD(tx, usdBrlRate);
-  }
-
-  const result = [];
-  for (let i = numMonths - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-    result.push({ label, value: byMonth[key] || 0 });
-  }
-  return result;
+  return Object.keys(byKey)
+    .sort()
+    .map((key) => {
+      let label;
+      if (groupBy === "Month") {
+        const [y, mStr] = key.split("-");
+        const d = new Date(parseInt(y, 10), parseInt(mStr, 10) - 1, 1);
+        label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+      } else if (groupBy === "Quarter") {
+        const [y, q] = key.split("-");
+        label = `${q} '${y.slice(2)}`;
+      } else if (groupBy === "Half") {
+        const [y, h] = key.split("-");
+        label = `${h} '${y.slice(2)}`;
+      } else {
+        label = key;
+      }
+      return { label, value: byKey[key] };
+    });
 }
 
 function fmtUSD(n, hidden) {
@@ -173,7 +178,7 @@ function daysInCurrentMonth() {
   return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 }
 
-// Tooltip for bar chart — defined outside to avoid recharts remount on re-render
+// Defined outside component to avoid recharts remounting tooltip on every render
 function BarTooltip({ active, payload, label, hidden }) {
   if (!active || !payload?.length) return null;
   return (
@@ -207,7 +212,7 @@ const INPUT_STYLE = {
   outline: "none",
 };
 
-const PERIOD_OPTIONS = ["Month", "Quarter", "6M", "Year"];
+const PERIOD_OPTIONS = ["Month", "Quarter", "Half", "Year"];
 
 export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [config, setConfig] = useState(loadConfig);
@@ -217,7 +222,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [txLoading, setTxLoading] = useState(true);
   const [txError, setTxError] = useState(null);
 
-  const [period, setPeriod] = useState("6M");
+  const [groupBy, setGroupBy] = useState("Month");
   const [planOpen, setPlanOpen] = useState(true);
   const [realizadoOpen, setRealizadoOpen] = useState(true);
   const [histOpen, setHistOpen] = useState(true);
@@ -252,8 +257,8 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     localStorage.setItem(LS_CONFIG, JSON.stringify(next));
   }
 
-  function setQuinzenaRealizado(q, val) {
-    const key = `${currentMonthKey()}-${q}`;
+  function setHalfRealizado(half, val) {
+    const key = `${currentMonthKey()}-${half}`;
     const next = { ...realizado, [key]: val };
     setRealizado(next);
     localStorage.setItem(LS_REALIZADO, JSON.stringify(next));
@@ -288,19 +293,18 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     return fixed + divs + dell + extrasSum;
   }, [config]);
 
-  const quinzenaPlanned = planTotal / 2;
+  const halfPlanned = planTotal / 2;
   const monthKey = currentMonthKey();
   const r1 = parseFloat(realizado[`${monthKey}-1`]) || 0;
   const r2 = parseFloat(realizado[`${monthKey}-2`]) || 0;
   const days = daysInCurrentMonth();
 
   const chartData = useMemo(
-    () => buildChartData(transactions, usdBrlRate, period),
-    [transactions, usdBrlRate, period]
+    () => buildChartData(transactions, usdBrlRate, groupBy),
+    [transactions, usdBrlRate, groupBy]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
 
-  // Shared card style
   const cardStyle = {
     background: T.card,
     border: `1px solid ${T.borderSoft}`,
@@ -399,11 +403,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   return (
     <div style={{ paddingBottom: 40 }}>
-      {/* ── Plano do Mês ── */}
+      {/* ── Monthly Plan ── */}
       <section style={cardStyle}>
         <div style={goldAccent} />
         <CardToggle
-          label="Plano do Mês"
+          label="Monthly Plan"
           sub={currentMonthLabel()}
           open={planOpen}
           onToggle={() => setPlanOpen((v) => !v)}
@@ -411,17 +415,17 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         {planOpen && (
           <div style={{ padding: "0 20px 20px" }}>
             <PlanRow
-              label="Valor mensal fixo"
+              label="Monthly fixed amount"
               value={config.monthlyFixed}
               onChange={(v) => updateConfig({ monthlyFixed: v })}
             />
             <PlanRow
-              label="Proventos (mês anterior)"
+              label="Dividends (last month)"
               value={config.dividendsLastMonth}
               onChange={(v) => updateConfig({ dividendsLastMonth: v })}
             />
             <PlanRow
-              label="Venda DELL"
+              label="DELL sale"
               value={config.dellSale}
               onChange={(v) => updateConfig({ dellSale: v })}
             />
@@ -552,7 +556,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                 }}
               >
                 <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
-                  Total mensal
+                  Monthly total
                 </span>
                 <span
                   style={{
@@ -567,9 +571,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               </div>
 
               <div style={{ display: "flex", gap: 12 }}>
-                {[1, 2].map((q) => (
+                {[1, 2].map((half) => (
                   <div
-                    key={q}
+                    key={half}
                     style={{
                       flex: 1,
                       background: T.cardElev,
@@ -588,7 +592,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                         marginBottom: 4,
                       }}
                     >
-                      {q}ª Quinzena
+                      {half === 1 ? "1st" : "2nd"} Half
                     </div>
                     <div
                       style={{
@@ -598,7 +602,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                         marginBottom: 6,
                       }}
                     >
-                      {q === 1 ? `1–15` : `16–${days}`}
+                      {half === 1 ? "1–15" : `16–${days}`}
                     </div>
                     <div
                       style={{
@@ -608,7 +612,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                         fontWeight: 600,
                       }}
                     >
-                      {fmtUSD(quinzenaPlanned, valuesHidden)}
+                      {fmtUSD(halfPlanned, valuesHidden)}
                     </div>
                   </div>
                 ))}
@@ -618,30 +622,30 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         )}
       </section>
 
-      {/* ── Este Mês (Registro) ── */}
+      {/* ── This Month (Track) ── */}
       <section style={cardStyle}>
         <div style={goldAccent} />
         <CardToggle
-          label="Este Mês"
+          label="This Month"
           sub={currentMonthLabel()}
           open={realizadoOpen}
           onToggle={() => setRealizadoOpen((v) => !v)}
         />
         {realizadoOpen && (
           <div style={{ padding: "0 20px 20px" }}>
-            {[1, 2].map((q) => {
-              const realized = q === 1 ? r1 : r2;
-              const pending = Math.max(0, quinzenaPlanned - realized);
-              const done = realized >= quinzenaPlanned && quinzenaPlanned > 0;
-              const dateRange = q === 1 ? `1–15` : `16–${days}`;
-              const storedKey = `${monthKey}-${q}`;
+            {[1, 2].map((half) => {
+              const invested = half === 1 ? r1 : r2;
+              const remaining = Math.max(0, halfPlanned - invested);
+              const done = invested >= halfPlanned && halfPlanned > 0;
+              const dateRange = half === 1 ? "1–15" : `16–${days}`;
+              const storedKey = `${monthKey}-${half}`;
 
               return (
                 <div
-                  key={q}
+                  key={half}
                   style={{
                     padding: "16px 0",
-                    borderBottom: q === 1 ? `1px solid ${T.borderSoft}` : "none",
+                    borderBottom: half === 1 ? `1px solid ${T.borderSoft}` : "none",
                   }}
                 >
                   <div
@@ -654,7 +658,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                       marginBottom: 12,
                     }}
                   >
-                    {q}ª Quinzena — {dateRange}
+                    {half === 1 ? "1st" : "2nd"} Half — {dateRange}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
@@ -666,7 +670,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           marginBottom: 5,
                         }}
                       >
-                        Planejado
+                        Planned
                       </div>
                       <div
                         style={{
@@ -675,7 +679,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           color: T.textDim,
                         }}
                       >
-                        {fmtUSD(quinzenaPlanned, valuesHidden)}
+                        {fmtUSD(halfPlanned, valuesHidden)}
                       </div>
                     </div>
 
@@ -688,7 +692,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           marginBottom: 5,
                         }}
                       >
-                        Realizado
+                        Invested
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                         <span
@@ -705,7 +709,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           min="0"
                           step="0.01"
                           value={realizado[storedKey] ?? ""}
-                          onChange={(e) => setQuinzenaRealizado(q, e.target.value)}
+                          onChange={(e) => setHalfRealizado(half, e.target.value)}
                           placeholder="0"
                           style={{ ...INPUT_STYLE, width: 82 }}
                         />
@@ -721,7 +725,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           marginBottom: 5,
                         }}
                       >
-                        Pendente
+                        Remaining
                       </div>
                       {done ? (
                         <div
@@ -731,17 +735,17 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                             color: T.green,
                           }}
                         >
-                          Completo ✓
+                          Done ✓
                         </div>
                       ) : (
                         <div
                           style={{
                             fontFamily: FONT_MONO,
                             fontSize: 13,
-                            color: quinzenaPlanned > 0 ? T.text : T.textFaint,
+                            color: halfPlanned > 0 ? T.text : T.textFaint,
                           }}
                         >
-                          {fmtUSD(pending, valuesHidden)}
+                          {fmtUSD(remaining, valuesHidden)}
                         </div>
                       )}
                     </div>
@@ -753,25 +757,25 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         )}
       </section>
 
-      {/* ── Histórico de Aportes ── */}
+      {/* ── Contribution History ── */}
       <section style={{ ...cardStyle, marginBottom: 0 }}>
         <div style={goldAccent} />
         <CardToggle
-          label="Histórico de Aportes"
-          sub="Buy transactions · converted to USD"
+          label="Contribution History"
+          sub="All buy transactions · DELL excluded · converted to USD"
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
         />
         {histOpen && (
           <div style={{ padding: "0 20px 24px" }}>
-            {/* Period selector */}
+            {/* Group-by selector */}
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
               {PERIOD_OPTIONS.map((p) => {
-                const active = period === p;
+                const active = groupBy === p;
                 return (
                   <button
                     key={p}
-                    onClick={() => setPeriod(p)}
+                    onClick={() => setGroupBy(p)}
                     style={{
                       background: active ? T.gold : T.cardElev,
                       border: `1px solid ${active ? T.gold : T.border}`,
@@ -828,7 +832,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                   color: T.textDim,
                 }}
               >
-                No buy transactions in this period
+                No buy transactions recorded yet
               </div>
             )}
 
