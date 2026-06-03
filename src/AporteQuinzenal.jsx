@@ -45,6 +45,37 @@ const DEFAULT_CONFIG = {
   extras: [],
 };
 
+const INPUT_STYLE = {
+  background: "#191d24",
+  border: "1px solid #222831",
+  borderRadius: 4,
+  color: "#ece8e0",
+  fontFamily: FONT_MONO,
+  fontSize: 13,
+  padding: "5px 8px",
+  width: 100,
+  textAlign: "right",
+  outline: "none",
+};
+
+const DATE_INPUT_STYLE = {
+  background: "#191d24",
+  border: "1px solid #222831",
+  borderRadius: 4,
+  color: "#ece8e0",
+  fontFamily: FONT_MONO,
+  fontSize: 12,
+  padding: "5px 8px",
+  outline: "none",
+  colorScheme: "dark",
+  flex: 1,
+  minWidth: 0,
+};
+
+const PERIOD_OPTIONS = ["Month", "Quarter", "Half", "Year"];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 function loadConfig() {
   try {
     const v = localStorage.getItem(LS_CONFIG);
@@ -100,29 +131,33 @@ function txToUSD(tx, usdBrlRate) {
 
 // Full history from first transaction, grouped by the chosen granularity.
 // DELL buys are excluded (stock vesting, not real contributions).
+// Optional fromDate/toDate ("YYYY-MM-DD") filter the date range shown.
 // groupBy: "Month" | "Quarter" | "Half" | "Year"
-function buildChartData(transactions, usdBrlRate, groupBy) {
-  const buys = transactions.filter(
-    (tx) => tx.side === "buy" && (tx.ticker || "").toUpperCase() !== "DELL"
-  );
+function buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate) {
+  const buys = transactions.filter((tx) => {
+    if (tx.side !== "buy") return false;
+    if ((tx.ticker || "").toUpperCase() === "DELL") return false;
+    if (!tx.date) return false;
+    if (fromDate && tx.date < fromDate) return false;
+    if (toDate && tx.date > toDate) return false;
+    return true;
+  });
   if (!buys.length) return [];
 
   const byKey = {};
   for (const tx of buys) {
-    const date = tx.date || "";
-    if (!date) continue;
-    const [yStr, mStr] = date.slice(0, 7).split("-");
+    const [yStr, mStr] = tx.date.slice(0, 7).split("-");
     const y = parseInt(yStr, 10);
     const m = parseInt(mStr, 10);
     let key;
     if (groupBy === "Month") {
-      key = `${yStr}-${mStr}`; // "2025-03"
+      key = `${yStr}-${mStr}`;
     } else if (groupBy === "Quarter") {
-      key = `${y}-Q${Math.ceil(m / 3)}`; // "2025-Q1"
+      key = `${y}-Q${Math.ceil(m / 3)}`;
     } else if (groupBy === "Half") {
-      key = `${y}-H${m <= 6 ? 1 : 2}`; // "2025-H1"
+      key = `${y}-H${m <= 6 ? 1 : 2}`;
     } else {
-      key = yStr; // "2025"
+      key = yStr;
     }
     byKey[key] = (byKey[key] || 0) + txToUSD(tx, usdBrlRate);
   }
@@ -178,7 +213,8 @@ function daysInCurrentMonth() {
   return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 }
 
-// Defined outside component to avoid recharts remounting tooltip on every render
+// ── Sub-components (defined outside to prevent React remounting on re-render) ─
+
 function BarTooltip({ active, payload, label, hidden }) {
   if (!active || !payload?.length) return null;
   return (
@@ -199,20 +235,86 @@ function BarTooltip({ active, payload, label, hidden }) {
   );
 }
 
-const INPUT_STYLE = {
-  background: "#191d24",
-  border: "1px solid #222831",
-  borderRadius: 4,
-  color: "#ece8e0",
-  fontFamily: FONT_MONO,
-  fontSize: 13,
-  padding: "5px 8px",
-  width: 100,
-  textAlign: "right",
-  outline: "none",
-};
+function CardToggle({ label, sub, open, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        padding: "14px 20px",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 11,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: T.gold,
+            fontWeight: 600,
+          }}
+        >
+          {label}
+        </span>
+        {sub && (
+          <span style={{ fontFamily: FONT_BODY, fontSize: 12, color: T.textDim }}>
+            {sub}
+          </span>
+        )}
+      </span>
+      <ChevronDown
+        size={16}
+        color={T.gold}
+        style={{
+          transform: open ? "rotate(180deg)" : "rotate(0deg)",
+          transition: "transform 0.2s",
+          flexShrink: 0,
+        }}
+      />
+    </button>
+  );
+}
 
-const PERIOD_OPTIONS = ["Month", "Quarter", "Half", "Year"];
+function PlanRow({ label, value, onChange }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "9px 0",
+        borderBottom: `1px solid ${T.borderSoft}`,
+      }}
+    >
+      <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim, flex: 1 }}>
+        {label}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          step="0.01"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="0"
+          style={INPUT_STYLE}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [config, setConfig] = useState(loadConfig);
@@ -223,6 +325,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [txError, setTxError] = useState(null);
 
   const [groupBy, setGroupBy] = useState("Month");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
   const [planOpen, setPlanOpen] = useState(true);
   const [realizadoOpen, setRealizadoOpen] = useState(true);
   const [histOpen, setHistOpen] = useState(true);
@@ -300,10 +405,13 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const days = daysInCurrentMonth();
 
   const chartData = useMemo(
-    () => buildChartData(transactions, usdBrlRate, groupBy),
-    [transactions, usdBrlRate, groupBy]
+    () => buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate),
+    [transactions, usdBrlRate, groupBy, fromDate, toDate]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
+
+  // Limit x-axis ticks to avoid overlap on small screens
+  const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
 
   const cardStyle = {
     background: T.card,
@@ -322,84 +430,6 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     height: 2,
     background: `linear-gradient(to right, ${T.gold}, transparent)`,
   };
-
-  function CardToggle({ label, sub, open, onToggle }) {
-    return (
-      <button
-        onClick={onToggle}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          padding: "14px 20px",
-          textAlign: "left",
-        }}
-      >
-        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 11,
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              color: T.gold,
-              fontWeight: 600,
-            }}
-          >
-            {label}
-          </span>
-          {sub && (
-            <span style={{ fontFamily: FONT_BODY, fontSize: 12, color: T.textDim }}>
-              {sub}
-            </span>
-          )}
-        </span>
-        <ChevronDown
-          size={16}
-          color={T.gold}
-          style={{
-            transform: open ? "rotate(180deg)" : "rotate(0deg)",
-            transition: "transform 0.2s",
-            flexShrink: 0,
-          }}
-        />
-      </button>
-    );
-  }
-
-  function PlanRow({ label, value, onChange }) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "9px 0",
-          borderBottom: `1px solid ${T.borderSoft}`,
-        }}
-      >
-        <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim, flex: 1 }}>
-          {label}
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder="0"
-            style={INPUT_STYLE}
-          />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={{ paddingBottom: 40 }}>
@@ -442,15 +472,14 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                   borderBottom: `1px solid ${T.borderSoft}`,
                 }}
               >
-                <span
-                  style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim, flex: 1 }}
-                >
+                <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim, flex: 1 }}>
                   {extra.label}
                 </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
                   <input
                     type="number"
+                    inputMode="decimal"
                     min="0"
                     step="0.01"
                     value={extra.value}
@@ -476,21 +505,12 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             ))}
 
             {/* Add extra row */}
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                marginTop: 10,
-              }}
-            >
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
               <input
                 type="text"
                 value={newExtraLabel}
                 onChange={(e) => setNewExtraLabel(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addExtra();
-                }}
+                onKeyDown={(e) => { if (e.key === "Enter") addExtra(); }}
                 placeholder="Extra label…"
                 style={{
                   flex: 1,
@@ -507,13 +527,12 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
               <input
                 type="number"
+                inputMode="decimal"
                 min="0"
                 step="0.01"
                 value={newExtraValue}
                 onChange={(e) => setNewExtraValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addExtra();
-                }}
+                onKeyDown={(e) => { if (e.key === "Enter") addExtra(); }}
                 placeholder="0"
                 style={{ ...INPUT_STYLE, width: 90 }}
               />
@@ -540,13 +559,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             </div>
 
             {/* Total breakdown */}
-            <div
-              style={{
-                marginTop: 20,
-                borderTop: `1px solid ${T.border}`,
-                paddingTop: 16,
-              }}
-            >
+            <div style={{ marginTop: 20, borderTop: `1px solid ${T.border}`, paddingTop: 16 }}>
               <div
                 style={{
                   display: "flex",
@@ -558,14 +571,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                 <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
                   Monthly total
                 </span>
-                <span
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 16,
-                    color: T.text,
-                    fontWeight: 600,
-                  }}
-                >
+                <span style={{ fontFamily: FONT_MONO, fontSize: 16, color: T.text, fontWeight: 600 }}>
                   {fmtUSD(planTotal, valuesHidden)}
                 </span>
               </div>
@@ -594,24 +600,10 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                     >
                       {half === 1 ? "1st" : "2nd"} Half
                     </div>
-                    <div
-                      style={{
-                        fontFamily: FONT_MONO,
-                        fontSize: 11,
-                        color: T.textFaint,
-                        marginBottom: 6,
-                      }}
-                    >
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, marginBottom: 6 }}>
                       {half === 1 ? "1–15" : `16–${days}`}
                     </div>
-                    <div
-                      style={{
-                        fontFamily: FONT_MONO,
-                        fontSize: 15,
-                        color: T.text,
-                        fontWeight: 600,
-                      }}
-                    >
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 15, color: T.text, fontWeight: 600 }}>
                       {fmtUSD(halfPlanned, valuesHidden)}
                     </div>
                   </div>
@@ -662,50 +654,23 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <div
-                        style={{
-                          fontFamily: FONT_BODY,
-                          fontSize: 11,
-                          color: T.textFaint,
-                          marginBottom: 5,
-                        }}
-                      >
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
                         Planned
                       </div>
-                      <div
-                        style={{
-                          fontFamily: FONT_MONO,
-                          fontSize: 13,
-                          color: T.textDim,
-                        }}
-                      >
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                         {fmtUSD(halfPlanned, valuesHidden)}
                       </div>
                     </div>
 
                     <div style={{ flex: 1 }}>
-                      <div
-                        style={{
-                          fontFamily: FONT_BODY,
-                          fontSize: 11,
-                          color: T.textFaint,
-                          marginBottom: 5,
-                        }}
-                      >
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
                         Invested
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span
-                          style={{
-                            fontFamily: FONT_MONO,
-                            fontSize: 11,
-                            color: T.textFaint,
-                          }}
-                        >
-                          $
-                        </span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>$</span>
                         <input
                           type="number"
+                          inputMode="decimal"
                           min="0"
                           step="0.01"
                           value={realizado[storedKey] ?? ""}
@@ -717,34 +682,15 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                     </div>
 
                     <div style={{ flex: 1 }}>
-                      <div
-                        style={{
-                          fontFamily: FONT_BODY,
-                          fontSize: 11,
-                          color: T.textFaint,
-                          marginBottom: 5,
-                        }}
-                      >
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
                         Remaining
                       </div>
                       {done ? (
-                        <div
-                          style={{
-                            fontFamily: FONT_MONO,
-                            fontSize: 13,
-                            color: T.green,
-                          }}
-                        >
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.green }}>
                           Done ✓
                         </div>
                       ) : (
-                        <div
-                          style={{
-                            fontFamily: FONT_MONO,
-                            fontSize: 13,
-                            color: halfPlanned > 0 ? T.text : T.textFaint,
-                          }}
-                        >
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: halfPlanned > 0 ? T.text : T.textFaint }}>
                           {fmtUSD(remaining, valuesHidden)}
                         </div>
                       )}
@@ -769,7 +715,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         {histOpen && (
           <div style={{ padding: "0 20px 24px" }}>
             {/* Group-by selector */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               {PERIOD_OPTIONS.map((p) => {
                 const active = groupBy === p;
                 return (
@@ -794,64 +740,80 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               })}
             </div>
 
+            {/* Date range filter */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, flexShrink: 0 }}>
+                From
+              </span>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                style={DATE_INPUT_STYLE}
+              />
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, flexShrink: 0 }}>
+                to
+              </span>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                style={DATE_INPUT_STYLE}
+              />
+              {(fromDate || toDate) && (
+                <button
+                  onClick={() => { setFromDate(""); setToDate(""); }}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${T.border}`,
+                    borderRadius: 4,
+                    color: T.textDim,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    padding: "5px 8px",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
             {txLoading && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "40px 0",
-                  fontFamily: FONT_MONO,
-                  fontSize: 13,
-                  color: T.textDim,
-                }}
-              >
+              <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                 Loading…
               </div>
             )}
 
             {txError && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "40px 0",
-                  fontFamily: FONT_MONO,
-                  fontSize: 13,
-                  color: T.red,
-                }}
-              >
+              <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.red }}>
                 {txError}
               </div>
             )}
 
             {!txLoading && !txError && !hasChartData && (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "40px 0",
-                  fontFamily: FONT_MONO,
-                  fontSize: 13,
-                  color: T.textDim,
-                }}
-              >
+              <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                 No buy transactions recorded yet
               </div>
             )}
 
             {!txLoading && !txError && hasChartData && (
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height={240}>
                 <BarChart
                   data={chartData}
-                  margin={{ top: 8, right: 4, left: 0, bottom: 0 }}
+                  margin={{ top: 8, right: 4, left: 0, bottom: 50 }}
                 >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke={T.border}
-                    vertical={false}
-                  />
+                  <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
                   <XAxis
                     dataKey="label"
                     tick={{ fontFamily: FONT_MONO, fontSize: 11, fill: T.textDim }}
                     axisLine={{ stroke: T.border }}
                     tickLine={false}
+                    angle={-45}
+                    textAnchor="end"
+                    interval={xInterval}
+                    height={55}
                   />
                   <YAxis
                     tickFormatter={valuesHidden ? () => "•••" : fmtAxisUSD}
