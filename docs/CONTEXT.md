@@ -315,6 +315,59 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 
 -----
 
+## 💰 Feature: Dividends (em construção)
+
+Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance.
+
+### Storage
+
+- **Auto income** (US Stocks/ETFs): calculado server-side por `api/dividends.js`, cache Redis versionado.
+- **Manual income** (BRA Stocks, BRA Fixed Income, Bank Bonds): `portfolio:<storageKey>:income-manual` (array JSON, mesmo padrão de `:transactions`). Endpoint: `api/income-manual.js` (GET/PUT).
+
+### Modelo de income-manual
+
+```js
+{
+  id,             // crypto.randomUUID()
+  date,           // "YYYY-MM-DD" — data do pagamento
+  ticker,         // "tesouro-ipca-2035", "BBSE3", "949764WE0"...
+  assetClass,     // "BRA Fixed Income" | "Bank Bonds" | "BRA Stocks" | ...
+  incomeType,     // "coupon" | "dividend" | "jcp"
+  totalReceived,  // valor total recebido (não por unidade — mais natural para Tesouro/Bonds)
+  currency,       // "USD" | "BRL"
+  notes,          // opcional
+  createdAt       // ISO timestamp
+}
+```
+
+### Fontes de dados (validadas via probe PR #58)
+
+| Asset class | Fonte | Método |
+|---|---|---|
+| US Stocks, ETFs | Yahoo `chart?events=div` | Auto server-side |
+| BRA Stocks | Sem API gratuita (brapi pago) | Manual |
+| BRA Fixed Income (Tesouro IPCA) | Sem API | Manual |
+| Bank Bonds | Sem API | Manual |
+
+### `api/dividends.js` (POST)
+
+- Recebe `{ transactions }`
+- Filtra tickers US (non-B3)
+- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`)
+- Calcula `qtyHeld` na pay-date cruzando com transactions
+- Retorna array de `{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }`
+- Cache Redis versionado (TTL diário)
+
+### UI — itens do roadmap
+
+- **Item 17**: Gráfico de barras (Year | 6M | Quarter | Month) — consolida auto + manual
+- **Item 18**: Tabela mês × ano
+- **Item 19**: Mês anterior vs mês atual (+ a receber)
+- **Item 24**: Comparador y/y por mês e asset
+- **Form manual**: add/edit/delete income entries (date, ticker, assetClass, incomeType, totalReceived, currency, notes)
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -350,6 +403,10 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 |**Tesouro Direto = manual em BRL (PR #49)**|Brapi `/treasury` é pago (403); tesourodireto.com.br descontinuado (410); CKAN desativado (400). Nenhuma fonte gratuita viável.|
 |**BRA Fixed Income aceita `manualCurrency: "BRL"` (PR #49)**|Tesouro e CDB são mantidos no NuBank em BRL — entrada natural é BRL, conversão automática via usdBrlRate|
 |**CONTEXT.md + Features_Roadmap.md em `docs/` no repo**|Docs versionados junto com código; Claude Code atualiza diretamente sem intermediário via Chat|
+|**Dividendos US via Yahoo `chart?events=div` (Tab Dividends)**|Finnhub `/stock/dividend` é premium (free tier retorna 403). Yahoo retorna histórico completo de dividendos keyless, mesmo endpoint já usado por `perf-history.js` para candles.|
+|**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
+|**BRA Stocks dividendos = manual (Tab Dividends)**|Sem API gratuita confirmada. Entrada manual no form da Tab Dividends, mesmo padrão de Tesouro/CDB nos Holdings.|
+|**Income model unificado: `totalReceived` direto (Tab Dividends)**|Tesouro IPCA e Bank Bonds pagam cupom cujo valor depende do PU corrigido — mais natural lançar o total recebido do que qty × amountPerUnit.|
 
 -----
 
@@ -487,6 +544,7 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 - **Cards colapsáveis em Performance** (PR #38) — consistência com padrão visual de Holdings reduz curva de aprendizado do usuário.
 - **Tesouro Direto: validar fonte antes de implementar** (PR #41–#50) — Brapi `/treasury` é pago (403); endpoints oficiais descontinuados; CKAN desativado. Sempre checar disponibilidade real da API antes de desenhar a solução.
 - **Fallback para manual é sempre válido** — quando não há fonte live gratuita, entrada manual em moeda nativa (BRL) + conversão automática é solução pragmática e suficiente para uso pessoal.
+- **Validar API com endpoint de diagnóstico antes de implementar** — probe temporário (`api/dividends-probe.js`, PR #58) confirmou: Yahoo `chart?events=div` funciona para US, brapi `dividends=true` é pago (403) para BRA Stocks fora do quarteto de teste. Economizou implementar a solução errada.
 
 -----
 
