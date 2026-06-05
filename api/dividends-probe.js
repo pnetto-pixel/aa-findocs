@@ -34,9 +34,11 @@ function redactToken(str) {
 
 // brapi: one ticker, dividends=true. Reports whether cashDividends came back.
 async function probeBrapi(ticker, token) {
+  // range=3mo is within the free-tier allowed ranges (1d, 5d, 1mo, 3mo).
+  // Hypothesis: dividendsData.cashDividends returns full history regardless of range.
   const url =
     `https://brapi.dev/api/quote/${encodeURIComponent(ticker)}` +
-    `?range=1y&interval=1d&dividends=true&token=${encodeURIComponent(token)}`;
+    `?range=3mo&interval=1d&dividends=true&token=${encodeURIComponent(token)}`;
   const out = { ticker, source: 'brapi', ok: false, http: null };
   try {
     const r = await fetchWithTimeout(url);
@@ -135,15 +137,17 @@ export default async function handler(req, res) {
     : [{ error: 'BRAPI_API_KEY not configured in env' }];
   const yahoo = await Promise.all(usList.map((t) => probeYahoo(t)));
 
-  // Verdict: VALE3 is a known free-tier stock; if it works but your real
-  // tickers don't, dividends history is gated behind a paid brapi plan.
   const control = brapi.find((r) => r.ticker === 'VALE3');
   const nonControl = brapi.filter((r) => r.ticker && r.ticker !== 'VALE3');
   const realTickersWork = nonControl.some((r) => r.ok);
+  const rangeError = nonControl.some((r) => r.error?.includes('INVALID_RANGE'));
   let brapiVerdict;
   if (!token) brapiVerdict = 'BRAPI_API_KEY missing';
-  else if (realTickersWork) brapiVerdict = 'OK — free tier returns dividends for your tickers';
-  else if (control?.ok) brapiVerdict = 'PAYWALLED — control (VALE3) works but your tickers return nothing -> needs paid plan';
+  else if (realTickersWork) {
+    const anyFull = nonControl.find((r) => r.ok && r.count > 12);
+    brapiVerdict = `OK — free tier returns dividends for your tickers (range=3mo${anyFull ? ', full history returned' : ', may be limited to 3mo window'})`;
+  } else if (rangeError) brapiVerdict = 'RANGE_ERROR — still failing on range param even with 3mo; check free-tier restrictions';
+  else if (control?.ok) brapiVerdict = 'PAYWALLED — control (VALE3) works but your tickers return nothing -> dividends need paid plan';
   else brapiVerdict = 'NO DATA — even control failed; check key/network';
 
   res.status(200).json({
