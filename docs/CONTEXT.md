@@ -317,54 +317,39 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 
 ## 💰 Feature: Dividends (em construção)
 
-Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance.
+Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. **US assets only** — income manual foi descartado (decisão jun/2026): a tab cobre apenas dividendos de ativos US via Yahoo. Tesouro/Bank Bonds/BRA Stocks ficam fora por ora.
 
 ### Storage
 
-- **Auto income** (US Stocks/ETFs): calculado server-side por `api/dividends.js`, cache Redis versionado.
-- **Manual income** (BRA Stocks, BRA Fixed Income, Bank Bonds): `portfolio:<storageKey>:income-manual` (array JSON, mesmo padrão de `:transactions`). Endpoint: `api/income-manual.js` (GET/PUT).
-
-### Modelo de income-manual
-
-```js
-{
-  id,             // crypto.randomUUID()
-  date,           // "YYYY-MM-DD" — data do pagamento
-  ticker,         // "tesouro-ipca-2035", "BBSE3", "949764WE0"...
-  assetClass,     // "BRA Fixed Income" | "Bank Bonds" | "BRA Stocks" | ...
-  incomeType,     // "coupon" | "dividend" | "jcp"
-  totalReceived,  // valor total recebido (não por unidade)
-  currency,       // "USD" | "BRL"
-  notes,          // opcional
-  createdAt       // ISO timestamp
-}
-```
+- **Auto income** (US Stocks/ETFs): calculado server-side por `api/dividends.js`, cache Redis versionado. Sem storage manual.
 
 ### Fontes de dados (validadas via probe PR #58)
 
 | Asset class | Fonte | Método |
 |---|---|---|
-| US Stocks, ETFs | Yahoo `chart?events=div` | Auto server-side |
-| BRA Stocks | Sem API gratuita (brapi pago) | Manual |
-| BRA Fixed Income (Tesouro IPCA) | Sem API | Manual |
-| Bank Bonds | Sem API | Manual |
+| US Stocks, ETFs, REITs, Bonds ETFs | Yahoo `chart?events=div` | Auto server-side |
+| BRA Stocks / Fixed Income / Bank Bonds | Sem API gratuita | Fora do escopo atual |
 
 ### `api/dividends.js` (POST)
 
 - Recebe `{ transactions }`
-- Filtra tickers US (non-B3)
-- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`)
-- Calcula `qtyHeld` na pay-date cruzando com transactions
-- Retorna array de `{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }`
-- Cache Redis versionado (TTL diário)
+- Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`)
+- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrência 3
+- Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty ≤ 0
+- Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }], meta }`
+- Cache Redis versionado (`:dividends:v1:<txHash>`), TTL até próximo fechamento do mercado US
 
-### UI — itens do roadmap
+### UI (`src/Dividends.jsx`)
 
-- **Item 17**: Gráfico de barras (Year | 6M | Quarter | Month) — consolida auto + manual
-- **Item 18**: Tabela mês × ano
-- **Item 19**: Mês anterior vs mês atual (+ a receber)
-- **Item 24**: Comparador y/y por mês e asset
-- **Form manual**: add/edit/delete income entries (date, ticker, assetClass, incomeType, totalReceived, currency, notes)
+- **Income History card** (mesmo design do "Portfolio Performance & Net Worth"): título + KPIs (All Time / YTD / This Month) **dentro** do card. Bar chart com views `Month | Quarter | Half | Year` + filtro de datas From/To (igual ao Contribution History do AporteQuinzenal).
+- **Position Dividends** (card no padrão de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · Yield/Cost. Sortável, linha TOTAL no topo. Yield/Cost = dividendos TTM ÷ cost basis atual. Y/Y YTD = este ano vs mesmo período ano anterior.
+- **Dividend History** (auditoria): tabela colapsável com todo histórico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
+
+### Pendente (Chunk 2)
+
+- **Item 19**: gráfico mês anterior vs atual (+ a receber)
+- **Item 24**: comparador y/y por asset detalhado
+- **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
 
 -----
 
