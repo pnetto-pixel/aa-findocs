@@ -125,7 +125,7 @@ async function probeYahoo(ticker) {
 export default async function handler(req, res) {
   const token = process.env.BRAPI_API_KEY;
 
-  const b3List = String(req.query?.b3 || 'BBSE3,MXRF11,ITSA3,VALE3')
+  const b3List = String(req.query?.b3 || 'BBSE3,ITSA3,BBAS3,VALE3')
     .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
   const usList = String(req.query?.us || 'AAPL,VNQ,O')
     .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
