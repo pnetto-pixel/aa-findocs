@@ -4,6 +4,7 @@ import Papa from "papaparse";
 import TransactionsView from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
+const DividendsView = lazy(() => import("./Dividends.jsx"));
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
 
@@ -1647,6 +1648,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 ? "Transactions"
                 : activeView === "performance"
                 ? "Performance"
+                : activeView === "dividends"
+                ? "Dividends"
                 : activeView === "aporte"
                 ? "Contributions"
                 : "Holdings"}
@@ -1670,6 +1673,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 { id: "dashboard", label: "Holdings" },
                 { id: "transactions", label: "Transactions" },
                 { id: "performance", label: "Performance" },
+                { id: "dividends", label: "Dividends" },
                 { id: "aporte", label: "Contributions" },
               ].map((tab) => {
                 const active = activeView === tab.id;
@@ -1735,6 +1739,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               }
             >
               <PerformanceView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} holdings={holdings} />
+            </Suspense>
+          )}
+
+          {activeView === "dividends" && (
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13,
+                    color: "#8a8f99",
+                    padding: "40px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  Loading…
+                </div>
+              }
+            >
+              <DividendsView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
             </Suspense>
           )}
 
