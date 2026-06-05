@@ -207,8 +207,10 @@ function buildPositionRows(events, costBasis) {
     const cost = costBasis[row.ticker] || 0;
     return {
       ...row,
+      cost,
       yoyPct: row.priorYtd > 0 ? (row.ytd / row.priorYtd - 1) * 100 : null,
-      yoc: cost > 0 ? (row.ttm / cost) * 100 : null,
+      yoc: cost > 0 ? (row.ttm / cost) * 100 : null,        // trailing-12m yield on cost
+      recovered: cost > 0 ? (row.total / cost) * 100 : null, // cumulative dividends / cost
     };
   });
 }
@@ -217,11 +219,14 @@ function aggPositions(rows) {
   const total = rows.reduce((s, r) => s + r.total, 0);
   const ytd = rows.reduce((s, r) => s + r.ytd, 0);
   const priorYtd = rows.reduce((s, r) => s + r.priorYtd, 0);
+  const ttm = rows.reduce((s, r) => s + r.ttm, 0);
+  const cost = rows.reduce((s, r) => s + (r.cost || 0), 0);
   return {
     total,
     ytd,
     yoyPct: priorYtd > 0 ? (ytd / priorYtd - 1) * 100 : null,
-    yoc: null,
+    yoc: cost > 0 ? (ttm / cost) * 100 : null,
+    recovered: cost > 0 ? (total / cost) * 100 : null,
   };
 }
 
@@ -358,7 +363,8 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
     { key: "total", label: "Total", align: "right" },
     { key: "ytd", label: "YTD", align: "right" },
     { key: "yoyPct", label: "Y/Y YTD", align: "right" },
-    { key: "yoc", label: "Yield/Cost", align: "right" },
+    { key: "yoc", label: "YoC", align: "right" },
+    { key: "recovered", label: "Recovered", align: "right" },
   ];
 
   const thBase = {
@@ -412,6 +418,7 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
       case "ytd":    return <td key={col.key} style={tdBase}>{fmtUSD(row.ytd, valuesHidden)}</td>;
       case "yoyPct": return <td key={col.key} style={{ ...tdBase, color: growthColor(row.yoyPct), fontWeight: 600 }}>{fmtPct(row.yoyPct)}</td>;
       case "yoc":    return <td key={col.key} style={tdBase}>{fmtYoc(row.yoc)}</td>;
+      case "recovered": return <td key={col.key} style={{ ...tdBase, color: T.gold }}>{fmtYoc(row.recovered)}</td>;
       default: return <td key={col.key} style={tdBase}>—</td>;
     }
   }
@@ -429,6 +436,8 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
         case "total":  return <td key={col.key} style={summaryTd}>{fmtUSD(totals.total, valuesHidden)}</td>;
         case "ytd":    return <td key={col.key} style={summaryTd}>{fmtUSD(totals.ytd, valuesHidden)}</td>;
         case "yoyPct": return <td key={col.key} style={{ ...summaryTd, color: growthColor(totals.yoyPct) }}>{fmtPct(totals.yoyPct)}</td>;
+        case "yoc":    return <td key={col.key} style={summaryTd}>{fmtYoc(totals.yoc)}</td>;
+        case "recovered": return <td key={col.key} style={{ ...summaryTd, color: T.gold }}>{fmtYoc(totals.recovered)}</td>;
         default: return <td key={col.key} style={summaryTd} />;
       }
     });
@@ -458,7 +467,7 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
             </div>
           ) : (
             <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-              <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse" }}>
+              <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     {COLS.map((col) => (
@@ -496,7 +505,7 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
               letterSpacing: "0.04em",
             }}
           >
-            Yield/Cost = trailing-12-month dividends ÷ current cost basis. Y/Y YTD compares this year to the same period last year.
+            YoC = trailing-12-month dividends ÷ cost basis. Recovered = all-time dividends ÷ cost basis. Y/Y YTD compares this year to the same period last year.
           </div>
         </div>
       )}

@@ -342,7 +342,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ### UI (`src/Dividends.jsx`)
 
 - **Income History card** (mesmo design do "Portfolio Performance & Net Worth"): título + KPIs (All Time / YTD / This Month) **dentro** do card. Bar chart com views `Month | Quarter | Half | Year` + filtro de datas From/To (igual ao Contribution History do AporteQuinzenal).
-- **Position Dividends** (card no padrão de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · Yield/Cost. Sortável, linha TOTAL no topo. Yield/Cost = dividendos TTM ÷ cost basis atual. Y/Y YTD = este ano vs mesmo período ano anterior.
+- **Position Dividends** (card no padrão de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortável, linha TOTAL no topo. **YoC** = dividendos TTM ÷ cost basis (yield on cost convencional). **Recovered** = dividendos acumulados ÷ cost basis (quanto do custo já voltou via proventos). Y/Y YTD = este ano vs mesmo período ano anterior.
 - **Dividend History** (auditoria): tabela colapsável com todo histórico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
 
 ### Pendente (Chunk 2)
