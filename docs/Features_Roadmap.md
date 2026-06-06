@@ -42,7 +42,6 @@
 
 ### Tab Performance
 - **Item 8**: Grafico adicional: retorno total incluindo dividendos recebidos
-- **Item 23**: Coluna de dividendos recebidos por asset na tabela de performance (item 1) + coluna Yield on Cost (dividendos acumulados / custo de aquisicao). ⚠️ *depende de log de dividendos*
 
 ### Tab Dividends
 - **Item 19 (restante)**: Grafico: dividendos do mes anterior vs mes atual (+ a receber). Y/y por asset class (comparador detalhado).
