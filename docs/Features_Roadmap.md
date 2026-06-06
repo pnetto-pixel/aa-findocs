@@ -24,36 +24,34 @@
 - **Bug fix — "Bank Bonds" ausente na mensagem de erro de classe elegível** (jun/2026): Mensagem "No transactions in eligible asset classes" em Performance.jsx não listava Bank Bonds. Corrigido.
 - **Fix — Disclaimer Performance.jsx** (jun/2026): Texto "Excludes fixed income & unallocated assets" já estava corrigido no código para "Excludes Cash and Unallocated assets". Roadmap e CONTEXT.md atualizados para refletir.
 - **Pesquisa de fontes de dados — Tab Dividends** (jun/2026 — PR #58): Probe validou fontes. Yahoo `chart?events=div` para US (keyless, gratuito); brapi `dividends=true` rejeitado (HTTP 403, feature paga); Finnhub `/stock/dividend` rejeitado (premium). BRA Stocks, BRA Fixed Income e Bank Bonds → entrada manual. Income model: `totalReceived` direto. Storage: `portfolio:<storageKey>:income-manual`.
+- **Item 17** (jun/2026): Income History — card colapsavel com KPIs (All Time / YTD / This Month) e bar chart com seletor de view `Month | Quarter | Half | Year`. Implementado em `src/Dividends.jsx`.
+- **Item 18** (jun/2026): Bar chart com agrupamentos por periodo (Month/Quarter/Half/Year) dentro do Income History card. Implementado junto com item 17.
+- **Item 25** (jun/2026): Calculadora de aporte mensal → split quinzenal. Inputs: valor fixo mensal, proventos do mes anterior, venda DELL, entradas extras. Total ÷ 2 = 1a e 2a quinzena. Implementado em `src/AporteQuinzenal.jsx`.
+- **Item 26** (jun/2026): Realizado vs Planejado — registro do aporte realizado por quinzena, mostra pendente vs planejado. Implementado em `src/AporteQuinzenal.jsx`.
+- **Item 27** (jun/2026): Historico de aportes — bar chart de evolucao dos aportes (mesmo seletor de view `Year | 6M | Quarter | Month`). Implementado em `src/AporteQuinzenal.jsx`.
+- **Item 19 — y/y nos KPIs do Income History** (jun/2026 — PR #62): KpiCard YTD e This Month exibem variacao percentual ano-a-ano abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`. Nota: grafico mes anterior vs atual (parte original do item 19) ainda pendente.
+- **Dropdown de anos no Income History** (jun/2026 — PR #62): Substituiu inputs de date range (From/To) por `<select>` de anos. Opcoes: "All years" + anos presentes nos dados em ordem decrescente. Simplifica o filtro para selecao de ano inteiro.
+- **Group by Asset Class em Position Dividends** (jun/2026 — PR #62): Toggle "By Ticker" / "By Asset Class" na tabela Position Dividends. Quando "By Asset Class": agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 
 ---
 
 ## 🔲 Pendentes
 
-### Roadmap — Validação de tickers
-- **Novo item**: Validação de slug/ticker ao adicionar transação — lookup na API antes de salvar, para evitar typos em tickers `tesouro-*` e outros ativos live. ⚠️ *Deferred — adicionar quando Tab Dividends ou Tab Events forem implementadas*
+### Roadmap — Validacao de tickers
+- **Novo item**: Validacao de slug/ticker ao adicionar transacao — lookup na API antes de salvar, para evitar typos em tickers `tesouro-*` e outros ativos live. ⚠️ *Deferred — adicionar quando Tab Events for implementada*
 
 ### Tab Performance
-- **Item 8**: Gráfico adicional: retorno total incluindo dividendos recebidos
-- **Item 23**: Coluna de dividendos recebidos por asset na tabela de performance (item 1) + coluna Yield on Cost (dividendos acumulados ÷ custo de aquisição). ⚠️ *depende de log de dividendos — ver itens 17–19*
+- **Item 8**: Grafico adicional: retorno total incluindo dividendos recebidos
+- **Item 23**: Coluna de dividendos recebidos por asset na tabela de performance (item 1) + coluna Yield on Cost (dividendos acumulados / custo de aquisicao). ⚠️ *depende de log de dividendos*
 
-### Tab Dividends (nova)
-- **Item 17**: Gráfico de evolução dos pagamentos de dividendos — **barras**, com seletor de view: `Year | 6M | Quarter | Month`
-- **Item 18**: Tabela mês × ano: colunas = meses, linhas = anos, última coluna = total + média do ano
-- **Item 19**: Gráfico: dividendos do mês anterior vs mês atual (+ a receber)
-- **Item 24**: Comparador y/y por mês: quais assets pagaram proventos naquele mês e diferença y/y por asset (este ano vs ano anterior)
+### Tab Dividends
+- **Item 19 (restante)**: Grafico: dividendos do mes anterior vs mes atual (+ a receber). Y/y por asset class (comparador detalhado).
+- **Item 24**: Comparador y/y por mes: quais assets pagaram proventos naquele mes e diferenca y/y por asset (este ano vs ano anterior)
 
-### Tab Aporte Quinzenal (nova) ⭐
-- **Item 25**: **Calculadora de aporte mensal → split quinzenal.** Inputs somados:
-    - Valor mensal fixo X (editável/persistido)
-    - Proventos USD do mês anterior (manual agora; auto via log de dividendos no futuro)
-    - Venda mensal de DELL (input do valor esperado da venda)
-    - Entrada(s) extra(s) nomeável(is) — label + valor, livre
-    - **Total ÷ 2** → "Comprar 1ª quinzena" e "Comprar 2ª quinzena"
-- **Item 26**: Registro de aporte realizado: marcar/inputar o que já foi aportado → mostrar **pendente** vs planejado por quinzena
-- **Item 27**: Gráfico de evolução dos aportes baseado nas transações quinzenais — **barras**, mesma view do item 17 (`Year | 6M | Quarter | Month`)
-- **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliação plano × realizado)
+### Tab Aporte Quinzenal
+- **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliacao plano × realizado)
 
 ### Tab Events (nova)
-- **Item 20**: Calendário de ex-div, earnings e special events (split, grouping, payout)
-- **Item 21**: Exibir último mês + próximos 3 meses, em ordem cronológica
+- **Item 20**: Calendario de ex-div, earnings e special events (split, grouping, payout)
+- **Item 21**: Exibir ultimo mes + proximos 3 meses, em ordem cronologica
 - **Item 22**: Filtro por tipo de evento
