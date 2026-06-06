@@ -110,11 +110,10 @@ function growthColor(n) {
 }
 
 // Full history grouped by the chosen granularity, optional date filter.
-function buildChartData(events, groupBy, fromDate, toDate) {
+function buildChartData(events, groupBy, selectedYears) {
   const filtered = events.filter((e) => {
     if (!e.date) return false;
-    if (fromDate && e.date < fromDate) return false;
-    if (toDate && e.date > toDate) return false;
+    if (selectedYears.size > 0 && !selectedYears.has(e.date.slice(0, 4))) return false;
     return true;
   });
   if (!filtered.length) return [];
@@ -680,7 +679,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [error, setError] = useState(null);
 
   const [groupBy, setGroupBy] = useState("Month");
-  const [selectedYear, setSelectedYear] = useState("");
+  const [selectedYears, setSelectedYears] = useState(new Set());
 
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(true);
@@ -754,11 +753,10 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     return ys;
   }, [events]);
 
-  const chartData = useMemo(() => {
-    const fromDate = selectedYear ? selectedYear + "-01-01" : "";
-    const toDate = selectedYear ? selectedYear + "-12-31" : "";
-    return buildChartData(events, groupBy, fromDate, toDate);
-  }, [events, groupBy, selectedYear]);
+  const chartData = useMemo(
+    () => buildChartData(events, groupBy, selectedYears),
+    [events, groupBy, selectedYears]
+  );
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
 
@@ -834,26 +832,41 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 </div>
 
                 {/* Year filter */}
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
-                  <select
-                    value={selectedYear}
-                    onChange={(e) => setSelectedYear(e.target.value)}
-                    style={{
-                      background: T.cardElev,
-                      border: `1px solid ${T.border}`,
-                      borderRadius: 4,
-                      color: T.text,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      padding: "5px 8px",
-                      colorScheme: "dark",
-                    }}
-                  >
-                    <option value="">All years</option>
-                    {availableYears.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
+                <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+                  {["All", ...availableYears].map((y) => {
+                    const isAll = y === "All";
+                    const active = isAll ? selectedYears.size === 0 : selectedYears.has(y);
+                    return (
+                      <button
+                        key={y}
+                        onClick={() => {
+                          if (isAll) {
+                            setSelectedYears(new Set());
+                          } else {
+                            setSelectedYears((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(y)) next.delete(y);
+                              else next.add(y);
+                              return next;
+                            });
+                          }
+                        }}
+                        style={{
+                          background: active ? T.gold : T.cardElev,
+                          border: `1px solid ${active ? T.gold : T.border}`,
+                          borderRadius: 4,
+                          color: active ? T.bg : T.textDim,
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          padding: "5px 12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {y}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {!hasChartData ? (
