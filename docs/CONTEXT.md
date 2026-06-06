@@ -341,14 +341,17 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 ### UI (`src/Dividends.jsx`)
 
-- **Income History card** (mesmo design do "Portfolio Performance & Net Worth"): título + KPIs (All Time / YTD / This Month) **dentro** do card. Bar chart com views `Month | Quarter | Half | Year` + filtro de datas From/To (igual ao Contribution History do AporteQuinzenal).
-- **Position Dividends** (card no padrão de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortável, linha TOTAL no topo. **YoC** = dividendos TTM ÷ cost basis (yield on cost convencional). **Recovered** = dividendos acumulados ÷ cost basis (quanto do custo já voltou via proventos). Y/Y YTD = este ano vs mesmo período ano anterior.
-- **Dividend History** (auditoria): tabela colapsável com todo histórico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
+- **Income History card** (mesmo design do "Portfolio Performance & Net Worth"): titulo + KPIs (All Time / YTD / This Month) **dentro** do card. Bar chart com views `Month | Quarter | Half | Year`.
+  - **Filtro por ano** (PR #62): dropdown `<select>` com "All years" + anos presentes nos dados (ordem decrescente). Substituiu os inputs de date range From/To.
+  - **Y/Y nos KPIs YTD e This Month** (PR #62): variacao percentual ano-a-ano exibida abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`.
+- **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
+  - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
+- **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
 
 ### Pendente (Chunk 2)
 
-- **Item 19**: gráfico mês anterior vs atual (+ a receber)
-- **Item 24**: comparador y/y por asset detalhado
+- **Item 19 (restante)**: grafico mes anterior vs atual (+ a receber); comparador y/y por asset detalhado
+- **Item 24**: comparador y/y por mes com diferenca por asset
 - **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
 
 -----
@@ -429,12 +432,12 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
-**Próximas sessions:**
-- Fix disclaimer Performance.jsx ("Excludes fixed income" desatualizado)
-- Tab Dividends (itens 17–19, 24)
-- Tab Aporte Quinzenal (itens 25–28) ⭐
+**Proximas sessions:**
+- Tab Dividends chunk 2: grafico mes anterior vs atual, comparador y/y por asset (itens 19 restante, 24)
+- Tab Dividends item 23: coluna dividendos + yield on cost na Position Performance (Performance tab)
+- Tab Aporte Quinzenal item 28: reconciliacao plano × realizado automatica via Transactions
 - Tab Events (itens 20–22)
-- Validação de slug/ticker ao adicionar transação (deferred)
+- Validacao de slug/ticker ao adicionar transacao (deferred)
 
 **Deferred indefinidamente:**
 - Auto-refresh silencioso de token Google
