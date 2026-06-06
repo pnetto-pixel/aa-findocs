@@ -35,7 +35,7 @@ Estas regras valem pra toda interação. Releia antes de propor mudanças.
 
 ## 🧱 Stack (resumo — detalhes no `package.json`)
 
-- **Frontend:** React 18.3 + Vite 5.4 + recharts 2.12. `App.jsx` monolítico para a tela de Holdings; `Transactions.jsx` separado para o log de transações; `Performance.jsx` separado para o dashboard de performance.
+- **Frontend:** React 18.3 + Vite 5.4 + recharts 2.12. `App.jsx` monolítico para a tela de Holdings; `Transactions.jsx` separado para o log de transações; `Performance.jsx` separado para o dashboard de performance; `Dividends.jsx` separado para a tab de dividendos US.
 - **Backend:** Vercel Serverless Functions (Node.js)
 - **Storage:** Redis (Vercel Marketplace, TCP via `ioredis` 5.4)
 - **Auth:** Google Identity Services (JWT) + password fallback
@@ -61,6 +61,7 @@ Single page com view switcher no topo:
 - Tab **HOLDINGS** (id interno `dashboard`): dashboard original (asset allocation, rebalance, Cash, Manage Users).
 - Tab **TRANSACTIONS** (id interno `transactions`): log de transações (carregado lazy ao clicar).
 - Tab **PERFORMANCE (TEST ONLY)** (id interno `performance`): gráfico de performance (carregado lazy ao clicar). Marcado TEST ONLY pra sinalizar MVP a usuários compartilhados.
+- Tab **DIVIDENDS** (id interno `dividends`): histórico de dividendos US auto-fetched (carregado lazy ao clicar).
 
 O switcher fica logo abaixo do H1 dinâmico. State `activeView` em `PortfolioTracker`.
 
@@ -315,7 +316,7 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 
 -----
 
-## 💰 Feature: Dividends (em construção)
+## 💰 Feature: Dividends (Chunk 1 concluído — PRs #59 + #60)
 
 Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. **US assets only** — income manual foi descartado (decisão jun/2026): a tab cobre apenas dividendos de ativos US via Yahoo. Tesouro/Bank Bonds/BRA Stocks ficam fora por ora.
 
@@ -348,7 +349,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ### Pendente (Chunk 2)
 
 - **Item 19**: gráfico mês anterior vs atual (+ a receber)
-- **Item 24**: comparador y/y por asset detalhado
+- **Item 24**: comparador y/y por mês por asset detalhado
 - **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
 
 -----
@@ -390,8 +391,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**CONTEXT.md + Features_Roadmap.md em `docs/` no repo**|Docs versionados junto com código; Claude Code atualiza diretamente sem intermediário via Chat|
 |**Dividendos US via Yahoo `chart?events=div` (Tab Dividends)**|Finnhub `/stock/dividend` é premium (free tier retorna 403). Yahoo retorna histórico completo de dividendos keyless, mesmo endpoint já usado por `perf-history.js` para candles.|
 |**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
-|**BRA Stocks dividendos = manual (Tab Dividends)**|Sem API gratuita confirmada. Entrada manual no form da Tab Dividends, mesmo padrão de Tesouro/CDB nos Holdings.|
-|**Income model: `totalReceived` direto (Tab Dividends)**|Tesouro IPCA e Bank Bonds pagam cupom cujo valor depende do PU corrigido — mais natural lançar o total recebido do que qty × amountPerUnit.|
+|**BRA Stocks / Tesouro / Bank Bonds = fora da Tab Dividends (Chunk 1)**|Sem API gratuita confirmada para dividendos BRA. Escopo atual: apenas US assets via Yahoo. Manual income descartado (jun/2026) — complexidade alta, uso baixo esperado.|
 
 -----
 
@@ -409,7 +409,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - Frontend Holdings: `src/App.jsx`
 - Frontend Transactions: `src/Transactions.jsx`
 - Frontend Performance: `src/Performance.jsx`
-- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`
+- Frontend Dividends: `src/Dividends.jsx`
+- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/dividends.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`
 - Auth + Redis: `lib/auth.js`, `lib/redis.js`
 
 **Endpoints (resumo):**
@@ -422,7 +423,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 | `PUT /api/transactions` | Salva array de transações |
 | `GET /api/price` | Quote real-time de um ticker (Finnhub para US, brapi para B3); `?fx=USDBRL` retorna taxa de câmbio |
 | `GET /api/index-quote` | Quote do SPY |
-| `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v11) |
+| `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v12) |
+| `POST /api/dividends` | Recebe `{ transactions }`, retorna `{ events, meta }` — dividendos US via Yahoo (cache Redis `:dividends:v1:<txHash>`) |
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
 
 -----
@@ -431,7 +433,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 **Próximas sessions:**
 - Fix disclaimer Performance.jsx ("Excludes fixed income" desatualizado)
-- Tab Dividends (itens 17–19, 24)
+- Tab Dividends Chunk 2 (itens 19, 24) + Item 23 em Performance
 - Tab Aporte Quinzenal (itens 25–28) ⭐
 - Tab Events (itens 20–22)
 - Validação de slug/ticker ao adicionar transação (deferred)

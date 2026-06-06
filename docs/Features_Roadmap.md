@@ -23,7 +23,8 @@
 - **Bug fix — Performance não reage a mudanças em Transactions** (jun/2026): Cache Redis de `perf-history` usava key fixa por usuário, ignorando mudanças nas transactions. Fix: cache key agora inclui FNV-1a hash das transactions elegíveis (`id|date|side|ticker|qty|price`). Qualquer adição, remoção ou edição gera hash diferente → cache miss → recalcula automaticamente. Cache bumped v11→v12.
 - **Bug fix — "Bank Bonds" ausente na mensagem de erro de classe elegível** (jun/2026): Mensagem "No transactions in eligible asset classes" em Performance.jsx não listava Bank Bonds. Corrigido.
 - **Fix — Disclaimer Performance.jsx** (jun/2026): Texto "Excludes fixed income & unallocated assets" já estava corrigido no código para "Excludes Cash and Unallocated assets". Roadmap e CONTEXT.md atualizados para refletir.
-- **Pesquisa de fontes de dados — Tab Dividends** (jun/2026 — PR #58): Probe validou fontes. Yahoo `chart?events=div` para US (keyless, gratuito); brapi `dividends=true` rejeitado (HTTP 403, feature paga); Finnhub `/stock/dividend` rejeitado (premium). BRA Stocks, BRA Fixed Income e Bank Bonds → entrada manual. Income model: `totalReceived` direto. Storage: `portfolio:<storageKey>:income-manual`.
+- **Pesquisa de fontes de dados — Tab Dividends** (jun/2026 — PR #58): Probe validou fontes. Yahoo `chart?events=div` para US (keyless, gratuito); brapi `dividends=true` rejeitado (HTTP 403, feature paga); Finnhub `/stock/dividend` rejeitado (premium). BRA Stocks, BRA Fixed Income e Bank Bonds sem API gratuita — fora do escopo atual.
+- **Tab Dividends — Chunk 1** (jun/2026 — PRs #59 + #60): Tab US-only auto-fetch. `api/dividends.js` (POST `{ transactions }` → Yahoo `chart?events=div`, cache Redis versionado `:dividends:v1:<txHash>`, TTL alinhado ao mercado). `src/Dividends.jsx` com 3 cards: **Income History** (KPI tiles All Time / YTD / This Month dentro do card, bar chart recharts, group-by `Month | Quarter | Half | Year`, filtro From/To); **Position Dividends** (colunas Ticker · Total · YTD · Y/Y YTD · YoC · Recovered, sortável, linha TOTAL); **Dividend History** (log completo, scroll vertical, colapsado por default). Itens 17 e 18 (redesenhados) concluídos.
 
 ---
 
@@ -36,9 +37,7 @@
 - **Item 8**: Gráfico adicional: retorno total incluindo dividendos recebidos
 - **Item 23**: Coluna de dividendos recebidos por asset na tabela de performance (item 1) + coluna Yield on Cost (dividendos acumulados ÷ custo de aquisição). ⚠️ *depende de log de dividendos — ver itens 17–19*
 
-### Tab Dividends (nova)
-- **Item 17**: Gráfico de evolução dos pagamentos de dividendos — **barras**, com seletor de view: `Year | 6M | Quarter | Month`
-- **Item 18**: Tabela mês × ano: colunas = meses, linhas = anos, última coluna = total + média do ano
+### Tab Dividends — Chunk 2
 - **Item 19**: Gráfico: dividendos do mês anterior vs mês atual (+ a receber)
 - **Item 24**: Comparador y/y por mês: quais assets pagaram proventos naquele mês e diferença y/y por asset (este ano vs ano anterior)
 
