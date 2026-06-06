@@ -276,7 +276,7 @@ function CardTitle({ icon, children }) {
   );
 }
 
-function KpiCard({ label, value, color }) {
+function KpiCard({ label, value, color, yoy }) {
   return (
     <div
       style={{
@@ -311,6 +311,12 @@ function KpiCard({ label, value, color }) {
       >
         {value}
       </div>
+      {yoy != null && (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, marginTop: 6 }}>
+          <span style={{ color: growthColor(yoy) }}>{fmtPct(yoy)}</span>
+          <span style={{ color: T.textFaint }}> vs prior year</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -335,31 +341,70 @@ function BarTooltip({ active, payload, label, hidden }) {
   );
 }
 
+// ── Asset class grouping helper ───────────────────────────────────────────────
+
+function buildAssetClassRows(rows, transactions) {
+  const tickerToClass = {};
+  const sorted = [...transactions].sort((a, b) =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : 0
+  );
+  for (const tx of sorted) {
+    const t = tx.ticker?.toUpperCase();
+    if (!t) continue;
+    tickerToClass[t] = tx.assetClass || "Unknown";
+  }
+
+  const byClass = {};
+  for (const row of rows) {
+    const cls = tickerToClass[row.ticker] || "Unknown";
+    if (!byClass[cls]) byClass[cls] = { ticker: cls, total: 0, ytd: 0, priorYtd: 0, ttm: 0, cost: 0, _isClass: true };
+    const g = byClass[cls];
+    g.total += row.total;
+    g.ytd += row.ytd;
+    g.priorYtd += row.priorYtd;
+    g.ttm += row.ttm;
+    g.cost += row.cost || 0;
+  }
+
+  return Object.values(byClass).map((g) => ({
+    ...g,
+    yoyPct: g.priorYtd > 0 ? (g.ytd / g.priorYtd - 1) * 100 : null,
+    yoc: g.cost > 0 ? (g.ttm / g.cost) * 100 : null,
+    recovered: g.cost > 0 ? (g.total / g.cost) * 100 : null,
+  }));
+}
+
 // ── Position Dividends table ──────────────────────────────────────────────────
 
-function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
+function PositionDividendsTable({ rows, transactions, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("total");
   const [sortDir, setSortDir] = useState("desc");
+  const [groupMode, setGroupMode] = useState("ticker");
 
   function handleSort(col) {
     if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortCol(col); setSortDir("desc"); }
   }
 
+  const displayRows = useMemo(() => {
+    if (groupMode === "class") return buildAssetClassRows(rows, transactions);
+    return rows;
+  }, [rows, transactions, groupMode]);
+
   const sortedRows = useMemo(() => {
-    return [...rows].sort((a, b) => {
+    return [...displayRows].sort((a, b) => {
       const av = a[sortCol], bv = b[sortCol];
       if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
       const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
       const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
       return sortDir === "asc" ? an - bn : bn - an;
     });
-  }, [rows, sortCol, sortDir]);
+  }, [displayRows, sortCol, sortDir]);
 
-  const totals = useMemo(() => aggPositions(rows), [rows]);
+  const totals = useMemo(() => aggPositions(displayRows), [displayRows]);
 
   const COLS = [
-    { key: "ticker", label: "Ticker", align: "left" },
+    { key: "ticker", label: groupMode === "class" ? "Class" : "Ticker", align: "left" },
     { key: "total", label: "Total", align: "right" },
     { key: "ytd", label: "YTD", align: "right" },
     { key: "yoyPct", label: "Y/Y YTD", align: "right" },
@@ -461,7 +506,32 @@ function PositionDividendsTable({ rows, valuesHidden, open, onToggle }) {
             overflow: "hidden",
           }}
         >
-          {rows.length === 0 ? (
+          <div style={{ display: "flex", gap: 8, padding: "14px 16px 0" }}>
+            {[["ticker", "By Ticker"], ["class", "By Asset Class"]].map(([mode, label]) => {
+              const active = groupMode === mode;
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setGroupMode(mode)}
+                  style={{
+                    background: active ? T.gold : T.cardElev,
+                    border: `1px solid ${active ? T.gold : T.border}`,
+                    borderRadius: 4,
+                    color: active ? T.bg : T.textDim,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.08em",
+                    padding: "5px 12px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {displayRows.length === 0 ? (
             <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
               No dividends recorded yet.
             </div>
@@ -610,8 +680,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [error, setError] = useState(null);
 
   const [groupBy, setGroupBy] = useState("Month");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [selectedYear, setSelectedYear] = useState("");
 
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(true);
@@ -660,21 +729,36 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
   // KPIs
   const kpis = useMemo(() => {
-    const thisYear = String(new Date().getFullYear());
-    const thisMonth = new Date().toISOString().slice(0, 7);
-    let allTime = 0, ytd = 0, month = 0;
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const thisYear = String(curYear);
+    const thisMonth = now.toISOString().slice(0, 7);
+    const mmdd = now.toISOString().slice(5, 10);
+    const priorYear = String(curYear - 1);
+    const priorYearMonth = `${priorYear}-${now.toISOString().slice(5, 7)}`;
+    let allTime = 0, ytd = 0, month = 0, priorYtd = 0, priorMonth = 0;
     for (const e of events) {
       allTime += e.totalReceived;
       if (e.date.startsWith(thisYear)) ytd += e.totalReceived;
       if (e.date.startsWith(thisMonth)) month += e.totalReceived;
+      if (e.date.startsWith(priorYear) && e.date.slice(5, 10) <= mmdd) priorYtd += e.totalReceived;
+      if (e.date.startsWith(priorYearMonth)) priorMonth += e.totalReceived;
     }
-    return { allTime, ytd, month };
+    const yoyYtd = priorYtd > 0 ? (ytd / priorYtd - 1) * 100 : null;
+    const yoyMonth = priorMonth > 0 ? (month / priorMonth - 1) * 100 : null;
+    return { allTime, ytd, month, priorYtd, priorMonth, yoyYtd, yoyMonth };
   }, [events]);
 
-  const chartData = useMemo(
-    () => buildChartData(events, groupBy, fromDate, toDate),
-    [events, groupBy, fromDate, toDate]
-  );
+  const availableYears = useMemo(() => {
+    const ys = [...new Set(events.map((e) => e.date.slice(0, 4)))].sort((a, b) => b - a);
+    return ys;
+  }, [events]);
+
+  const chartData = useMemo(() => {
+    const fromDate = selectedYear ? selectedYear + "-01-01" : "";
+    const toDate = selectedYear ? selectedYear + "-12-31" : "";
+    return buildChartData(events, groupBy, fromDate, toDate);
+  }, [events, groupBy, selectedYear]);
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
 
@@ -683,20 +767,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     () => buildPositionRows(events, costBasis),
     [events, costBasis]
   );
-
-  const dateInputStyle = {
-    background: T.cardElev,
-    border: `1px solid ${T.border}`,
-    borderRadius: 4,
-    color: T.text,
-    fontFamily: FONT_MONO,
-    fontSize: 12,
-    padding: "5px 8px",
-    outline: "none",
-    colorScheme: "dark",
-    flex: 1,
-    minWidth: 0,
-  };
 
   return (
     <div style={{ paddingBottom: 40 }}>
@@ -733,8 +803,8 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 {/* KPI cards */}
                 <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <KpiCard label="All Time" value={fmtUSD0(kpis.allTime, valuesHidden)} />
-                  <KpiCard label="YTD" value={fmtUSD0(kpis.ytd, valuesHidden)} />
-                  <KpiCard label="This Month" value={fmtUSD0(kpis.month, valuesHidden)} />
+                  <KpiCard label="YTD" value={fmtUSD0(kpis.ytd, valuesHidden)} yoy={kpis.yoyYtd} />
+                  <KpiCard label="This Month" value={fmtUSD0(kpis.month, valuesHidden)} yoy={kpis.yoyMonth} />
                 </div>
 
                 {/* Group-by selector */}
@@ -763,20 +833,27 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   })}
                 </div>
 
-                {/* Date range filter */}
+                {/* Year filter */}
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, flexShrink: 0 }}>From</span>
-                  <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={dateInputStyle} />
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, flexShrink: 0 }}>to</span>
-                  <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={dateInputStyle} />
-                  {(fromDate || toDate) && (
-                    <button
-                      onClick={() => { setFromDate(""); setToDate(""); }}
-                      style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 4, color: T.textDim, fontFamily: FONT_MONO, fontSize: 11, padding: "5px 8px", cursor: "pointer", flexShrink: 0 }}
-                    >
-                      Clear
-                    </button>
-                  )}
+                  <select
+                    value={selectedYear}
+                    onChange={(e) => setSelectedYear(e.target.value)}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 4,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      padding: "5px 8px",
+                      colorScheme: "dark",
+                    }}
+                  >
+                    <option value="">All years</option>
+                    {availableYears.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {!hasChartData ? (
@@ -823,6 +900,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
       {state === "done" && (
         <PositionDividendsTable
           rows={positionRows}
+          transactions={transactions}
           valuesHidden={valuesHidden}
           open={posOpen}
           onToggle={() => setPosOpen((v) => !v)}
