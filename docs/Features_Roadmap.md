@@ -50,6 +50,25 @@
 ### Tab Dividends — Redesign Year vs Year
 - **Item 29** ⚠️ *Design pendente — debater antes de codar*: O card `YearVsYearTable` (tickers × meses, comparando ano atual vs anterior) está visualmente feio e difícil de ler. Precisa ser repensado antes de implementar. Perguntas em aberto: qual granularidade mostrar (mensal como hoje, ou trimestral?), como representar ausência de pagamento vs zero, se manter tabela ou migrar para outro formato (ex: heatmap, cards por ticker). **Não implementar sem alinhar o design primeiro.**
 
+### Tab Dividends — Filtros e Total no Dividend History
+- **Item 30**: Card "Dividend History" (tabela de auditoria no rodapé de Dividends.jsx) deve ganhar filtros por header igual à tabela de Transactions — clique no header abre popover com sort asc/desc + filtro por coluna (date range, ticker checkbox, assetClass checkbox, etc.). Adicionar linha **TOTAL** fixa no topo que soma somente as linhas visíveis após filtragem. Objetivo: permitir auditar soma de dividendos por ticker, período ou classe.
+
+### Tab Dividends — Dell dividendos no cálculo
+- **Item 31** 🧠 *Opus recomendado*: DELL está excluída das contribuições de aporte (correto — não aportar mais), mas os dividendos pagos pela Dell devem ser tratados normalmente. Hoje `api/dividends.js` provavelmente não distingue essa exclusão, mas confirmar. Garantir que: (1) dividendos DELL aparecem no card Dividend History; (2) aparecem no Year vs Year; (3) entram no cálculo de `totalReturn` no gráfico de Performance. Exclusão de DELL se aplica **somente** à lógica de aporte quinzenal, não a dividendos.
+
+### Tab Holdings — Qty de live assets via Transactions
+- **Item 32** ⚠️ *Pré-requisito do Item 33*: Remover a possibilidade de editar manualmente a quantidade (`qty`) de holdings do tipo `auto` (live assets com ticker) no card Holdings. A quantidade deve ser derivada automaticamente do saldo líquido no log de Transactions (soma de buys menos sells). Enquanto o Item 33 não estiver implementado, o campo qty continua existindo no Redis mas o formulário de edição do holding não deve exibi-lo nem permitir alterá-lo.
+
+- **Item 33** ⚠️ *Depende do Item 32*: Remover o formulário de adição de live assets da tab Holdings. Todo ativo com ticker deve entrar pelo log de Transactions — o holding é criado/atualizado automaticamente a partir do saldo líquido das transações. Holdings `type: "manual"` e Cash continuam sendo adicionados diretamente em Holdings normalmente.
+
+### Tab Transactions — Import inteligente
+- **Item 34** 🧠 *Opus recomendado*: Melhorias no import de CSV/Fidelity — duas validações novas no preview:
+  1. **Reuso de classe conhecida**: se o ticker já existe em alguma transação salva, usar o `assetClass` já registrado em vez de sugerir via `inferAssetClass()`. Evita conflito de classe para o mesmo ticker.
+  2. **Detecção de duplicata**: se já existe uma transação salva com mesmo ticker, mesmo lado (buy/sell), mesma quantidade e mesma data, marcar a linha do preview como inválida com label "Duplicate" e desmarcá-la por padrão. Usuário pode forçar importar se quiser.
+
+### Tab Transactions — Split e Grouping de ativos
+- **Item 35** 🧠 *Opus recomendado*: Suporte a eventos de split e grouping (reverse split) de ações. Quando um split ocorrer (ex: NVDA 10:1), o histórico de transações anteriores deve ser ajustado para refletir a nova quantidade e preço unitário equivalentes, mantendo o custo total inalterado. Interface para registrar um evento de split/grouping (ticker, data, fator), com preview do impacto antes de aplicar. Afeta cálculo de Position Performance, YoC e custo médio.
+
 ### Tab Events (nova)
 - **Item 20**: Calendario de ex-div, earnings e special events (split, grouping, payout)
 - **Item 21**: Exibir ultimo mes + proximos 3 meses, em ordem cronologica
