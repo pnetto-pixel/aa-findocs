@@ -32,6 +32,7 @@
 - **Item 19 — y/y nos KPIs do Income History** (jun/2026 — PR #62): KpiCard YTD e This Month exibem variacao percentual ano-a-ano abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`. Nota: grafico mes anterior vs atual (parte original do item 19) ainda pendente.
 - **Dropdown de anos no Income History** (jun/2026 — PR #62): Substituiu inputs de date range (From/To) por `<select>` de anos. Opcoes: "All years" + anos presentes nos dados em ordem decrescente. Simplifica o filtro para selecao de ano inteiro.
 - **Group by Asset Class em Position Dividends** (jun/2026 — PR #62): Toggle "By Ticker" / "By Asset Class" na tabela Position Dividends. Quando "By Asset Class": agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
+- **Item 19 (restante) — Comparador Mes Anterior vs Mes Atual** (jun/2026 — PR #64): Bloco "Month vs Month" inserido no topo do card "Income History" em `Dividends.jsx`. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM centralizado (verde/vermelho) e nomes dos meses por extenso. Oculto quando o usuario filtra por ano historico diferente do corrente. Reutiliza `useMemo kpis` existente sem nenhum novo fetch ou mudanca de API.
 
 ---
 
@@ -44,7 +45,6 @@
 - **Item 8**: Grafico adicional: retorno total incluindo dividendos recebidos
 
 ### Tab Dividends
-- **Item 19 (restante)**: Grafico: dividendos do mes anterior vs mes atual (+ a receber). Y/y por asset class (comparador detalhado).
 - **Item 24**: Comparador y/y por mes: quais assets pagaram proventos naquele mes e diferenca y/y por asset (este ano vs ano anterior)
 
 ### Tab Aporte Quinzenal

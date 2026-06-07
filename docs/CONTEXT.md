@@ -344,13 +344,13 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Income History card** (mesmo design do "Portfolio Performance & Net Worth"): titulo + KPIs (All Time / YTD / This Month) **dentro** do card. Bar chart com views `Month | Quarter | Half | Year`.
   - **Filtro por ano** (PR #62): dropdown `<select>` com "All years" + anos presentes nos dados (ordem decrescente). Substituiu os inputs de date range From/To.
   - **Y/Y nos KPIs YTD e This Month** (PR #62): variacao percentual ano-a-ano exibida abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`.
+  - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
   - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 - **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
 
 ### Pendente (Chunk 2)
 
-- **Item 19 (restante)**: grafico mes anterior vs atual (+ a receber); comparador y/y por asset detalhado
 - **Item 24**: comparador y/y por mes com diferenca por asset
 - **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
 
@@ -433,7 +433,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Tab Dividends chunk 2: grafico mes anterior vs atual, comparador y/y por asset (itens 19 restante, 24)
+- Tab Dividends chunk 2: comparador y/y por mes com diferenca por asset (item 24)
 - Tab Dividends item 23: coluna dividendos + yield on cost na Position Performance (Performance tab)
 - Tab Aporte Quinzenal item 28: reconciliacao plano × realizado automatica via Transactions
 - Tab Events (itens 20–22)
