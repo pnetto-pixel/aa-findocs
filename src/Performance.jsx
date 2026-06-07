@@ -205,8 +205,8 @@ const PERIODS = [
   { label: "MAX", days: Infinity },
 ];
 
-function getWindowData(rawData, period) {
-  if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
+function getWindowData(rawData, period, divEvents) {
+  if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null, lastTotalReturn: null };
 
   const p = PERIODS.find((x) => x.label === period) || PERIODS.find((x) => x.label === "1Y");
   let cutoff = null;
@@ -224,19 +224,37 @@ function getWindowData(rawData, period) {
   }
 
   const slice = rawData.slice(startIdx);
-  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
+  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null, lastTotalReturn: null };
 
   const baseP = slice[0].portfolio;
   const baseS = slice[0].spy;
   const toWin = (v, base) => +((((1 + v / 100) / (1 + base / 100) - 1) * 100).toFixed(2));
 
-  const data = slice.map((d) => ({
-    date: d.date,
-    dateTs: new Date(d.date + "T00:00:00Z").getTime(),
-    portfolio: toWin(d.portfolio, baseP),
-    spy: toWin(d.spy, baseS),
-    usd: d.usd,
-  }));
+  const startDate = slice[0].date;
+  const initialPortfolioUSD = rawData[startIdx].usd;
+  const safeEvents = Array.isArray(divEvents) ? divEvents : [];
+
+  let lastTotalReturn = null;
+  const data = slice.map((d) => {
+    const portfolio = toWin(d.portfolio, baseP);
+    const spy = toWin(d.spy, baseS);
+    let totalReturn;
+    if (initialPortfolioUSD) {
+      const cumulativeDivsUSD = safeEvents
+        .filter((e) => e.date >= startDate && e.date <= d.date)
+        .reduce((s, e) => s + (e.totalReceived || 0), 0);
+      totalReturn = +(portfolio + (cumulativeDivsUSD / initialPortfolioUSD) * 100).toFixed(2);
+      lastTotalReturn = totalReturn;
+    }
+    return {
+      date: d.date,
+      dateTs: new Date(d.date + "T00:00:00Z").getTime(),
+      portfolio,
+      spy,
+      usd: d.usd,
+      totalReturn,
+    };
+  });
 
   const last = data[data.length - 1];
   return {
@@ -244,6 +262,7 @@ function getWindowData(rawData, period) {
     lastPortfolio: last.portfolio,
     lastSpy: last.spy,
     lastUSD: last.usd,
+    lastTotalReturn,
   };
 }
 
@@ -640,6 +659,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
   const [transactions, setTransactions] = useState([]);
   const [divByTicker, setDivByTicker] = useState({});
+  const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
   const [posTableOpen, setPosTableOpen] = useState(true);
 
@@ -666,6 +686,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
         if (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events)) {
           const events = divResult.value.events;
+          setDivEvents(events);
           const todayMs = Date.now();
           const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
           const map = {};
@@ -722,9 +743,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
-  const { data: chartData, lastPortfolio, lastSpy, lastUSD } = useMemo(
-    () => getWindowData(rawData, period),
-    [rawData, period]
+  const { data: chartData, lastPortfolio, lastSpy, lastUSD, lastTotalReturn } = useMemo(
+    () => getWindowData(rawData, period, divEvents),
+    [rawData, period, divEvents]
   );
 
   // If API response has no USD values (old cache), force comparison mode.
@@ -1044,6 +1065,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   {effectiveComparing && (
                     <>
                       <KpiCard
+                        label={`Total Return ${period}`}
+                        value={fmt(lastTotalReturn)}
+                        color={kpiColor(lastTotalReturn)}
+                      />
+                      <KpiCard
                         label={`S&P 500 ${period}`}
                         value={fmt(lastSpy)}
                         color={kpiColor(lastSpy)}
@@ -1137,6 +1163,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                           />
                           <Line
                             type="monotone"
+                            dataKey="totalReturn"
+                            name="Total Return"
+                            stroke={T.green}
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 4, fill: T.green }}
+                          />
+                          <Line
+                            type="monotone"
                             dataKey="spy"
                             name="S&P 500"
                             stroke={T.orange}
@@ -1170,6 +1205,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   }}
                 >
                   Excludes Cash and Unallocated assets. Updated daily after US market close.
+                  {" "}Total Return includes US dividends only (BRA and fixed income excluded).
                 </div>
               </>
             )}
