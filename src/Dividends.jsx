@@ -582,6 +582,264 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   );
 }
 
+// ── Year vs Year comparator ───────────────────────────────────────────────────
+
+const MONTH_FULL = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
+
+function buildYoyData(events, selectedMonth, groupMode) {
+  const curYear = new Date().getFullYear();
+  const priorYear = curYear - 1;
+
+  const relevant = events.filter((e) => {
+    if (!e.date) return false;
+    const y = parseInt(e.date.slice(0, 4), 10);
+    return y === curYear || y === priorYear;
+  });
+
+  const monthSet = new Set();
+  for (const e of relevant) monthSet.add(parseInt(e.date.slice(5, 7), 10));
+  const availableMonths = [...monthSet].sort((a, b) => a - b);
+
+  const filtered = selectedMonth > 0
+    ? relevant.filter((e) => parseInt(e.date.slice(5, 7), 10) === selectedMonth)
+    : relevant;
+
+  const curAmts = {};
+  const priorAmts = {};
+
+  for (const e of filtered) {
+    const y = parseInt(e.date.slice(0, 4), 10);
+    const key = groupMode === "ticker" ? e.ticker : (e.assetClass || "Other");
+    if (y === curYear) {
+      curAmts[key] = (curAmts[key] || 0) + e.totalReceived;
+    } else {
+      priorAmts[key] = (priorAmts[key] || 0) + e.totalReceived;
+    }
+  }
+
+  const allKeys = new Set([...Object.keys(curAmts), ...Object.keys(priorAmts)]);
+  const rows = [...allKeys].sort().map((label) => {
+    const lastYear = priorAmts[label] || 0;
+    const curYearAmt = curAmts[label] || 0;
+    const diffDollar = curYearAmt - lastYear;
+    const diffPct = lastYear > 0 ? Math.round((curYearAmt - lastYear) / lastYear * 100) : null;
+    return { label, lastYear, curYearAmt, diffDollar, diffPct };
+  });
+
+  return { rows, curYear, priorYear, availableMonths };
+}
+
+function YearVsYearTable({ events, valuesHidden, open, onToggle }) {
+  const [selectedMonth, setSelectedMonth] = useState(0);
+  const [groupMode, setGroupMode] = useState("ticker");
+
+  const yoyData = useMemo(
+    () => buildYoyData(events, selectedMonth, groupMode),
+    [events, selectedMonth, groupMode]
+  );
+  const { rows, curYear, priorYear, availableMonths } = yoyData;
+
+  const totalLastYear   = rows.reduce((s, r) => s + r.lastYear, 0);
+  const totalCurYear    = rows.reduce((s, r) => s + r.curYearAmt, 0);
+  const totalDiffDollar = totalCurYear - totalLastYear;
+  const totalDiffPct    = totalLastYear > 0
+    ? Math.round((totalCurYear - totalLastYear) / totalLastYear * 100)
+    : null;
+
+  const thBase = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    fontWeight: 500,
+    padding: "8px 12px",
+    borderBottom: `1px solid ${T.border}`,
+    whiteSpace: "nowrap",
+    color: T.textFaint,
+  };
+
+  const tdBase = {
+    fontFamily: FONT_MONO,
+    fontSize: 12,
+    padding: "9px 12px",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    whiteSpace: "nowrap",
+  };
+
+  const summaryTd = {
+    ...tdBase,
+    background: T.cardElev,
+    fontWeight: 600,
+    borderTop: `1px solid ${T.border}`,
+    borderBottom: `1px solid ${T.border}`,
+  };
+
+  function fmtDiff(n, hidden) {
+    if (hidden) return "$ ••••";
+    if (n === 0) return "—";
+    const sign = n > 0 ? "+" : "";
+    return sign + new Intl.NumberFormat("en-US", {
+      style: "currency", currency: "USD",
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    }).format(n);
+  }
+
+  function diffColor(n) {
+    return n > 0 ? T.green : n < 0 ? T.red : T.textDim;
+  }
+
+  function renderPctCell(diffPct, lastYear, curYearAmt, extra) {
+    const style = { ...tdBase, ...extra, textAlign: "right" };
+    if (lastYear === 0 && curYearAmt === 0) return <td style={{ ...style, color: T.textFaint }}>—</td>;
+    if (lastYear === 0 && curYearAmt > 0)   return <td style={{ ...style, color: T.textDim }}>new</td>;
+    if (diffPct == null)                     return <td style={{ ...style, color: T.textFaint }}>—</td>;
+    const color = diffPct > 0 ? T.green : diffPct < 0 ? T.red : T.textDim;
+    return <td style={{ ...style, color, fontWeight: 600 }}>{`${diffPct > 0 ? "+" : ""}${diffPct}%`}</td>;
+  }
+
+  const subtitle = `${curYear} vs ${priorYear}`;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button onClick={onToggle} style={cardHeaderStyle(open)}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+          <CardTitle icon={<BarChart2 size={14} strokeWidth={2} />}>Year vs Year</CardTitle>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em", marginLeft: 24 }}>
+            {subtitle}
+          </span>
+        </div>
+        <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+      </button>
+
+      {open && (
+        <div style={{
+          background: T.card,
+          border: `1px solid ${T.borderSoft}`,
+          borderTop: "none",
+          borderRadius: "0 0 4px 4px",
+          marginTop: -1,
+          overflow: "hidden",
+        }}>
+          {/* Controls row */}
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "14px 16px 0",
+            gap: 8,
+            flexWrap: "wrap",
+          }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["ticker", "By Ticker"], ["class", "By Asset Class"]].map(([mode, label]) => {
+                const active = groupMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setGroupMode(mode)}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(Number(e.target.value))}
+              style={{
+                background: T.cardElev,
+                border: `1px solid ${T.border}`,
+                borderRadius: 4,
+                color: T.text,
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.08em",
+                padding: "5px 10px",
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              <option value={0}>All Months</option>
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{MONTH_FULL[m - 1]}</option>
+              ))}
+            </select>
+          </div>
+
+          {rows.length === 0 ? (
+            <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
+              No dividend data for {curYear} or {priorYear}.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", marginTop: 14 }}>
+              <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...thBase, textAlign: "left" }}>
+                      {groupMode === "ticker" ? "Ticker" : "Asset Class"}
+                    </th>
+                    <th style={{ ...thBase, textAlign: "right" }}>{priorYear}</th>
+                    <th style={{ ...thBase, textAlign: "right" }}>{curYear}</th>
+                    <th style={{ ...thBase, textAlign: "right" }}>Δ $</th>
+                    <th style={{ ...thBase, textAlign: "right" }}>Δ %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.label}>
+                      <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>
+                        {row.label}
+                      </td>
+                      <td style={{ ...tdBase, textAlign: "right", color: T.textDim }}>
+                        {fmtUSD(row.lastYear, valuesHidden)}
+                      </td>
+                      <td style={{ ...tdBase, textAlign: "right", color: T.text }}>
+                        {fmtUSD(row.curYearAmt, valuesHidden)}
+                      </td>
+                      <td style={{ ...tdBase, textAlign: "right", color: diffColor(row.diffDollar), fontWeight: 600 }}>
+                        {fmtDiff(row.diffDollar, valuesHidden)}
+                      </td>
+                      {renderPctCell(row.diffPct, row.lastYear, row.curYearAmt, {})}
+                    </tr>
+                  ))}
+                  <tr>
+                    <td style={{ ...summaryTd, textAlign: "left", color: T.text, letterSpacing: "0.08em", fontSize: 11 }}>
+                      TOTAL
+                    </td>
+                    <td style={{ ...summaryTd, textAlign: "right", color: T.textDim }}>
+                      {fmtUSD(totalLastYear, valuesHidden)}
+                    </td>
+                    <td style={{ ...summaryTd, textAlign: "right", color: T.text }}>
+                      {fmtUSD(totalCurYear, valuesHidden)}
+                    </td>
+                    <td style={{ ...summaryTd, textAlign: "right", color: diffColor(totalDiffDollar), fontWeight: 600 }}>
+                      {fmtDiff(totalDiffDollar, valuesHidden)}
+                    </td>
+                    {renderPctCell(totalDiffPct, totalLastYear, totalCurYear, { background: T.cardElev, fontWeight: 600 })}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Dividend History (audit) table ────────────────────────────────────────────
 
 function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
@@ -684,6 +942,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(true);
   const [histOpen, setHistOpen] = useState(false);
+  const [yoyOpen, setYoyOpen] = useState(true);
 
   const headers = authHeaders(auth);
 
@@ -1090,6 +1349,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           valuesHidden={valuesHidden}
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
+        />
+      )}
+
+      {/* ── Year vs Year comparator ── */}
+      {state === "done" && (
+        <YearVsYearTable
+          events={events}
+          valuesHidden={valuesHidden}
+          open={yoyOpen}
+          onToggle={() => setYoyOpen((v) => !v)}
         />
       )}
     </div>
