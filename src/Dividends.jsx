@@ -735,17 +735,35 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     const mmdd = now.toISOString().slice(5, 10);
     const priorYear = String(curYear - 1);
     const priorYearMonth = `${priorYear}-${now.toISOString().slice(5, 7)}`;
-    let allTime = 0, ytd = 0, month = 0, priorYtd = 0, priorMonth = 0;
+
+    // Previous calendar month (e.g. May 2026 when today is June 2026)
+    const prevMonthDate = new Date(curYear, now.getMonth() - 1, 1);
+    const prevMonthStr = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, "0")}`;
+
+    let allTime = 0, ytd = 0, month = 0, priorYtd = 0, priorMonth = 0, prevCalMonth = 0;
     for (const e of events) {
       allTime += e.totalReceived;
       if (e.date.startsWith(thisYear)) ytd += e.totalReceived;
       if (e.date.startsWith(thisMonth)) month += e.totalReceived;
       if (e.date.startsWith(priorYear) && e.date.slice(5, 10) <= mmdd) priorYtd += e.totalReceived;
       if (e.date.startsWith(priorYearMonth)) priorMonth += e.totalReceived;
+      if (e.date.startsWith(prevMonthStr)) prevCalMonth += e.totalReceived;
     }
     const yoyYtd = priorYtd > 0 ? (ytd / priorYtd - 1) * 100 : null;
     const yoyMonth = priorMonth > 0 ? (month / priorMonth - 1) * 100 : null;
-    return { allTime, ytd, month, priorYtd, priorMonth, yoyYtd, yoyMonth };
+
+    // Month-over-month delta: this month vs previous calendar month
+    const momDelta = prevCalMonth > 0 ? (month / prevCalMonth - 1) * 100 : null;
+
+    // Human-readable month labels
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const thisMonthLabel = `${MONTHS[now.getMonth()]} ${curYear}`;
+    const prevMonthLabel = `${MONTHS[prevMonthDate.getMonth()]} ${prevMonthDate.getFullYear()}`;
+
+    return {
+      allTime, ytd, month, priorYtd, priorMonth, yoyYtd, yoyMonth,
+      prevCalMonth, momDelta, thisMonthLabel, prevMonthLabel,
+    };
   }, [events]);
 
   const availableYears = useMemo(() => {
@@ -798,6 +816,151 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
             {state === "done" && (
               <>
+                {/* Month Comparator: Prev Month vs This Month */}
+                {(selectedYears.size === 0 || selectedYears.has(String(new Date().getFullYear()))) && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        letterSpacing: "0.18em",
+                        textTransform: "uppercase",
+                        color: T.textFaint,
+                        marginBottom: 10,
+                      }}
+                    >
+                      Month vs Month
+                    </div>
+                    <div style={{ display: "flex", gap: 12 }}>
+                      {/* Prev Month */}
+                      <div
+                        style={{
+                          background: T.cardElev,
+                          border: `1px solid ${T.borderSoft}`,
+                          borderRadius: 4,
+                          padding: "14px 16px",
+                          flex: "1 1 0",
+                          minWidth: 120,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            color: T.textDim,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {kpis.prevMonthLabel}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 20,
+                            fontWeight: 700,
+                            color: T.text,
+                            letterSpacing: "-0.02em",
+                          }}
+                        >
+                          {fmtUSD0(kpis.prevCalMonth, valuesHidden)}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            color: T.textFaint,
+                            marginTop: 4,
+                          }}
+                        >
+                          complete month
+                        </div>
+                      </div>
+
+                      {/* Arrow + delta in the middle */}
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 4,
+                          minWidth: 52,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 18,
+                            color: T.border,
+                          }}
+                        >
+                          {"--->"}
+                        </div>
+                        {kpis.momDelta != null && (
+                          <div
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: kpis.momDelta > 0 ? T.green : kpis.momDelta < 0 ? T.red : T.textDim,
+                            }}
+                          >
+                            {fmtPct(kpis.momDelta)}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* This Month */}
+                      <div
+                        style={{
+                          background: T.cardElev,
+                          border: `1px solid ${T.gold}44`,
+                          borderRadius: 4,
+                          padding: "14px 16px",
+                          flex: "1 1 0",
+                          minWidth: 120,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            color: T.gold,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {kpis.thisMonthLabel}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 20,
+                            fontWeight: 700,
+                            color: T.text,
+                            letterSpacing: "-0.02em",
+                          }}
+                        >
+                          {fmtUSD0(kpis.month, valuesHidden)}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            color: T.textFaint,
+                            marginTop: 4,
+                          }}
+                        >
+                          so far this month
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* KPI cards */}
                 <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <KpiCard label="All Time" value={fmtUSD0(kpis.allTime, valuesHidden)} />
