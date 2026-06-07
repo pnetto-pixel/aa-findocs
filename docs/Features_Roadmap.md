@@ -33,6 +33,7 @@
 - **Dropdown de anos no Income History** (jun/2026 — PR #62): Substituiu inputs de date range (From/To) por `<select>` de anos. Opcoes: "All years" + anos presentes nos dados em ordem decrescente. Simplifica o filtro para selecao de ano inteiro.
 - **Group by Asset Class em Position Dividends** (jun/2026 — PR #62): Toggle "By Ticker" / "By Asset Class" na tabela Position Dividends. Quando "By Asset Class": agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 - **Item 19 (restante) — Comparador Mes Anterior vs Mes Atual** (jun/2026 — PR #64): Bloco "Month vs Month" inserido no topo do card "Income History" em `Dividends.jsx`. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM centralizado (verde/vermelho) e nomes dos meses por extenso. Oculto quando o usuario filtra por ano historico diferente do corrente. Reutiliza `useMemo kpis` existente sem nenhum novo fetch ou mudanca de API.
+- **Item 24 — Comparador Y/Y por mes com diferenca por asset** (jun/2026 — PR #65): `buildYoyData(events)` agrupa eventos de dividendos por ticker e mes para o ano atual vs ano anterior. `YearVsYearTable` — card colapsavel abaixo do Income History com tickers como linhas, meses como colunas; cada celula exibe valor do ano atual + valor do ano anterior (muted) + indicador de delta (tri/tri + %) em verde/vermelho. Linha TOTAL no rodape, scroll horizontal no mobile, mensagem de empty state. Apenas `src/Dividends.jsx` alterado.
 
 ---
 
@@ -43,9 +44,6 @@
 
 ### Tab Performance
 - **Item 8**: Grafico adicional: retorno total incluindo dividendos recebidos
-
-### Tab Dividends
-- **Item 24**: Comparador y/y por mes: quais assets pagaram proventos naquele mes e diferenca y/y por asset (este ano vs ano anterior)
 
 ### Tab Aporte Quinzenal
 - **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliacao plano × realizado)
