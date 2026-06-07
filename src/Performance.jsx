@@ -325,7 +325,11 @@ function aggFromRows(rows) {
   const totalValue = rows.reduce((s, r) => s + r.totalValue, 0);
   const totalGainLoss = totalValue - totalCost;
   const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
-  return { totalCost, totalValue, totalGainLoss, gainLossPct };
+  const hasDivData = rows.some((r) => r.divTtm != null);
+  const divTtmSum = hasDivData ? rows.reduce((s, r) => s + (r.divTtm ?? 0), 0) : null;
+  const totalDiv = hasDivData ? rows.reduce((s, r) => s + (r.totalDiv ?? 0), 0) : null;
+  const yoc = hasDivData && totalCost > 0 ? (divTtmSum / totalCost) * 100 : null;
+  return { totalCost, totalValue, totalGainLoss, gainLossPct, divTtmSum, totalDiv, yoc };
 }
 
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
@@ -384,6 +388,8 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     { key: "totalValue",   label: "Current Value",   align: "right" },
     { key: "gainLossPct",  label: "Gain/Loss %",     align: "right" },
     { key: "totalGainLoss",label: "Total Gain/Loss", align: "right" },
+    { key: "divTtm",       label: "Div TTM",         align: "right" },
+    { key: "yoc",          label: "YoC %",           align: "right" },
   ];
 
   const thBase = {
@@ -444,6 +450,12 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
         return <td key={col.key} style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>{row.gainLossPct != null ? `${row.gainLossPct > 0 ? "+" : ""}${row.gainLossPct.toFixed(2)}%` : "—"}</td>;
       case "totalGainLoss":
         return <td key={col.key} style={{ ...tdBase, color: gainColor }}>{valuesHidden ? "$ ••••" : `${row.totalGainLoss > 0 ? "+" : ""}${fmtUSD(row.totalGainLoss)}`}</td>;
+      case "divTtm":
+        if (row.divTtm == null) return <td key={col.key} style={{ ...tdBase, color: T.textFaint }}>{"—"}</td>;
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.divTtm)}</td>;
+      case "yoc":
+        if (row.yoc == null) return <td key={col.key} style={{ ...tdBase, color: T.textFaint }}>{"—"}</td>;
+        return <td key={col.key} style={{ ...tdBase, color: T.textDim }}>{`${row.yoc.toFixed(2)}%`}</td>;
       default: return <td key={col.key} style={tdBase}>—</td>;
     }
   }
@@ -479,6 +491,12 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           return <td key={col.key} style={{ ...summaryTd, color: pctColor }}>{agg.gainLossPct != null ? `${agg.gainLossPct > 0 ? "+" : ""}${agg.gainLossPct.toFixed(2)}%` : "—"}</td>;
         case "totalGainLoss":
           return <td key={col.key} style={{ ...summaryTd, color: gainColor }}>{valuesHidden ? "$ ••••" : `${agg.totalGainLoss > 0 ? "+" : ""}${fmtUSD(agg.totalGainLoss)}`}</td>;
+        case "divTtm":
+          if (agg.divTtmSum == null) return <td key={col.key} style={{ ...summaryTd, color: T.textFaint }}>{"—"}</td>;
+          return <td key={col.key} style={summaryTd}>{valuesHidden ? "$ ••••" : fmtPrice(agg.divTtmSum)}</td>;
+        case "yoc":
+          if (agg.yoc == null) return <td key={col.key} style={{ ...summaryTd, color: T.textFaint }}>{"—"}</td>;
+          return <td key={col.key} style={{ ...summaryTd, color: T.textDim }}>{`${agg.yoc.toFixed(2)}%`}</td>;
         default: return <td key={col.key} style={summaryTd} />;
       }
     });
@@ -561,7 +579,7 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           </div>
 
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
+            <table style={{ width: "100%", minWidth: 1060, borderCollapse: "collapse" }}>
               <thead>
                 <tr>
                   {COLS.map((col) => (
@@ -621,6 +639,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
   const [transactions, setTransactions] = useState([]);
+  const [divByTicker, setDivByTicker] = useState({});
   const [perfCardOpen, setPerfCardOpen] = useState(true);
   const [posTableOpen, setPosTableOpen] = useState(true);
 
@@ -633,10 +652,42 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       try {
         const txs = await loadTransactions(auth);
         if (!cancelled) setTransactions(txs);
-        const result = await loadPerfHistory(auth, txs);
-        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = result;
+
+        const [perfResult, divResult] = await Promise.allSettled([
+          loadPerfHistory(auth, txs),
+          fetch("/api/dividends", {
+            method: "POST",
+            headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+            body: JSON.stringify({ transactions: txs }),
+          }).then((r) => (r.ok ? r.json() : Promise.reject())),
+        ]);
 
         if (cancelled) return;
+
+        if (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events)) {
+          const events = divResult.value.events;
+          const todayMs = Date.now();
+          const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
+          const map = {};
+          for (const e of events) {
+            if (!e.ticker || !e.date) continue;
+            const t = e.ticker;
+            if (!map[t]) map[t] = { ttm: 0, total: 0 };
+            map[t].total += e.totalReceived;
+            if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
+          }
+          setDivByTicker(map);
+        }
+
+        if (perfResult.status === "rejected") {
+          const err = perfResult.reason;
+          if (err?.code === 401 && onAuthFail) { onAuthFail(); return; }
+          setError(err?.message || "Failed to load performance data");
+          setState("error");
+          return;
+        }
+
+        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = perfResult.value;
 
         setMeta(respMeta || null);
 
@@ -712,8 +763,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (!ticker) continue;
       if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null, lastBuyDate: null, lastBuyNotes: null };
       const pos = positions[ticker];
-      // Asset class comes from the transactions themselves (last non-empty wins),
-      // not from the current holding.
       if (tx.assetClass) pos.assetClass = tx.assetClass;
       const qty = Number(tx.qty) || 0;
       let price = Number(tx.price) || 0;
@@ -742,11 +791,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (pos.noFx) continue;
       const assetClass = pos.assetClass || "Uncategorized";
 
-      // Bank Bonds: calculate accrued value locally; no live price fetch.
+      const divData = divByTicker[ticker] ?? null;
+      const divTtm = divData ? divData.ttm : null;
+      const totalDiv = divData ? divData.total : null;
+
       if (assetClass === "Bank Bonds") {
         const avgCost = pos.totalCost / pos.totalQty;
         const totalCost = avgCost * pos.totalQty;
-        let totalValue = totalCost; // fallback: face value
+        let totalValue = totalCost;
         if (pos.lastBuyNotes && pos.lastBuyDate) {
           const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
           const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
@@ -760,7 +812,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         }
         const totalGainLoss = totalValue - totalCost;
         const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
-        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct });
+        const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
+        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
         continue;
       }
 
@@ -772,10 +825,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const totalValue = currentPrice * pos.totalQty;
       const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
+      const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
+      rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
     }
     return rows;
-  }, [transactions, priceMap]);
+  }, [transactions, priceMap, divByTicker]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
