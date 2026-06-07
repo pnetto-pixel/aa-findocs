@@ -582,6 +582,337 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   );
 }
 
+// ── Year vs Year comparator ───────────────────────────────────────────────────
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function buildYoyData(events) {
+  const curYear = new Date().getFullYear();
+  const priorYear = curYear - 1;
+
+  // Only include events from the two relevant years
+  const relevant = events.filter((e) => {
+    if (!e.date) return false;
+    const y = parseInt(e.date.slice(0, 4), 10);
+    return y === curYear || y === priorYear;
+  });
+
+  const tickerSet = new Set();
+  const monthSet = new Set();
+  // cur[ticker][month] and prior[ticker][month]
+  const cur = {};
+  const prior = {};
+
+  for (const e of relevant) {
+    const y = parseInt(e.date.slice(0, 4), 10);
+    const m = parseInt(e.date.slice(5, 7), 10);
+    const t = e.ticker;
+    tickerSet.add(t);
+    monthSet.add(m);
+    if (y === curYear) {
+      if (!cur[t]) cur[t] = {};
+      cur[t][m] = (cur[t][m] || 0) + e.totalReceived;
+    } else {
+      if (!prior[t]) prior[t] = {};
+      prior[t][m] = (prior[t][m] || 0) + e.totalReceived;
+    }
+  }
+
+  const tickers = [...tickerSet].sort();
+  const months = [...monthSet].sort((a, b) => a - b);
+
+  const rows = tickers.map((ticker) => ({
+    ticker,
+    currentYear: cur[ticker] || {},
+    priorYear: prior[ticker] || {},
+  }));
+
+  return { tickers, months, rows, curYear, priorYear };
+}
+
+function fmtYoyCell(n, hidden) {
+  if (hidden) return "$ ••••";
+  if (n == null || n === 0) return null;
+  // Format: $X.XX or $X,XXX.XX
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function YearVsYearTable({ events, valuesHidden, open, onToggle }) {
+  const yoyData = useMemo(() => buildYoyData(events), [events]);
+  const { months, rows, curYear, priorYear } = yoyData;
+
+  // Compute column totals
+  const colTotals = useMemo(() => {
+    const curTotals = {};
+    const priorTotals = {};
+    for (const row of rows) {
+      for (const m of months) {
+        curTotals[m] = (curTotals[m] || 0) + (row.currentYear[m] || 0);
+        priorTotals[m] = (priorTotals[m] || 0) + (row.priorYear[m] || 0);
+      }
+    }
+    return { curTotals, priorTotals };
+  }, [rows, months]);
+
+  const thBase = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    fontWeight: 500,
+    padding: "8px 10px",
+    borderBottom: `1px solid ${T.border}`,
+    whiteSpace: "nowrap",
+    color: T.textFaint,
+    textAlign: "center",
+  };
+
+  const tdBase = {
+    fontFamily: FONT_MONO,
+    fontSize: 11,
+    padding: "8px 10px",
+    textAlign: "center",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    whiteSpace: "nowrap",
+    verticalAlign: "top",
+  };
+
+  function stickyTickerTh() {
+    return {
+      ...thBase,
+      textAlign: "left",
+      position: "sticky",
+      left: 0,
+      zIndex: 3,
+      background: T.card,
+      width: TICKER_COL_WIDTH,
+      minWidth: TICKER_COL_WIDTH,
+      borderRight: `1px solid ${T.border}`,
+    };
+  }
+
+  function stickyTickerTd(bg) {
+    return {
+      ...tdBase,
+      textAlign: "left",
+      position: "sticky",
+      left: 0,
+      zIndex: 1,
+      background: bg,
+      width: TICKER_COL_WIDTH,
+      minWidth: TICKER_COL_WIDTH,
+      borderRight: `1px solid ${T.border}`,
+      color: T.gold,
+      fontWeight: 600,
+      letterSpacing: "0.06em",
+      fontSize: 12,
+    };
+  }
+
+  function renderMonthCell(curAmt, priorAmt, bg) {
+    const hasCur = curAmt > 0;
+    const hasPrior = priorAmt > 0;
+    const delta = hasCur || hasPrior
+      ? (hasPrior ? ((curAmt - priorAmt) / priorAmt) * 100 : null)
+      : null;
+
+    if (!hasCur && !hasPrior) {
+      return (
+        <td style={{ ...tdBase, background: bg, color: T.textFaint }}>
+          {"-"}
+        </td>
+      );
+    }
+
+    let deltaEl = null;
+    if (hasCur && hasPrior) {
+      const isPos = curAmt > priorAmt;
+      const isNeg = curAmt < priorAmt;
+      const indicator = isPos ? "▲" : isNeg ? "▼" : "";
+      const color = isPos ? T.green : isNeg ? T.red : T.textDim;
+      deltaEl = (
+        <div style={{ fontSize: 9, color, marginTop: 2, letterSpacing: "0.04em" }}>
+          {indicator}{delta != null ? Math.abs(delta).toFixed(0) + "%" : ""}
+        </div>
+      );
+    } else if (hasCur && !hasPrior) {
+      deltaEl = (
+        <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>new</div>
+      );
+    }
+
+    return (
+      <td style={{ ...tdBase, background: bg }}>
+        {hasCur ? (
+          <div style={{ color: T.text, fontWeight: 500 }}>
+            {fmtYoyCell(curAmt, valuesHidden)}
+          </div>
+        ) : (
+          <div style={{ color: T.textFaint }}>{"-"}</div>
+        )}
+        {hasPrior ? (
+          <div style={{ color: T.textDim, fontSize: 10, marginTop: 1 }}>
+            {fmtYoyCell(priorAmt, valuesHidden)}
+          </div>
+        ) : null}
+        {deltaEl}
+      </td>
+    );
+  }
+
+  const summaryTdBase = {
+    ...tdBase,
+    background: T.cardElev,
+    fontWeight: 600,
+    borderTop: `1px solid ${T.border}`,
+    borderBottom: `1px solid ${T.border}`,
+  };
+
+  const subtitle = `${curYear} vs ${priorYear}`;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button onClick={onToggle} style={cardHeaderStyle(open)}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+          <CardTitle icon={<BarChart2 size={14} strokeWidth={2} />}>Year vs Year</CardTitle>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em", marginLeft: 24 }}>
+            {subtitle}
+          </span>
+        </div>
+        <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderTop: "none",
+            borderRadius: "0 0 4px 4px",
+            marginTop: -1,
+            overflow: "hidden",
+          }}
+        >
+          {rows.length === 0 ? (
+            <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
+              No dividend data for {curYear} or {priorYear}.
+            </div>
+          ) : (
+            <>
+              <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <table style={{ width: "100%", minWidth: Math.max(480, 92 + months.length * 100), borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={stickyTickerTh()}>Ticker</th>
+                      {months.map((m) => (
+                        <th key={m} style={{ ...thBase, textAlign: "center" }}>
+                          {MONTH_ABBR[m - 1]}
+                        </th>
+                      ))}
+                    </tr>
+                    <tr>
+                      <td
+                        style={{
+                          ...tdBase,
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 1,
+                          background: T.cardElev,
+                          borderRight: `1px solid ${T.border}`,
+                          borderBottom: `1px solid ${T.border}`,
+                          width: TICKER_COL_WIDTH,
+                          minWidth: TICKER_COL_WIDTH,
+                        }}
+                      />
+                      {months.map((m) => (
+                        <td
+                          key={m}
+                          style={{
+                            ...tdBase,
+                            background: T.cardElev,
+                            borderBottom: `1px solid ${T.border}`,
+                            padding: "4px 10px",
+                          }}
+                        >
+                          <div style={{ color: T.text, fontSize: 10, fontWeight: 600, letterSpacing: "0.06em" }}>
+                            {curYear}
+                          </div>
+                          <div style={{ color: T.textDim, fontSize: 9, marginTop: 1 }}>
+                            {priorYear}
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.ticker}>
+                        <td style={stickyTickerTd(T.card)}>
+                          {row.ticker}
+                        </td>
+                        {months.map((m) =>
+                          renderMonthCell(
+                            row.currentYear[m] || 0,
+                            row.priorYear[m] || 0,
+                            T.card
+                          )
+                        )}
+                      </tr>
+                    ))}
+                    {/* Total row */}
+                    <tr>
+                      <td
+                        style={{
+                          ...summaryTdBase,
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 1,
+                          textAlign: "left",
+                          color: T.text,
+                          letterSpacing: "0.08em",
+                          fontSize: 11,
+                          borderRight: `1px solid ${T.border}`,
+                          width: TICKER_COL_WIDTH,
+                          minWidth: TICKER_COL_WIDTH,
+                        }}
+                      >
+                        TOTAL
+                      </td>
+                      {months.map((m) =>
+                        renderMonthCell(
+                          colTotals.curTotals[m] || 0,
+                          colTotals.priorTotals[m] || 0,
+                          T.cardElev
+                        )
+                      )}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: T.textFaint,
+                  padding: "10px 16px 14px",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Each cell: top = {curYear}, bottom = {priorYear}. Arrow indicates change vs prior year.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Dividend History (audit) table ────────────────────────────────────────────
 
 function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
@@ -684,6 +1015,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(true);
   const [histOpen, setHistOpen] = useState(false);
+  const [yoyOpen, setYoyOpen] = useState(true);
 
   const headers = authHeaders(auth);
 
@@ -1090,6 +1422,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           valuesHidden={valuesHidden}
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
+        />
+      )}
+
+      {/* ── Year vs Year comparator ── */}
+      {state === "done" && (
+        <YearVsYearTable
+          events={events}
+          valuesHidden={valuesHidden}
+          open={yoyOpen}
+          onToggle={() => setYoyOpen((v) => !v)}
         />
       )}
     </div>
