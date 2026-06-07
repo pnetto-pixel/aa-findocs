@@ -242,17 +242,18 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 Elementos principais:
 
 - **Page title:** "Performance" + badge **TEST ONLY** (gold)
-- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close." (correto — Cash e Unallocated são os únicos excluídos)
+- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close. Total Return includes US dividends only (BRA and fixed income excluded)."
 - **Period selector:** botões `1M | 6M | YTD | 1Y | 5Y | MAX`
 - **Toggle:** "Compare vs S&P 500" ↔ "← Net Worth"
 - **Card colapsável "Portfolio Performance & Net Worth"** (PR #38): mesmo padrão visual do card "Rebalance Suggestions" da aba Holdings — botão full-width, label gold, ícone ChevronDown rotativo. Mostra "as of [data]" no header assim que dados carregam.
 - **KPI cards:**
   - **Net Worth** — soma ao vivo de `positionRows` (preços Finnhub live, mesma fonte da Position Performance)
   - **Portfolio {period}** — TWR % do portfólio no período selecionado
+  - **Total Return {period}** — TWR % + dividendos US acumulados no período / valor inicial; só em modo comparação; BRA e fixed income excluídos (PR #68)
   - **S&P 500 {period}** — TWR % do SPY (só em modo comparação)
   - **Alpha** — diferença Portfolio − SPY (só em modo comparação)
 - **Chart title** dinâmico por modo ("Net Worth Growth" / "Portfolio VS S&P 500")
-- **Gráfico (`recharts <LineChart>`):** XAxis com ticks de calendário, tooltip com data completa, Eye Toggle integrado
+- **Gráfico (`recharts <LineChart>`):** XAxis com ticks de calendário, tooltip com data completa, Eye Toggle integrado. Modo comparação: 3 linhas — Portfolio (azul), Total Return (verde `T.green`, PR #68), S&P 500 (laranja)
 - **Eye Toggle:** oculta Net Worth (USD absoluto) e tooltip; percentuais sempre visíveis; eixo Y colapsa 64→16px quando oculto
 - **Fallback de compatibilidade:** `effectiveComparing = comparing || !hasUSD`
 
@@ -260,10 +261,10 @@ Elementos principais:
 
 Card colapsável "Position Performance" (PR #38), mesmo padrão visual. Toggle "Group by class" movido para dentro do corpo do card.
 
-**Colunas (8, todas clicáveis com sort asc/desc):**
+**Colunas (10, todas clicáveis com sort asc/desc):**
 
 ```
-Ticker (sticky) | Avg Cost | Price | Qty | Total Cost | Current Value | Total Gain/Loss | Gain/Loss %
+Ticker (sticky) | Avg Cost | Price | Qty | Total Cost | Current Value | Total Gain/Loss | Gain/Loss % | Div TTM | YoC %
 ```
 
 - Default sort: Current Value desc
@@ -272,6 +273,10 @@ Ticker (sticky) | Avg Cost | Price | Qty | Total Cost | Current Value | Total Ga
 - Ativos BR incluídos via `h.fxRate` (fallback: `h.originalPrice / h.price`)
 - Asset class lida de `tx.assetClass`
 - Eye toggle: mascara valores em $; % sempre visível
+- **Div TTM** (PR #67): dividendos recebidos nos ultimos 365 dias, em USD. Mascarado por `valuesHidden`. Tickers sem dados exibem `--`.
+- **YoC %** (PR #67): yield on cost = Div TTM / Total Cost x 100. Sempre visivel (nao mascarado). Linha TOTAL usa media ponderada: `sum(ttm) / sum(totalCost)`.
+- Dados de dividendos via fetch paralelo de `POST /api/dividends` com `Promise.allSettled` — falha silenciosa, nao quebra a tab.
+- `minWidth` da tabela: 1060px (era 860px antes do PR #67).
 
 ### Cache versioning
 
@@ -355,10 +360,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - `YearVsYearTable` — card colapsavel abaixo do Income History. Tickers como linhas, meses (Jan–Dez) como colunas. Cada celula: valor do ano atual + valor do ano anterior (muted) + delta indicador (tri/tri + %) verde/vermelho. Linha TOTAL no rodape. Scroll horizontal no mobile. Empty state quando sem dados.
 - Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
 
-### Pendente
-
-- **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
-
 -----
 
 ## 🎯 Decisões Técnicas + POR QUÊ
@@ -400,6 +401,13 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
 |**BRA Stocks dividendos = manual (Tab Dividends)**|Sem API gratuita confirmada. Entrada manual no form da Tab Dividends, mesmo padrão de Tesouro/CDB nos Holdings.|
 |**Income model: `totalReceived` direto (Tab Dividends)**|Tesouro IPCA e Bank Bonds pagam cupom cujo valor depende do PU corrigido — mais natural lançar o total recebido do que qty × amountPerUnit.|
+|**`Promise.allSettled` para fetch secundario em Performance (PR #67)**|Dividends fetch e perf-history fetch rodam em paralelo; falha no dividends nao deve derrubar a tab. `allSettled` garante degradacao silenciosa — a tab carrega mesmo sem dados de dividendos.|
+|**YoC% agregado = media ponderada, nao media aritmetica (PR #67)**|`sum(ttm) / sum(totalCost)` e matematicamente correto pois pondera pelo custo de cada posicao. Media aritmetica dos YoC% individuais daria resultado distorcido por posicoes pequenas com alto yield.|
+|**API dividends retorna `totalReceived`, nao `amount` (PR #67)**|Campo relevante para calculo de TTM e para o YoC e `e.totalReceived`. `amountPerShare` e `qtyHeld` ficam disponiveis mas nao sao usados na Performance tab.|
+|**`divEvents` (array bruto) coexiste com `divByTicker` (PR #68)**|`divByTicker` tem totais agregados sem granularidade de data; para `totalReturn` por periodo, precisa de `divEvents` com `date` por evento. Guardar ambos quando o dado bruto tiver uso futuro.|
+|**`undefined` em dataKey recharts para pontos sem dado (PR #68)**|`null` e renderizado como zero; `undefined` faz recharts pular o ponto silenciosamente no grafico e no tooltip. Usar `undefined` em series onde ausencia deve ser invisivel.|
+|**`lastTotalReturn = null` (nao `undefined`) para KPI (PR #68)**|Helpers como `fmt(null)` retornam `"--"` corretamente. Estados que alimentam KPI cards devem ser `null` quando ausentes, nao `undefined`.|
+|**Filtro de periodo em dividendos com string ISO (PR #68)**|`e.date >= startDate && e.date <= d.date` como strings ISO-8601 e order-preserving — valido sem parsear para `Date`.|
 
 -----
 
@@ -438,8 +446,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Tab Dividends item 23: coluna dividendos + yield on cost na Position Performance (Performance tab)
-- Tab Aporte Quinzenal item 28: reconciliacao plano × realizado automatica via Transactions
+- Tab Aporte Quinzenal item 28: reconciliacao plano x realizado automatica via Transactions
 - Tab Events (itens 20–22)
 - Validacao de slug/ticker ao adicionar transacao (deferred)
 
@@ -538,6 +545,9 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Fallback para manual é sempre válido** — quando não há fonte live gratuita, entrada manual em moeda nativa (BRL) + conversão automática é solução pragmática e suficiente para uso pessoal.
 - **Validar API com endpoint de diagnóstico antes de implementar** — probe temporário confirmou: Yahoo `chart?events=div` funciona para US, brapi `dividends=true` é pago (403) para BRA Stocks. Economizou implementar a solução errada.
 - **Ler o componente inteiro antes de codar** (PR #65) — o coder encontrou `buildYoyData` e `YearVsYearTable` quase completamente implementados no arquivo. Leitura previa do arquivo-alvo evita re-implementar logica existente. Padrao a seguir: pure functions fora do componente + `useMemo` por dentro, igual a `buildChartData` / `buildPositionRows`.
+- **`Promise.allSettled` e o padrao correto para fetches secundarios** (PR #67) — quando um fetch adicional nao deve bloquear a UI principal, usar `allSettled` em vez de `all`. Falha silenciosa + exibir `--` nas colunas e melhor UX do que toast de erro ou tab quebrada.
+- **YoC% agregado exige media ponderada** (PR #67) — somar TTM e dividir pelo custo total agregado, nao tirar media dos percentuais individuais. Erro sutil que distorce o indicador em portfolios com posicoes de tamanhos muito diferentes.
+- **Campo da API: `totalReceived`, nao `amount`** (PR #67) — ao integrar com `api/dividends.js`, o campo relevante e `e.totalReceived`. Documentar o shape real da API no CONTEXT evita confusao para futuros integradores.
 
 -----
 
