@@ -6,7 +6,7 @@
 // Position Dividends: per-ticker total, YTD, Y/Y YTD growth, yield on cost.
 // Dividend History: full audit table of every payment.
 
-import { useState, useEffect, useMemo, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { ChevronDown, TrendingUp, BarChart2, Receipt } from "lucide-react";
 import {
   BarChart,
@@ -915,11 +915,118 @@ function YearVsYearTable({ events, valuesHidden, open, onToggle }) {
 
 // ── Dividend History (audit) table ────────────────────────────────────────────
 
-function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
-  const sorted = useMemo(
-    () => [...events].sort((a, b) => b.date.localeCompare(a.date)),
-    [events]
+function DivHistPopover({ anchor, onClose, sortDir, onSort, filterable, options, selected, onChange, dateRange, setDateRange }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [onClose]);
+
+  const rect = anchor?.getBoundingClientRect();
+  const POPOVER_W = 220;
+  const posStyle = rect
+    ? { position: "fixed", top: rect.bottom + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8)), zIndex: 50, width: POPOVER_W }
+    : { display: "none" };
+
+  const secLabel = { fontFamily: FONT_MONO, fontSize: 9, letterSpacing: "0.2em", color: T.textFaint, textTransform: "uppercase", marginBottom: 8 };
+  const inputStyle = { width: "100%", background: T.card, border: `1px solid ${T.border}`, color: T.text, padding: "6px 8px", fontFamily: FONT_MONO, fontSize: 11, marginBottom: 8, boxSizing: "border-box" };
+  const linkBtn = (color) => ({ background: "transparent", border: "none", color, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 });
+
+  function SortBtn({ dir, label }) {
+    const active = sortDir === dir;
+    return (
+      <button onClick={() => onSort(dir)} style={{ flex: 1, background: active ? "rgba(201,169,97,0.12)" : "transparent", border: `1px solid ${active ? T.gold : T.border}`, color: active ? T.gold : T.textDim, padding: "8px 6px", fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer" }}>
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <div ref={ref} style={{ ...posStyle, background: T.cardElev, border: `1px solid ${T.border}`, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: 12, maxHeight: 360, overflowY: "auto" }}>
+      <div style={secLabel}>Sort</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <SortBtn dir="asc" label="↑ Asc" />
+        <SortBtn dir="desc" label="↓ Desc" />
+      </div>
+
+      {filterable && dateRange && (
+        <>
+          <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
+          <div style={secLabel}>Date range</div>
+          <div style={{ marginBottom: 4, fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>From</div>
+          <input type="date" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} style={inputStyle} />
+          <div style={{ marginBottom: 4, fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>To</div>
+          <input type="date" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} style={inputStyle} />
+          <button onClick={() => setDateRange({ from: "", to: "" })} style={{ ...linkBtn(T.textDim), border: `1px solid ${T.border}`, padding: "6px 10px", width: "100%" }}>Clear range</button>
+        </>
+      )}
+
+      {filterable && !dateRange && options && (
+        <>
+          <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
+          <div style={secLabel}>Filter</div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <button onClick={() => onChange(new Set(options))} style={linkBtn(T.gold)}>All</button>
+            <button onClick={() => onChange(new Set())} style={linkBtn(T.textDim)}>None</button>
+          </div>
+          {options.map(opt => (
+            <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer" }}>
+              <input type="checkbox" checked={selected.has(opt)} onChange={() => { const n = new Set(selected); n.has(opt) ? n.delete(opt) : n.add(opt); onChange(n); }} style={{ accentColor: T.gold }} />
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>{opt}</span>
+            </label>
+          ))}
+        </>
+      )}
+    </div>
   );
+}
+
+function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
+  const [openCol, setOpenCol] = useState(null);
+  const [anchor, setAnchor] = useState(null);
+  const [sort, setSort] = useState({ col: "date", dir: "desc" });
+  const [filters, setFilters] = useState({ ticker: new Set(), dateFrom: "", dateTo: "" });
+
+  const allTickers = useMemo(() => [...new Set(events.map(e => e.ticker))].sort(), [events]);
+
+  function isFiltered(col) {
+    if (col === "date") return !!(filters.dateFrom || filters.dateTo);
+    if (col === "ticker") return filters.ticker.size > 0 && filters.ticker.size < allTickers.length;
+    return false;
+  }
+
+  const visible = useMemo(() => {
+    let list = events.filter(e => {
+      if (filters.ticker.size > 0 && !filters.ticker.has(e.ticker)) return false;
+      if (filters.dateFrom && e.date < filters.dateFrom) return false;
+      if (filters.dateTo && e.date > filters.dateTo) return false;
+      return true;
+    });
+    const dir = sort.dir === "asc" ? 1 : -1;
+    list.sort((a, b) => {
+      const key = { date: "date", ticker: "ticker", amountPerShare: "amountPerShare", qtyHeld: "qtyHeld", totalReceived: "totalReceived" }[sort.col] || sort.col;
+      if (key === "amountPerShare" || key === "qtyHeld" || key === "totalReceived") {
+        return ((Number(a[key]) || 0) - (Number(b[key]) || 0)) * dir;
+      }
+      const sa = String(a[key] ?? "");
+      const sb = String(b[key] ?? "");
+      return (sa < sb ? -1 : sa > sb ? 1 : 0) * dir;
+    });
+    return list;
+  }, [events, filters, sort]);
+
+  const totalReceived = useMemo(() => visible.reduce((s, e) => s + (e.totalReceived || 0), 0), [visible]);
+
+  function openPopover(col, e) { setOpenCol(col); setAnchor(e.currentTarget); }
+  function closePopover() { setOpenCol(null); setAnchor(null); }
+  function sortDirFor(col) { return sort.col === col ? sort.dir : col === "date" ? "desc" : "asc"; }
 
   const thBase = {
     fontFamily: FONT_MONO,
@@ -930,7 +1037,11 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
     padding: "8px 12px",
     borderBottom: `1px solid ${T.border}`,
     whiteSpace: "nowrap",
-    color: T.textFaint,
+    cursor: "pointer",
+    userSelect: "none",
+    position: "sticky",
+    top: 0,
+    background: T.card,
   };
   const tdBase = {
     fontFamily: FONT_MONO,
@@ -942,30 +1053,31 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
     whiteSpace: "nowrap",
   };
 
+  function thColor(col) { return (sort.col === col || isFiltered(col)) ? T.gold : T.textFaint; }
+  function thSuffix(col) {
+    if (sort.col === col) return sort.dir === "asc" ? " ↑" : " ↓";
+    if (isFiltered(col)) return " •";
+    return "";
+  }
+
+  const isDateCol = openCol === "date";
+  const isTickerCol = openCol === "ticker";
+
   return (
     <div style={{ marginTop: 16 }}>
       <button onClick={onToggle} style={cardHeaderStyle(open)}>
         <CardTitle icon={<Receipt size={14} strokeWidth={2} />}>Dividend History</CardTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
-            {events.length} payment{events.length === 1 ? "" : "s"}
+            {visible.length !== events.length ? `${visible.length} / ${events.length}` : `${events.length}`} payment{events.length === 1 ? "" : "s"}
           </span>
           <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
         </div>
       </button>
 
       {open && (
-        <div
-          style={{
-            background: T.card,
-            border: `1px solid ${T.borderSoft}`,
-            borderTop: "none",
-            borderRadius: "0 0 4px 4px",
-            marginTop: -1,
-            overflow: "hidden",
-          }}
-        >
-          {sorted.length === 0 ? (
+        <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderTop: "none", borderRadius: "0 0 4px 4px", marginTop: -1, overflow: "hidden" }}>
+          {events.length === 0 ? (
             <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
               No dividend payments recorded yet.
             </div>
@@ -974,15 +1086,23 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
               <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    <th style={{ ...thBase, textAlign: "left", position: "sticky", top: 0, background: T.card }}>Date</th>
-                    <th style={{ ...thBase, textAlign: "left", position: "sticky", top: 0, background: T.card }}>Ticker</th>
-                    <th style={{ ...thBase, position: "sticky", top: 0, background: T.card }}>$/Share</th>
-                    <th style={{ ...thBase, position: "sticky", top: 0, background: T.card }}>Qty</th>
-                    <th style={{ ...thBase, position: "sticky", top: 0, background: T.card }}>Total</th>
+                    <th onClick={e => openPopover("date", e)} style={{ ...thBase, textAlign: "left", color: thColor("date") }}>Date{thSuffix("date")}</th>
+                    <th onClick={e => openPopover("ticker", e)} style={{ ...thBase, textAlign: "left", color: thColor("ticker") }}>Ticker{thSuffix("ticker")}</th>
+                    <th onClick={e => openPopover("amountPerShare", e)} style={{ ...thBase, color: thColor("amountPerShare") }}>$/Share{thSuffix("amountPerShare")}</th>
+                    <th onClick={e => openPopover("qtyHeld", e)} style={{ ...thBase, color: thColor("qtyHeld") }}>Qty{thSuffix("qtyHeld")}</th>
+                    <th onClick={e => openPopover("totalReceived", e)} style={{ ...thBase, color: thColor("totalReceived") }}>Total{thSuffix("totalReceived")}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sorted.map((e, i) => (
+                  {/* TOTAL row — sums only visible (filtered) rows */}
+                  <tr style={{ background: "rgba(201,169,97,0.06)" }}>
+                    <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 700, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase" }}>Total</td>
+                    <td style={{ ...tdBase, textAlign: "left", color: T.textFaint }}>{visible.length} rows</td>
+                    <td style={tdBase}>—</td>
+                    <td style={tdBase}>—</td>
+                    <td style={{ ...tdBase, color: T.green, fontWeight: 700 }}>{fmtUSD(totalReceived, valuesHidden)}</td>
+                  </tr>
+                  {visible.map((e, i) => (
                     <tr key={`${e.ticker}-${e.date}-${i}`}>
                       <td style={{ ...tdBase, textAlign: "left", color: T.textDim }}>{e.date}</td>
                       <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>{e.ticker}</td>
@@ -996,6 +1116,21 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
             </div>
           )}
         </div>
+      )}
+
+      {openCol && (
+        <DivHistPopover
+          anchor={anchor}
+          onClose={closePopover}
+          sortDir={sortDirFor(openCol)}
+          onSort={dir => { setSort({ col: openCol, dir }); closePopover(); }}
+          filterable={isDateCol || isTickerCol}
+          options={isTickerCol ? allTickers : null}
+          selected={isTickerCol ? filters.ticker : new Set()}
+          onChange={next => setFilters(f => ({ ...f, ticker: next }))}
+          dateRange={isDateCol ? { from: filters.dateFrom, to: filters.dateTo } : null}
+          setDateRange={isDateCol ? r => setFilters(f => ({ ...f, dateFrom: r.from, dateTo: r.to })) : undefined}
+        />
       )}
     </div>
   );
