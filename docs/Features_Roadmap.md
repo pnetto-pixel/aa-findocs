@@ -35,6 +35,7 @@
 - **Item 19 (restante) — Comparador Mes Anterior vs Mes Atual** (jun/2026 — PR #64): Bloco "Month vs Month" inserido no topo do card "Income History" em `Dividends.jsx`. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM centralizado (verde/vermelho) e nomes dos meses por extenso. Oculto quando o usuario filtra por ano historico diferente do corrente. Reutiliza `useMemo kpis` existente sem nenhum novo fetch ou mudanca de API.
 - **Item 24 — Comparador Y/Y por mes com diferenca por asset** (jun/2026 — PR #65): `buildYoyData(events)` agrupa eventos de dividendos por ticker e mes para o ano atual vs ano anterior. `YearVsYearTable` — card colapsavel abaixo do Income History com tickers como linhas, meses como colunas; cada celula exibe valor do ano atual + valor do ano anterior (muted) + indicador de delta (tri/tri + %) em verde/vermelho. Linha TOTAL no rodape, scroll horizontal no mobile, mensagem de empty state. Apenas `src/Dividends.jsx` alterado.
 - **Item 23 — Colunas Div TTM + YoC% na Position Performance** (jun/2026 — PR #67): Fetch paralelo de `POST /api/dividends` dentro de `PerformanceView` via `Promise.allSettled` (degradacao silenciosa). Estado `divByTicker` construido a partir de `e.totalReceived`, filtrando TTM por ultimos 365 dias. Duas novas colunas na `PositionPerformanceTable`: `Div TTM` (USD, sujeito a `valuesHidden`) e `YoC %` (TTM / totalCost x 100, sempre visivel). Tickers sem dados exibem `--`. `aggFromRows` atualizado: `divTtmSum` somado, `yoc` agregado como media ponderada (`sum(ttm) / sum(totalCost)`). `minWidth` da tabela bumpeado de 860px para 1060px. Apenas `src/Performance.jsx` alterado.
+- **Item 8 — Total Return chart** (jun/2026 — PR #68): Terceira linha "Total Return" (cor `T.green`) no grafico de comparacao; KPI card "Total Return {period}" entre Portfolio e S&P 500; estado `divEvents` com array bruto de eventos; `totalReturn = portfolio[d] + (cumulativeDivsUSD / initialPortfolioUSD) x 100` acumulando apenas dividendos dentro do periodo selecionado; `undefined` (nao `null`) em pontos sem dado para recharts pular silenciosamente; degradacao silenciosa se fetch falhar; apenas US dividends cobertos (BRA e fixed income excluidos); apenas `src/Performance.jsx` alterado.
 
 ---
 
@@ -42,9 +43,6 @@
 
 ### Roadmap — Validacao de tickers
 - **Novo item**: Validacao de slug/ticker ao adicionar transacao — lookup na API antes de salvar, para evitar typos em tickers `tesouro-*` e outros ativos live. ⚠️ *Deferred — adicionar quando Tab Events for implementada*
-
-### Tab Performance
-- **Item 8**: Grafico adicional: retorno total incluindo dividendos recebidos (TWR + dividendos)
 
 ### Tab Aporte Quinzenal
 - **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliacao plano × realizado)

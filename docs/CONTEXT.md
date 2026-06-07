@@ -242,17 +242,18 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 Elementos principais:
 
 - **Page title:** "Performance" + badge **TEST ONLY** (gold)
-- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close." (correto — Cash e Unallocated são os únicos excluídos)
+- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close. Total Return includes US dividends only (BRA and fixed income excluded)."
 - **Period selector:** botões `1M | 6M | YTD | 1Y | 5Y | MAX`
 - **Toggle:** "Compare vs S&P 500" ↔ "← Net Worth"
 - **Card colapsável "Portfolio Performance & Net Worth"** (PR #38): mesmo padrão visual do card "Rebalance Suggestions" da aba Holdings — botão full-width, label gold, ícone ChevronDown rotativo. Mostra "as of [data]" no header assim que dados carregam.
 - **KPI cards:**
   - **Net Worth** — soma ao vivo de `positionRows` (preços Finnhub live, mesma fonte da Position Performance)
   - **Portfolio {period}** — TWR % do portfólio no período selecionado
+  - **Total Return {period}** — TWR % + dividendos US acumulados no período / valor inicial; só em modo comparação; BRA e fixed income excluídos (PR #68)
   - **S&P 500 {period}** — TWR % do SPY (só em modo comparação)
   - **Alpha** — diferença Portfolio − SPY (só em modo comparação)
 - **Chart title** dinâmico por modo ("Net Worth Growth" / "Portfolio VS S&P 500")
-- **Gráfico (`recharts <LineChart>`):** XAxis com ticks de calendário, tooltip com data completa, Eye Toggle integrado
+- **Gráfico (`recharts <LineChart>`):** XAxis com ticks de calendário, tooltip com data completa, Eye Toggle integrado. Modo comparação: 3 linhas — Portfolio (azul), Total Return (verde `T.green`, PR #68), S&P 500 (laranja)
 - **Eye Toggle:** oculta Net Worth (USD absoluto) e tooltip; percentuais sempre visíveis; eixo Y colapsa 64→16px quando oculto
 - **Fallback de compatibilidade:** `effectiveComparing = comparing || !hasUSD`
 
@@ -403,6 +404,10 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`Promise.allSettled` para fetch secundario em Performance (PR #67)**|Dividends fetch e perf-history fetch rodam em paralelo; falha no dividends nao deve derrubar a tab. `allSettled` garante degradacao silenciosa — a tab carrega mesmo sem dados de dividendos.|
 |**YoC% agregado = media ponderada, nao media aritmetica (PR #67)**|`sum(ttm) / sum(totalCost)` e matematicamente correto pois pondera pelo custo de cada posicao. Media aritmetica dos YoC% individuais daria resultado distorcido por posicoes pequenas com alto yield.|
 |**API dividends retorna `totalReceived`, nao `amount` (PR #67)**|Campo relevante para calculo de TTM e para o YoC e `e.totalReceived`. `amountPerShare` e `qtyHeld` ficam disponiveis mas nao sao usados na Performance tab.|
+|**`divEvents` (array bruto) coexiste com `divByTicker` (PR #68)**|`divByTicker` tem totais agregados sem granularidade de data; para `totalReturn` por periodo, precisa de `divEvents` com `date` por evento. Guardar ambos quando o dado bruto tiver uso futuro.|
+|**`undefined` em dataKey recharts para pontos sem dado (PR #68)**|`null` e renderizado como zero; `undefined` faz recharts pular o ponto silenciosamente no grafico e no tooltip. Usar `undefined` em series onde ausencia deve ser invisivel.|
+|**`lastTotalReturn = null` (nao `undefined`) para KPI (PR #68)**|Helpers como `fmt(null)` retornam `"--"` corretamente. Estados que alimentam KPI cards devem ser `null` quando ausentes, nao `undefined`.|
+|**Filtro de periodo em dividendos com string ISO (PR #68)**|`e.date >= startDate && e.date <= d.date` como strings ISO-8601 e order-preserving — valido sem parsear para `Date`.|
 
 -----
 
@@ -443,7 +448,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 **Proximas sessions:**
 - Tab Aporte Quinzenal item 28: reconciliacao plano x realizado automatica via Transactions
 - Tab Events (itens 20–22)
-- Item 8: grafico adicional de retorno total incluindo dividendos recebidos (TWR + dividendos)
 - Validacao de slug/ticker ao adicionar transacao (deferred)
 
 **Deferred indefinidamente:**
