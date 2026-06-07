@@ -349,9 +349,14 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 - **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
 
-### Pendente (Chunk 2)
+### Year vs Year Table (PR #65 — jun/2026)
 
-- **Item 24**: comparador y/y por mes com diferenca por asset
+- `buildYoyData(events)` — funcao pura fora do componente, chamada via `useMemo`. Agrupa eventos por ticker e mes para o ano corrente vs ano anterior.
+- `YearVsYearTable` — card colapsavel abaixo do Income History. Tickers como linhas, meses (Jan–Dez) como colunas. Cada celula: valor do ano atual + valor do ano anterior (muted) + delta indicador (tri/tri + %) verde/vermelho. Linha TOTAL no rodape. Scroll horizontal no mobile. Empty state quando sem dados.
+- Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
+
+### Pendente
+
 - **Item 23** (Performance tab): coluna de dividendos + yield on cost na Position Performance
 
 -----
@@ -433,7 +438,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Tab Dividends chunk 2: comparador y/y por mes com diferenca por asset (item 24)
 - Tab Dividends item 23: coluna dividendos + yield on cost na Position Performance (Performance tab)
 - Tab Aporte Quinzenal item 28: reconciliacao plano × realizado automatica via Transactions
 - Tab Events (itens 20–22)
@@ -533,6 +537,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Tesouro Direto: validar fonte antes de implementar** (PR #41–#50) — Brapi `/treasury` é pago (403); endpoints oficiais descontinuados; CKAN desativado. Sempre checar disponibilidade real da API antes de desenhar a solução.
 - **Fallback para manual é sempre válido** — quando não há fonte live gratuita, entrada manual em moeda nativa (BRL) + conversão automática é solução pragmática e suficiente para uso pessoal.
 - **Validar API com endpoint de diagnóstico antes de implementar** — probe temporário confirmou: Yahoo `chart?events=div` funciona para US, brapi `dividends=true` é pago (403) para BRA Stocks. Economizou implementar a solução errada.
+- **Ler o componente inteiro antes de codar** (PR #65) — o coder encontrou `buildYoyData` e `YearVsYearTable` quase completamente implementados no arquivo. Leitura previa do arquivo-alvo evita re-implementar logica existente. Padrao a seguir: pure functions fora do componente + `useMemo` por dentro, igual a `buildChartData` / `buildPositionRows`.
 
 -----
 
