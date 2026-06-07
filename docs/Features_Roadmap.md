@@ -47,6 +47,9 @@
 ### Tab Aporte Quinzenal
 - **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliacao plano × realizado)
 
+### Tab Dividends — Redesign Year vs Year
+- **Item 29** ⚠️ *Design pendente — debater antes de codar*: O card `YearVsYearTable` (tickers × meses, comparando ano atual vs anterior) está visualmente feio e difícil de ler. Precisa ser repensado antes de implementar. Perguntas em aberto: qual granularidade mostrar (mensal como hoje, ou trimestral?), como representar ausência de pagamento vs zero, se manter tabela ou migrar para outro formato (ex: heatmap, cards por ticker). **Não implementar sem alinhar o design primeiro.**
+
 ### Tab Events (nova)
 - **Item 20**: Calendario de ex-div, earnings e special events (split, grouping, payout)
 - **Item 21**: Exibir ultimo mes + proximos 3 meses, em ordem cronologica
