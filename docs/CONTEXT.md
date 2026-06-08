@@ -198,8 +198,12 @@ Modal `ImportModal` com 2 tabs:
   - **Datas MDY** (americano) — override do default DMY
   - Todas as transações entram como USD + assetClass via `inferAssetClass()`
 
+**Import inteligente (item 34):**
+- **Reuso de classe conhecida:** `parseRow` e `parseFidelityCSV` recebem `knownClassByTicker` (Map ticker→assetClass das transações salvas). Prioridade de classe: coluna explícita → histórico → `inferAssetClass()` → manual. Flag `classFromHistory` + chip "N class reused".
+- **Detecção de duplicata:** `dupKey(tx)` = `ticker|side|qty|date`; linhas que batem com transações salvas ganham `r.duplicate = true`, vêm **desmarcadas por default**, fundo vermelho + label "Duplicate". `r.ok` continua true — usuário pode re-marcar pra forçar import. Chip "N duplicate".
+
 **Preview editável:**
-- Checkbox por linha no preview — todas marcadas por default
+- Checkbox por linha no preview — todas marcadas por default (exceto duplicatas)
 - Header checkbox = select/deselect all
 - **Double-click numa linha** → inline edit. Enter salva, Esc cancela.
 - Botão de import mostra `Import X of Y rows`
@@ -411,6 +415,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Dividend History: sort + filter por header + TOTAL row (PR #71, item 30)**|Mesmo padrão de HeaderPopover da tab Transactions (DivHistPopover local). Filtros: Date (date range), Ticker (checkboxes). Outras colunas: sort only. TOTAL row fixa no topo, soma só linhas visíveis pós-filtragem. Contador no header muda pra "X / Y payments" quando filtrado.|
 |**Dividendos bucket por pay date via Polygon.io (PR #73)**|Yahoo `chart?events=div` retorna só a ex-dividend date — cash landing usa pay date. `api.nasdaq.com` tentado e rejeitado: Akamai bloqueia IPs de datacenter do Vercel (403). Polygon.io (`v3/reference/dividends`) é API de servidor (keyed, funciona da cloud). qtyHeld continua calculado na ex-date (entitlement correto). Rate limit (5/min free tier) resolvido com cache permanente por ticker no Redis (chave global, imutável, TTL 7 dias), warm de 5 tickers frios por request. Cache resultado por-usuário só persiste quando todos os tickers estão warm.|
 |**`api.nasdaq.com` bloqueado do Vercel (Akamai)**|Mesmo com User-Agent de browser, IPs de datacenter (AWS/Vercel) são identificados e bloqueados com 403. Confirmar reachability de qualquer nova API antes de implementar a partir de IPs cloud.|
+|**Import: classe do histórico tem prioridade sobre `inferAssetClass()` (item 34)**|A classe que o usuário já registrou para um ticker é fonte de verdade mais confiável que a heurística genérica. Coluna explícita do CSV ainda vence (o usuário a digitou agora). Evita conflito de classe para o mesmo ticker entre imports.|
+|**Dedupe não bloqueia, só desmarca (item 34)**|Duplicata mantém `r.ok = true` e só vem desmarcada — usuário pode forçar (ex.: dois buys legítimos idênticos no mesmo dia). Marcar `ok: false` impediria o import mesmo com o checkbox marcado.|
 
 -----
 
