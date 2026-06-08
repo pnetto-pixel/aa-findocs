@@ -1104,7 +1104,7 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                   </tr>
                   {visible.map((e, i) => (
                     <tr key={`${e.ticker}-${e.date}-${i}`}>
-                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }}>{e.date}</td>
+                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.exDate ? `Ex-date: ${e.exDate}${e.payDate ? "" : " (pay date n/a — showing ex-date)"}` : undefined}>{e.date}</td>
                       <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>{e.ticker}</td>
                       <td style={tdBase}>{fmtPerShare(e.amountPerShare, valuesHidden)}</td>
                       <td style={tdBase}>{fmtQty(e.qtyHeld)}</td>
@@ -1531,7 +1531,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 )}
 
                 <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                  US dividends only, fetched from Yahoo Finance. Updated daily after US market close.
+                  US dividends only (Yahoo Finance amounts + Polygon.io pay dates). Bucketed by pay date; falls back to ex-date when the pay date is unavailable. Updated daily after US market close.
                 </div>
               </>
             )}
