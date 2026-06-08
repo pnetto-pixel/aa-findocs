@@ -352,8 +352,8 @@ function aggFromRows(rows) {
 }
 
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
-  const [sortCol, setSortCol] = useState("totalValue");
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortCol, setSortCol] = useState("ticker");
+  const [sortDir, setSortDir] = useState("asc");
   const [grouped, setGrouped] = useState(false);
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
 
@@ -661,7 +661,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [divByTicker, setDivByTicker] = useState({});
   const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
-  const [posTableOpen, setPosTableOpen] = useState(true);
+  const [posTableOpen, setPosTableOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
