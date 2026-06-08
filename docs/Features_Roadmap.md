@@ -67,3 +67,17 @@
 - **Item 20**: Calendario de ex-div, earnings e special events (split, grouping, payout)
 - **Item 21**: Exibir ultimo mes + proximos 3 meses, em ordem cronologica
 - **Item 22**: Filtro por tipo de evento
+
+### US Bank Bonds — Dividends e automação
+
+- **Item 36** 🧠 *Hard thinking — Opus recomendado*: **Calcular dividends / interest payment de US Bank Bonds.** CDs e bonds pagam cupom/juros periodicamente, mas não há API gratuita com histórico de pagamentos por CUSIP. Perguntas em aberto: qual fonte de dados usar (Fidelity CSV de histórico? entrada manual de eventos de cupom?), como modelar o income type (`interest` vs `dividend`), se entra no mesmo `api/dividends.js` ou endpoint separado, e como integrar com os KPIs de Income History e Total Return no Performance. **Não implementar sem alinhar a fonte de dados e o modelo primeiro.**
+
+- **Item 37** 🧠 *Hard thinking — Opus recomendado*: **Agrupar transações de Bank Bonds no holding manual "US Bank Bonds" em Holdings.** Hoje os Bank Bonds são holdings manuais com valor editado à mão. O objetivo é derivar o valor do holding automaticamente a partir do saldo líquido de transações (buys/sells por CUSIP), similar à proposta dos itens 32–33 para live assets. Pré-requisitos: definir como agregar múltiplos CUSIPs num único holding, tratar vencimentos (maturidade = sell automático?), e lidar com valor de face vs valor de mercado. **Debater modelo antes de codar.**
+
+### Automação de Download Fidelity
+
+- **Item 38** 🧠 *Hard thinking — Opus recomendado*: **Automatizar download das transações da Fidelity.** Hoje o fluxo é manual: exportar CSV no site da Fidelity → importar via Import Modal. Caminhos possíveis: (a) Fidelity API oficial (existe mas exige OAuth + aprovação de developer account), (b) scraping autenticado via Playwright/Puppeteer em Vercel (complexidade alta, fragilidade), (c) email forwarding do extrato da Fidelity com parsing server-side (viável? ver item rejeitado de email parsing). Confirmar reachability e termos de uso antes de qualquer implementação. **Alta complexidade — mapear opções e riscos antes de codar.**
+
+### Tab Dividends — Correção de qty na ex-date
+
+- **Item 39**: **Ajustar histórico de dividendos para só considerar pay date se houver quantidade na ex-date.** Atualmente `qtyHeld` é calculado na ex-date (correto para entitlement), mas o evento é bucketado na pay date via Polygon. O bug potencial: se o usuário vendeu o ativo entre a ex-date e a pay date, o evento aparece na pay date mas com qty já zerada no portfólio — pode causar confusão visual. Solução: manter o filtro `qtyHeld > 0` na ex-date (já implementado em `api/dividends.js`), mas garantir que eventos com `qtyHeld = 0` na ex-date sejam descartados mesmo que a pay date caia dentro do período filtrado. Validar se esse caso já está coberto ou se há gap.
