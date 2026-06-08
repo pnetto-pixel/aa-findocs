@@ -1716,6 +1716,52 @@ function TransactionTable({
             })
           )}
         </tbody>
+        {(() => {
+          if (visible.length === 0) return null;
+          let netQty = 0;
+          for (const tx of visible) {
+            const q = Number(tx.qty) || 0;
+            netQty += tx.side === "sell" ? -q : q;
+          }
+          const netColor = netQty < 0 ? T.red : T.green;
+          const netStr = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(netQty);
+          return (
+            <tfoot>
+              <tr style={{ borderTop: `1px solid ${T.border}` }}>
+                <td />
+                <td />
+                <td />
+                <td />
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 9,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    color: T.textFaint,
+                  }}
+                >
+                  NET QTY
+                </td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: netColor,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {netStr}
+                </td>
+                <td colSpan={4} />
+              </tr>
+            </tfoot>
+          );
+        })()}
       </table>
 
       {openCol && (() => {
@@ -1787,10 +1833,11 @@ function isValidYMD(y, m, d) {
   );
 }
 
-function parseDate(raw) {
+// fmt: "dmy" (default, BR) | "mdy" (US/Excel MM/DD/YYYY)
+function parseDate(raw, fmt = "dmy") {
   if (!raw) return { value: null, error: "missing" };
   const s = String(raw).trim();
-  // ISO YYYY-MM-DD or YYYY/MM/DD
+  // ISO YYYY-MM-DD or YYYY/MM/DD — unambiguous, ignore fmt
   let m = s.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
   if (m) {
     const [, y, mo, d] = m;
@@ -1799,17 +1846,23 @@ function parseDate(raw) {
     if (!isValidYMD(y, mm, dd)) return { value: null, error: "bad date" };
     return { value: `${y}-${mm}-${dd}`, error: null };
   }
-  // DD/MM/YYYY or DD-MM-YYYY (BR default for ambiguous)
+  // Two-digit / slash date: DD/MM/YYYY (dmy) or MM/DD/YYYY (mdy)
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (m) {
-    let [, d, mo, y] = m;
+    let [, a, b, y] = m;
     if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    let d, mo;
+    if (fmt === "mdy") {
+      mo = a; d = b;
+    } else {
+      d = a; mo = b;
+      // Auto-swap when month part > 12 but day part ≤ 12 (unambiguous MDY).
+      if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
+        [d, mo] = [mo, d];
+      }
+    }
     d = d.padStart(2, "0");
     mo = mo.padStart(2, "0");
-    // If month > 12 but day <= 12, swap (it was MDY).
-    if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
-      [d, mo] = [mo, d];
-    }
     if (!isValidYMD(y, mo, d)) return { value: null, error: "bad date" };
     return { value: `${y}-${mo}-${d}`, error: null };
   }
@@ -1895,7 +1948,7 @@ function dupKey(tx) {
 
 // knownClassByTicker (optional Map ticker→assetClass): when a ticker already
 // exists in saved transactions, reuse its asset class instead of inferring one.
-function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
+function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   const errors = [];
   const rawNumbers = {
     qty: row.qty,
@@ -1903,7 +1956,7 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
     fee: row.fee,
   };
 
-  const d = parseDate(row.date);
+  const d = parseDate(row.date, opts.dateFormat || "dmy");
   if (d.error) errors.push(`date: ${d.error}`);
 
   const sd = parseSide(row.side);
@@ -1982,7 +2035,7 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
 }
 
 // Re-parse rows treating comma as decimal in numeric fields.
-function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null) {
+function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   return rows.map((row) => {
     const patched = {
       ...row,
@@ -1993,7 +2046,7 @@ function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTick
           ? row.fee
           : parseNumberCommaDecimal(row.fee),
     };
-    return parseRow(patched, defaultCurrency, knownClassByTicker);
+    return parseRow(patched, defaultCurrency, knownClassByTicker, opts);
   });
 }
 
@@ -2322,6 +2375,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
   const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
+  const [dateFormat, setDateFormat] = useState("dmy"); // dmy | mdy
   const [fileError, setFileError] = useState("");
   const [checkedRows, setCheckedRows] = useState(new Set());
   const [editingIdx, setEditingIdx] = useState(null);
@@ -2370,6 +2424,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setDecimalPrompt(false);
       setStructuralPrompt(false);
       setMode("append");
+      setDateFormat("dmy");
       setFileError("");
       setTab("upload");
       setCheckedRows(new Set());
@@ -2377,6 +2432,8 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setEditDraft(null);
     }
   }, [open]);
+
+  const parseOpts = () => ({ dateFormat });
 
   function doParse(rawText) {
     const out = parseCSVOrPaste(rawText);
@@ -2387,8 +2444,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     }
     // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
     if (out.structuralBreak && out.delimiter === ",") {
-      // Hold the parse result; show prompt offering BR auto-fix.
-      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
+      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
       setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
       initAllChecked(results);
       setEditingIdx(null);
@@ -2398,7 +2454,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setFileError("");
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
     initAllChecked(results);
@@ -2413,14 +2469,13 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     if (!parsed) return;
     setStructuralPrompt(false);
     if (!yes) return;
-    // Re-run parse with positional auto-fix enabled.
     const out = parseCSVOrPaste(parsed.sourceText, { autoFixBR: true });
     if (out.rows.length === 0) {
       setFileError("Reparse produced no rows");
       setParsed(null);
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({
       results,
@@ -2442,7 +2497,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     if (!parsed) return;
     if (useComma) {
       const next = annotateDuplicates(
-        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker)
+        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker, parseOpts())
       );
       setParsed({ ...parsed, results: next });
     }
@@ -2829,6 +2884,29 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
               {tab === "upload" && (
                 <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+                      Date format
+                    </span>
+                    {[{ v: "dmy", label: "DD/MM/YYYY" }, { v: "mdy", label: "MM/DD/YYYY (US/Excel)" }].map(({ v, label }) => (
+                      <button
+                        key={v}
+                        onClick={() => setDateFormat(v)}
+                        style={{
+                          background: dateFormat === v ? "rgba(201, 169, 97, 0.12)" : "transparent",
+                          border: `1px solid ${dateFormat === v ? T.gold : T.border}`,
+                          color: dateFormat === v ? T.gold : T.textDim,
+                          padding: "5px 10px",
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          letterSpacing: "0.1em",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                   <Label>Select a CSV file</Label>
                   <input
                     ref={fileInputRef}
