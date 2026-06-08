@@ -356,12 +356,15 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
   - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
-- **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical.
+- **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical. Quarto card — apos "Dividends Monthly Y/Y".
 
-### Year vs Year Table (PR #65 — jun/2026)
+### Dividends Monthly Y/Y (ex-"Year vs Year Table", itens 29/41/42/43 — jun/2026)
 
 - `buildYoyData(events)` — funcao pura fora do componente, chamada via `useMemo`. Agrupa eventos por ticker e mes para o ano corrente vs ano anterior.
-- `YearVsYearTable` — card colapsavel abaixo do Income History. Tickers como linhas, meses (Jan–Dez) como colunas. Cada celula: valor do ano atual + valor do ano anterior (muted) + delta indicador (tri/tri + %) verde/vermelho. Linha TOTAL no rodape. Scroll horizontal no mobile. Empty state quando sem dados.
+- **Card "Dividends Monthly Y/Y"** (renomeado de "Year vs Year"): colapsavel, posicionado na ordem (1) Income History, (2) Position Dividends, (3) Dividends Monthly Y/Y, (4) Dividend History.
+- **Month selector:** dropdown com todos os meses com dados (CY ou PY). Default = mes corrente (`new Date().getMonth() + 1`) se presente nos dados; caso contrario, ultimo mes com dados.
+- **Tabela:** linhas = assets, colunas = PY (muted) · CY · Delta $ · Delta %. Linha TOTAL fixa no topo. Scroll horizontal no mobile. Empty state por mes.
+- **Group by Asset Class colapsavel (item 43):** state `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class" — todos os grupos fechados, mostrando so a linha de subtotal do grupo. Ao expandir, exibe tickers individuais da classe. Toggle "By Ticker" retorna para view flat. Mesmo padrao visual do Position Performance.
 - Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
 
 -----
