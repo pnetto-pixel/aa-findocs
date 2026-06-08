@@ -408,13 +408,16 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`undefined` em dataKey recharts para pontos sem dado (PR #68)**|`null` e renderizado como zero; `undefined` faz recharts pular o ponto silenciosamente no grafico e no tooltip. Usar `undefined` em series onde ausencia deve ser invisivel.|
 |**`lastTotalReturn = null` (nao `undefined`) para KPI (PR #68)**|Helpers como `fmt(null)` retornam `"--"` corretamente. Estados que alimentam KPI cards devem ser `null` quando ausentes, nao `undefined`.|
 |**Filtro de periodo em dividendos com string ISO (PR #68)**|`e.date >= startDate && e.date <= d.date` como strings ISO-8601 e order-preserving — valido sem parsear para `Date`.|
+|**Dividend History: sort + filter por header + TOTAL row (PR #71, item 30)**|Mesmo padrão de HeaderPopover da tab Transactions (DivHistPopover local). Filtros: Date (date range), Ticker (checkboxes). Outras colunas: sort only. TOTAL row fixa no topo, soma só linhas visíveis pós-filtragem. Contador no header muda pra "X / Y payments" quando filtrado.|
+|**Dividendos bucket por pay date via Polygon.io (PR #73)**|Yahoo `chart?events=div` retorna só a ex-dividend date — cash landing usa pay date. `api.nasdaq.com` tentado e rejeitado: Akamai bloqueia IPs de datacenter do Vercel (403). Polygon.io (`v3/reference/dividends`) é API de servidor (keyed, funciona da cloud). qtyHeld continua calculado na ex-date (entitlement correto). Rate limit (5/min free tier) resolvido com cache permanente por ticker no Redis (chave global, imutável, TTL 7 dias), warm de 5 tickers frios por request. Cache resultado por-usuário só persiste quando todos os tickers estão warm.|
+|**`api.nasdaq.com` bloqueado do Vercel (Akamai)**|Mesmo com User-Agent de browser, IPs de datacenter (AWS/Vercel) são identificados e bloqueados com 403. Confirmar reachability de qualquer nova API antes de implementar a partir de IPs cloud.|
 
 -----
 
 ## 🌐 Estado Externo (precisa validação periódica)
 
 - **Google App:** ✅ **Publicado** (saiu do modo Testing — confirmado em 21/mai/2026)
-- **Env vars no Vercel:** ⚠️ **Verificação pendente.** Lista esperada: `APP_PASSWORD`, `FINNHUB_API_KEY`, `BRAPI_API_KEY`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `ADMIN_EMAILS`, `VITE_ADMIN_EMAILS`.
+- **Env vars no Vercel:** ⚠️ **Verificação pendente.** Lista esperada: `APP_PASSWORD`, `FINNHUB_API_KEY`, `BRAPI_API_KEY`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `ADMIN_EMAILS`, `VITE_ADMIN_EMAILS`, `POLYGON_API_KEY`.
 - **Admin atual:** `pnetto@gmail.com`
 - **Usuários ativos:** Pedro + 1 amigo
 
@@ -548,6 +551,10 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **`Promise.allSettled` e o padrao correto para fetches secundarios** (PR #67) — quando um fetch adicional nao deve bloquear a UI principal, usar `allSettled` em vez de `all`. Falha silenciosa + exibir `--` nas colunas e melhor UX do que toast de erro ou tab quebrada.
 - **YoC% agregado exige media ponderada** (PR #67) — somar TTM e dividir pelo custo total agregado, nao tirar media dos percentuais individuais. Erro sutil que distorce o indicador em portfolios com posicoes de tamanhos muito diferentes.
 - **Campo da API: `totalReceived`, nao `amount`** (PR #67) — ao integrar com `api/dividends.js`, o campo relevante e `e.totalReceived`. Documentar o shape real da API no CONTEXT evita confusao para futuros integradores.
+- **Ex-date ≠ pay date — sempre usar pay date para bucketing** (PR #73) — Yahoo retorna só ex-date; cash landing é na pay date. Bucket por ex-date desalinha Income History / Y/Y / Total Return com o extrato da corretora.
+- **Confirmar reachability de API nova a partir de IPs de datacenter antes de implementar** (PR #73) — `api.nasdaq.com` dá 403 do Vercel (Akamai bloqueia datacenters). APIs keyless/scrape-like são suspeitas de bloqueio; APIs de servidor com key (Polygon, Finnhub, etc.) funcionam.
+- **PR base errada → commit órfão** — PR #72 foi baseado na branch do PR #71. Quando #71 foi mergeado, #72 ficou órfão e nunca chegou ao main. Sempre basear PRs de fix em `main`, não em outra feature branch.
+- **Cache por taxa/datas imutáveis = global, não por usuário** — pay dates da Polygon são fatos públicos. Cache com chave `dividends:paydates:v1:{ticker}` (sem storageKey do usuário) é warm uma única vez por ticker para todos os usuários.
 
 -----
 

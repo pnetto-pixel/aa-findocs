@@ -1531,7 +1531,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 )}
 
                 <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                  US dividends only (Yahoo Finance amounts + Nasdaq pay dates). Bucketed by pay date; falls back to ex-date when the pay date is unavailable. Updated daily after US market close.
+                  US dividends only (Yahoo Finance amounts + Polygon.io pay dates). Bucketed by pay date; falls back to ex-date when the pay date is unavailable. Updated daily after US market close.
                 </div>
               </>
             )}
