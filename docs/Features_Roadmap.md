@@ -77,6 +77,18 @@
 
 - **Item 38** 🧠 *Hard thinking — Opus recomendado*: **Automatizar download das transações da Fidelity.** Hoje o fluxo é manual: exportar CSV no site da Fidelity → importar via Import Modal. Caminhos possíveis: (a) Fidelity API oficial (existe mas exige OAuth + aprovação de developer account), (b) scraping autenticado via Playwright/Puppeteer em Vercel (complexidade alta, fragilidade), (c) email forwarding do extrato da Fidelity com parsing server-side (viável? ver item rejeitado de email parsing). Confirmar reachability e termos de uso antes de qualquer implementação. **Alta complexidade — mapear opções e riscos antes de codar.**
 
+### Tab Transactions — Import Fidelity
+
+- **Item 40**: **Correção de preço de US Bank Bonds no parser Fidelity.** O Accounts History CSV da Fidelity registra preço de CDs/bonds como valor decimal (ex: `1.00` = 100% de face value), mas o `parseFidelityCSV` importa esse valor diretamente como `price = 1.00` em vez de converter para o valor real em USD (ex: $1.000,00 para um CD de $1.000). Regra: quando `assetClass === "Bank Bonds"`, multiplicar o preço lido por 10 (fator de conversão da notação Fidelity para USD real). Validar com um exemplo concreto do CSV antes de implementar — confirmar se o fator é sempre 10 ou depende do valor de face do ativo.
+
+### Tab Dividends — Layout e UX
+
+- **Item 41**: **Reordenar cards em Dividends.jsx** — mover o card "Dividends Monthly Y/Y" para acima do "Dividend History" e abaixo de "Position Dividends". Ordem desejada: (1) Income History, (2) Position Dividends, (3) Dividends Monthly Y/Y, (4) Dividend History. Mudança de layout puro, sem alteração de lógica.
+
+- **Item 42**: **Default do month selector em "Dividends Monthly Y/Y" = mês corrente.** Hoje o default é o mês mais recente com dados, que pode ser um mês passado. Trocar para: se o mês corrente (`new Date().getMonth()` + `getFullYear()`) estiver presente nas opções, selecioná-lo por padrão; caso contrário, manter o comportamento atual (mês mais recente com dados). Apenas `src/Dividends.jsx`.
+
+- **Item 43**: **Group by Asset Class em "Dividends Monthly Y/Y" com grupos colapsáveis (mesmo padrão do Position Performance).** Hoje o toggle "By Asset Class" agrega tudo numa tabela flat. Objetivo: quando "By Asset Class" estiver ativo, agrupar as linhas por asset class com um chevron por grupo — igual ao comportamento do card "Position Performance" em `Performance.jsx`. Diferença: default collapsed (todos os grupos fechados ao mudar para "By Asset Class"). Ao expandir um grupo, mostra os tickers individuais daquela classe. Linha TOTAL de cada grupo visível mesmo colapsado.
+
 ### Tab Dividends — Correção de qty na ex-date
 
 - **Item 39**: **Garantir que `qtyHeld` seja sempre calculado na ex-date, não na pay date.** Dois cenários a validar: **(1) Venda entre ex-date e pay-date** — usuário tinha ações na ex-date (tem direito ao dividendo), vendeu antes da pay-date; `qtyHeld` deve refletir a posição na ex-date, não zero. **(2) Compra entre ex-date e pay-date** — usuário comprou ações após a ex-date; essas ações NÃO têm direito ao dividendo; `qtyHeld` deve excluir as qty compradas nesse intervalo. Em ambos os casos, a qty correta é a posição líquida de buys/sells **até e incluindo a ex-date** (exclusive das transações posteriores). Validar se `api/dividends.js` já usa esse critério corretamente ou se há gap nos dois cenários.
