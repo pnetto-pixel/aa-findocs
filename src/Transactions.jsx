@@ -1887,7 +1887,15 @@ function parseNumberCommaDecimal(raw) {
 
 // Parse a single row (object from PapaParse OR from paste-detected schema).
 // Returns { ok, tx, errors, ambiguous, rawNumbers }
-function parseRow(row, defaultCurrency = "USD") {
+// Canonical key for duplicate detection: same ticker + side + qty + date.
+function dupKey(tx) {
+  const tk = String(tx.ticker || "").trim().toUpperCase();
+  return `${tk}|${tx.side}|${Number(tx.qty)}|${tx.date}`;
+}
+
+// knownClassByTicker (optional Map ticker→assetClass): when a ticker already
+// exists in saved transactions, reuse its asset class instead of inferring one.
+function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
   const errors = [];
   const rawNumbers = {
     qty: row.qty,
@@ -1920,12 +1928,21 @@ function parseRow(row, defaultCurrency = "USD") {
 
   // Asset class: explicit field wins; else infer from ticker.
   // If neither resolves, mark needsAssetClass so user picks in preview.
+  // Priority: explicit assetClass column → known class from saved transactions
+  // for this ticker → inferAssetClass() heuristic → ask the user.
   let assetClass = normalizeAssetClass(row.assetClass);
   let needsAssetClass = false;
+  let classFromHistory = false;
   if (!assetClass && ticker) {
-    const inferred = inferAssetClass(ticker);
-    if (inferred) assetClass = inferred;
-    else needsAssetClass = true;
+    const known = knownClassByTicker && knownClassByTicker.get(ticker);
+    if (known) {
+      assetClass = known;
+      classFromHistory = true;
+    } else {
+      const inferred = inferAssetClass(ticker);
+      if (inferred) assetClass = inferred;
+      else needsAssetClass = true;
+    }
   } else if (!assetClass) {
     needsAssetClass = true;
   }
@@ -1938,7 +1955,7 @@ function parseRow(row, defaultCurrency = "USD") {
   const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
 
   if (errors.length > 0) {
-    return { ok: false, tx: null, errors, ambiguous, needsAssetClass, rawNumbers };
+    return { ok: false, tx: null, errors, ambiguous, needsAssetClass, classFromHistory, rawNumbers };
   }
 
   return {
@@ -1946,6 +1963,7 @@ function parseRow(row, defaultCurrency = "USD") {
     errors: needsAssetClass ? ["assetClass: pick one"] : [],
     ambiguous,
     needsAssetClass,
+    classFromHistory,
     rawNumbers,
     tx: {
       id: newId(),
@@ -1964,7 +1982,7 @@ function parseRow(row, defaultCurrency = "USD") {
 }
 
 // Re-parse rows treating comma as decimal in numeric fields.
-function reparseWithCommaDecimal(rows, defaultCurrency = "USD") {
+function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null) {
   return rows.map((row) => {
     const patched = {
       ...row,
@@ -1975,7 +1993,7 @@ function reparseWithCommaDecimal(rows, defaultCurrency = "USD") {
           ? row.fee
           : parseNumberCommaDecimal(row.fee),
     };
-    return parseRow(patched, defaultCurrency);
+    return parseRow(patched, defaultCurrency, knownClassByTicker);
   });
 }
 
@@ -2166,7 +2184,7 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 // - Date format MM/DD/YYYY → ISO
 // - All Fidelity transactions are USD; assetClass defaults to "Stocks"
 //   (user can edit later)
-function parseFidelityCSV(text) {
+function parseFidelityCSV(text, knownClassByTicker = null) {
   console.log("Fidelity parser: processing rows");
   const result = Papa.parse(text, {
     skipEmptyLines: true,
@@ -2265,13 +2283,15 @@ function parseFidelityCSV(text) {
       }
     }
 
-    // Infer asset class from the symbol; fall back to "Stocks" for plain US tickers.
+    // Reuse a saved asset class for this ticker if known; else infer from the
+    // symbol, falling back to "Stocks" for plain US tickers.
+    const known = knownClassByTicker && knownClassByTicker.get(symbol);
     const tx = {
       id: newId(),
       date: isoDate,
       side,
       ticker: symbol,
-      assetClass: inferAssetClass(symbol) || "Stocks",
+      assetClass: known || inferAssetClass(symbol) || "Stocks",
       qty,
       price: priceN,
       currency: "USD",
@@ -2285,6 +2305,7 @@ function parseFidelityCSV(text) {
       errors: [],
       ambiguous: false,
       needsAssetClass: false,
+      classFromHistory: !!known,
       rawNumbers: { qty: qtyRaw, price: priceN, fee },
       tx,
     });
@@ -2294,7 +2315,7 @@ function parseFidelityCSV(text) {
   return { results, hadHeader: true, rawRows, sourceText: text };
 }
 
-function ImportModal({ open, onClose, onConfirm, existingCount }) {
+function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
   const [tab, setTab] = useState("upload"); // upload | fidelity
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader }
@@ -2307,8 +2328,39 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   const [editDraft, setEditDraft] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Ticker → asset class from saved transactions (last occurrence wins). Used to
+  // reuse a known class instead of inferring one for the same ticker.
+  const knownClassByTicker = useMemo(() => {
+    const m = new Map();
+    for (const t of existingTransactions || []) {
+      const tk = String(t.ticker || "").trim().toUpperCase();
+      if (tk && t.assetClass) m.set(tk, t.assetClass);
+    }
+    return m;
+  }, [existingTransactions]);
+
+  // Set of dup keys for saved transactions, to flag re-imports of the same row.
+  const dupKeySet = useMemo(() => {
+    const s = new Set();
+    for (const t of existingTransactions || []) s.add(dupKey(t));
+    return s;
+  }, [existingTransactions]);
+
+  // Flag rows that match an already-saved transaction (same ticker/side/qty/date).
+  function annotateDuplicates(results) {
+    if (dupKeySet.size === 0) return results;
+    return results.map((r) =>
+      r.tx && dupKeySet.has(dupKey(r.tx)) ? { ...r, duplicate: true } : r
+    );
+  }
+
+  // Default check state: all rows except detected duplicates.
   function initAllChecked(results) {
-    setCheckedRows(new Set(results.map((_, i) => i)));
+    const s = new Set();
+    results.forEach((r, i) => {
+      if (!r.duplicate) s.add(i);
+    });
+    setCheckedRows(s);
   }
 
   useEffect(() => {
@@ -2336,7 +2388,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
     if (out.structuralBreak && out.delimiter === ",") {
       // Hold the parse result; show prompt offering BR auto-fix.
-      const results = out.rows.map((r) => parseRow(r));
+      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
       setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
       initAllChecked(results);
       setEditingIdx(null);
@@ -2346,7 +2398,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setFileError("");
       return;
     }
-    const results = out.rows.map((r) => parseRow(r));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
     initAllChecked(results);
@@ -2368,7 +2420,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setParsed(null);
       return;
     }
-    const results = out.rows.map((r) => parseRow(r));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({
       results,
@@ -2389,7 +2441,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   function applyCommaDecimal(useComma) {
     if (!parsed) return;
     if (useComma) {
-      const next = reparseWithCommaDecimal(parsed.rawRows);
+      const next = annotateDuplicates(
+        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker)
+      );
       setParsed({ ...parsed, results: next });
     }
     setDecimalPrompt(false);
@@ -2434,20 +2488,21 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       let content = String(ev.target?.result || "");
       if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
       setText(content);
-      const out = parseFidelityCSV(content);
+      const out = parseFidelityCSV(content, knownClassByTicker);
       if (out.error || out.results.length === 0) {
         setFileError(out.error || "No BUY/SELL transactions found in this Fidelity file");
         setParsed(null);
         return;
       }
+      const annotated = annotateDuplicates(out.results);
       setParsed({
-        results: out.results,
+        results: annotated,
         hadHeader: true,
         rawRows: out.rawRows,
         sourceText: content,
         sourceLabel: "Fidelity",
       });
-      initAllChecked(out.results);
+      initAllChecked(annotated);
       setEditingIdx(null);
       setEditDraft(null);
       setDecimalPrompt(false);
@@ -2501,25 +2556,27 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     if (!tkr) return;
     const existing = parsed.results[editingIdx];
     const cur = currencyForAssetClass(editDraft.assetClass) || "USD";
+    const editedTx = {
+      id: existing?.tx?.id || newId(),
+      date: editDraft.date,
+      side: editDraft.side,
+      ticker: tkr,
+      assetClass: editDraft.assetClass,
+      qty: qn,
+      price: pn,
+      currency: cur,
+      fee: feeN,
+      notes: editDraft.notes.trim(),
+      createdAt: existing?.tx?.createdAt || new Date().toISOString(),
+    };
     const updatedResult = {
       ok: true,
       needsAssetClass: false,
       errors: [],
       ambiguous: false,
+      duplicate: dupKeySet.has(dupKey(editedTx)),
       rawNumbers: existing?.rawNumbers,
-      tx: {
-        id: existing?.tx?.id || newId(),
-        date: editDraft.date,
-        side: editDraft.side,
-        ticker: tkr,
-        assetClass: editDraft.assetClass,
-        qty: qn,
-        price: pn,
-        currency: cur,
-        fee: feeN,
-        notes: editDraft.notes.trim(),
-        createdAt: existing?.tx?.createdAt || new Date().toISOString(),
-      },
+      tx: editedTx,
     };
     const newResults = parsed.results.map((r, i) => (i === editingIdx ? updatedResult : r));
     setParsed({ ...parsed, results: newResults });
@@ -2539,6 +2596,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     : 0;
   const needsAssetClassCount = parsed
     ? parsed.results.filter((r) => r.needsAssetClass).length
+    : 0;
+  const duplicateCount = parsed
+    ? parsed.results.filter((r) => r.duplicate).length
+    : 0;
+  const reusedClassCount = parsed
+    ? parsed.results.filter((r) => r.classFromHistory).length
     : 0;
   const allChecked = parsed ? parsed.results.every((_, i) => checkedRows.has(i)) : false;
 
@@ -2923,6 +2986,32 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     {needsAssetClassCount} need class
                   </div>
                 )}
+                {duplicateCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.red,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {duplicateCount} duplicate
+                  </div>
+                )}
+                {reusedClassCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.textDim,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {reusedClassCount} class reused
+                  </div>
+                )}
                 <div
                   style={{
                     fontFamily: FONT_MONO,
@@ -3171,6 +3260,8 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                           style={{
                             background: isEditingThis
                               ? "rgba(201, 169, 97, 0.04)"
+                              : r.duplicate
+                              ? "rgba(232, 140, 140, 0.09)"
                               : r.ok
                               ? "transparent"
                               : "rgba(232, 140, 140, 0.05)",
@@ -3256,6 +3347,14 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                             {!r.ok && !r.needsAssetClass && r.errors.join("; ")}
                             {r.needsAssetClass && (
                               <span style={{ color: T.gold }}>pick class</span>
+                            )}
+                            {r.duplicate && (
+                              <span
+                                style={{ color: T.red, fontWeight: 600 }}
+                                title="A saved transaction already has this ticker, side, qty and date. Check the box to import anyway."
+                              >
+                                Duplicate
+                              </span>
                             )}
                           </td>
                         </tr>
@@ -3737,6 +3836,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         onClose={() => setImportOpen(false)}
         onConfirm={handleImport}
         existingCount={transactions.length}
+        existingTransactions={transactions}
       />
     </div>
   );
