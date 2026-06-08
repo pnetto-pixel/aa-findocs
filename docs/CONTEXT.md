@@ -134,6 +134,14 @@ Transações antigas sem `assetClass` recebem classe via `inferAssetClass()` no 
 
 Add form com campos: date, side (buy/sell), ticker (com autocomplete de tickers conhecidos), qty, price, assetClass (select), fee, notes.
 
+### NET QTY total row (PR #77)
+
+`tfoot` na `TransactionTable` com linha "NET QTY":
+- Calcula `sum(buy qty) - sum(sell qty)` sobre as linhas visíveis (pós-filtro/sort)
+- Coluna Ticker exibe o label "NET QTY"; coluna Qty exibe o valor líquido
+- Cor verde se positivo, vermelho se negativo
+- Util quando o usuario filtra por ticker para ver a posicao liquida atual
+
 ### Tabela (responsiva, cabe em iPhone ~380px)
 
 Layout fixo (`tableLayout: fixed`) com colgroup. Wrapper com `overflowX: auto` + `WebkitOverflowScrolling: touch` para scroll horizontal isolado. `minWidth: 760px` na tabela. Colunas:
@@ -212,6 +220,15 @@ Modal `ImportModal` com 2 tabs:
 **Tab Paste foi removida.**
 
 **Export CSV** (botão Download): gera `transactions-YYYY-MM-DD.csv`.
+
+**Auto-detecção de formato de data (PR #77):**
+- `detectDateFormat(dateStrings)` varre todos os valores da coluna `date` antes de parsear qualquer linha
+- Lógica: em `A/B/YYYY`, se algum `A > 12` → DMY; se algum `B > 12` → MDY; ambíguo → default MDY
+- Datas ISO (`YYYY-MM-DD`) tratadas por ramo separado em `parseDate`, não dependem do `fmt`
+- `parseDate` aceita parâmetro `fmt: "mdy" | "dmy"` (default "mdy")
+- `parseRow` e `reparseWithCommaDecimal` recebem `opts = { dateFormat }` e repassam para `parseDate`
+- `fmt` detectado armazenado em `parsed.dateFormat` no state do `ImportModal`
+- Chip dourado "dates: DD/MM/YYYY detected" no preview quando DMY auto-detectado (MDY é silencioso)
 
 -----
 
@@ -417,6 +434,9 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`api.nasdaq.com` bloqueado do Vercel (Akamai)**|Mesmo com User-Agent de browser, IPs de datacenter (AWS/Vercel) são identificados e bloqueados com 403. Confirmar reachability de qualquer nova API antes de implementar a partir de IPs cloud.|
 |**Import: classe do histórico tem prioridade sobre `inferAssetClass()` (item 34)**|A classe que o usuário já registrou para um ticker é fonte de verdade mais confiável que a heurística genérica. Coluna explícita do CSV ainda vence (o usuário a digitou agora). Evita conflito de classe para o mesmo ticker entre imports.|
 |**Dedupe não bloqueia, só desmarca (item 34)**|Duplicata mantém `r.ok = true` e só vem desmarcada — usuário pode forçar (ex.: dois buys legítimos idênticos no mesmo dia). Marcar `ok: false` impediria o import mesmo com o checkbox marcado.|
+|**Auto-detecção de formato de data no CSV: varrer antes de parsear (PR #77)**|`detectDateFormat` varre todos os valores da coluna `date` antes de parsear qualquer linha. Evidência unambígua (`campo > 12`) determina o formato; ambiguidade total cai no default MDY. Default MDY faz sentido pois a maioria dos CSVs (Fidelity, Excel US) usa esse formato.|
+|**Datas ISO (`YYYY-MM-DD`) tratadas por ramo separado em `parseDate` (PR #77)**|O ramo ISO roda antes do ramo que usa `fmt`, portanto são sempre parseadas corretamente independente do formato detectado. Não interferem na heurística de detecção.|
+|**NET QTY row calculada sobre linhas visíveis pós-filtro (PR #77)**|Linha de total líquido reflete a seleção atual do usuário, não o total geral. Util para ver posicao liquida ao filtrar por ticker.|
 
 -----
 
@@ -561,6 +581,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Confirmar reachability de API nova a partir de IPs de datacenter antes de implementar** (PR #73) — `api.nasdaq.com` dá 403 do Vercel (Akamai bloqueia datacenters). APIs keyless/scrape-like são suspeitas de bloqueio; APIs de servidor com key (Polygon, Finnhub, etc.) funcionam.
 - **PR base errada → commit órfão** — PR #72 foi baseado na branch do PR #71. Quando #71 foi mergeado, #72 ficou órfão e nunca chegou ao main. Sempre basear PRs de fix em `main`, não em outra feature branch.
 - **Cache por taxa/datas imutáveis = global, não por usuário** — pay dates da Polygon são fatos públicos. Cache com chave `dividends:paydates:v1:{ticker}` (sem storageKey do usuário) é warm uma única vez por ticker para todos os usuários.
+- **Auto-detecção de formato de data em CSV: varrer todo o conjunto antes de parsear** (PR #77) — evidência unambígua (campo > 12 em posição dia ou mes) determina o formato; ambiguidade total cai no default MDY (US/Excel). Datas ISO ficam num ramo separado e nunca dependem do `fmt` detectado. Default MDY correto para fontes US (Fidelity, Excel americano).
+- **`tfoot` NET QTY deve operar sobre linhas visíveis pós-filtro** (PR #77) — calcular sobre todas as transações ignoraria o contexto de filtragem por ticker e seria enganoso. Usar o mesmo array renderizado na tabela garante coerência.
 
 -----
 
