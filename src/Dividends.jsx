@@ -662,10 +662,22 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
 
   const [selectedMonth, setSelectedMonth] = useState(null);
   const [groupMode, setGroupMode] = useState("class");
+  const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+
+  function toggleClass(cls) {
+    setCollapsedClasses(prev => {
+      const next = new Set(prev);
+      next.has(cls) ? next.delete(cls) : next.add(cls);
+      return next;
+    });
+  }
 
   const effectiveMonth = useMemo(() => {
     if (selectedMonth !== null) return selectedMonth;
-    return months.length ? months[months.length - 1] : null;
+    if (!months.length) return null;
+    const currentMonth = new Date().getMonth() + 1; // 1-12
+    if (months.includes(currentMonth)) return currentMonth;
+    return months[months.length - 1];
   }, [selectedMonth, months]);
 
   const tickerToClass = useMemo(() => {
@@ -688,24 +700,25 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
       .filter(r => r.py > 0 || r.cy > 0);
   }, [rows, effectiveMonth]);
 
-  const displayRows = useMemo(() => {
-    if (groupMode === "ticker") {
-      return [...tickerRows]
-        .sort((a, b) => (b.cy + b.py) - (a.cy + a.py))
-        .map(r => ({ label: r.ticker, py: r.py, cy: r.cy }));
-    }
+  const classGroups = useMemo(() => {
+    if (groupMode !== "class") return null;
     const byClass = {};
     for (const row of tickerRows) {
       const cls = tickerToClass[row.ticker] || "Unknown";
-      if (!byClass[cls]) byClass[cls] = { label: cls, py: 0, cy: 0 };
+      if (!byClass[cls]) byClass[cls] = { label: cls, py: 0, cy: 0, tickers: [] };
       byClass[cls].py += row.py;
       byClass[cls].cy += row.cy;
+      byClass[cls].tickers.push(row);
     }
     return Object.values(byClass).sort((a, b) => (b.cy + b.py) - (a.cy + a.py));
   }, [tickerRows, groupMode, tickerToClass]);
 
-  const totalPY = displayRows.reduce((s, r) => s + r.py, 0);
-  const totalCY = displayRows.reduce((s, r) => s + r.cy, 0);
+  const totalPY = groupMode === "class" && classGroups
+    ? classGroups.reduce((s, g) => s + g.py, 0)
+    : tickerRows.reduce((s, r) => s + r.py, 0);
+  const totalCY = groupMode === "class" && classGroups
+    ? classGroups.reduce((s, g) => s + g.cy, 0)
+    : tickerRows.reduce((s, r) => s + r.cy, 0);
 
   function dColor(n) {
     if (n == null || isNaN(n) || n === 0) return T.textDim;
@@ -798,6 +811,52 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
     );
   }
 
+  function renderGroupHeaderRow(label, py, cy) {
+    const collapsed = collapsedClasses.has(label);
+    const dUSD = cy - py;
+    const dPct = py > 0 ? ((cy / py) - 1) * 100 : null;
+    const groupTd = {
+      ...tdStyle,
+      background: T.cardElev,
+      fontWeight: 600,
+      borderTop: `1px solid ${T.border}`,
+      borderBottom: `1px solid ${T.border}`,
+    };
+    return (
+      <tr key={`group-${label}`} style={{ cursor: "pointer" }} onClick={() => toggleClass(label)}>
+        <td style={{
+          ...groupTd,
+          position: "sticky",
+          left: 0,
+          zIndex: 1,
+          textAlign: "left",
+          width: TICKER_COL_WIDTH,
+          minWidth: TICKER_COL_WIDTH,
+          borderRight: `1px solid ${T.border}`,
+          color: T.gold,
+          letterSpacing: "0.06em",
+        }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <ChevronDown
+              size={12}
+              style={{
+                color: T.gold,
+                transform: collapsed ? "rotate(-90deg)" : "none",
+                transition: "transform 0.2s",
+                flexShrink: 0,
+              }}
+            />
+            {label}
+          </span>
+        </td>
+        <td style={{ ...groupTd, color: T.textDim }}>{fmtUSD(py, valuesHidden)}</td>
+        <td style={groupTd}>{fmtUSD(cy, valuesHidden)}</td>
+        <td style={{ ...groupTd, color: dColor(dUSD), fontWeight: 600 }}>{fmtDeltaUSD(dUSD, valuesHidden)}</td>
+        <td style={{ ...groupTd, color: dColor(dPct), fontWeight: 600 }}>{fmtPct(dPct)}</td>
+      </tr>
+    );
+  }
+
   return (
     <div style={{ marginTop: 16 }}>
       <button onClick={onToggle} style={cardHeaderStyle(open)}>
@@ -850,7 +909,16 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                     return (
                       <button
                         key={mode}
-                        onClick={() => setGroupMode(mode)}
+                        onClick={() => {
+                          if (mode === "class") {
+                            setGroupMode("class");
+                            const allClasses = new Set(tickerRows.map(r => tickerToClass[r.ticker] || "Unknown"));
+                            setCollapsedClasses(allClasses);
+                          } else {
+                            setGroupMode("ticker");
+                            setCollapsedClasses(new Set());
+                          }
+                        }}
                         style={{
                           background: active ? T.gold : T.cardElev,
                           border: `1px solid ${active ? T.gold : T.border}`,
@@ -870,7 +938,7 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                 </div>
               </div>
 
-              {displayRows.length === 0 ? (
+              {tickerRows.length === 0 ? (
                 <div style={{ padding: "0 16px 20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
                   No dividends in {monthLabel}.
                 </div>
@@ -888,7 +956,18 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                     </thead>
                     <tbody>
                       {renderDataRow("TOTAL", totalPY, totalCY, true)}
-                      {displayRows.map(row => renderDataRow(row.label, row.py, row.cy, false))}
+                      {groupMode === "class" && classGroups
+                        ? classGroups.map(group => (
+                            <Fragment key={group.label}>
+                              {renderGroupHeaderRow(group.label, group.py, group.cy)}
+                              {!collapsedClasses.has(group.label) && group.tickers.map(r => renderDataRow(r.ticker, r.py, r.cy, false))}
+                            </Fragment>
+                          ))
+                        : tickerRows
+                            .slice()
+                            .sort((a, b) => (b.cy + b.py) - (a.cy + a.py))
+                            .map(r => renderDataRow(r.ticker, r.py, r.cy, false))
+                      }
                     </tbody>
                   </table>
                 </div>
@@ -1542,16 +1621,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         />
       )}
 
-      {/* ── Dividend History (audit) ── */}
-      {state === "done" && (
-        <DividendHistoryTable
-          events={events}
-          valuesHidden={valuesHidden}
-          open={histOpen}
-          onToggle={() => setHistOpen((v) => !v)}
-        />
-      )}
-
       {/* ── Year vs Year comparator ── */}
       {state === "done" && (
         <YearVsYearTable
@@ -1560,6 +1629,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           valuesHidden={valuesHidden}
           open={yoyOpen}
           onToggle={() => setYoyOpen((v) => !v)}
+        />
+      )}
+
+      {/* ── Dividend History (audit) ── */}
+      {state === "done" && (
+        <DividendHistoryTable
+          events={events}
+          valuesHidden={valuesHidden}
+          open={histOpen}
+          onToggle={() => setHistOpen((v) => !v)}
         />
       )}
     </div>
