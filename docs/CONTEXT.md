@@ -417,6 +417,9 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`api.nasdaq.com` bloqueado do Vercel (Akamai)**|Mesmo com User-Agent de browser, IPs de datacenter (AWS/Vercel) são identificados e bloqueados com 403. Confirmar reachability de qualquer nova API antes de implementar a partir de IPs cloud.|
 |**Import: classe do histórico tem prioridade sobre `inferAssetClass()` (item 34)**|A classe que o usuário já registrou para um ticker é fonte de verdade mais confiável que a heurística genérica. Coluna explícita do CSV ainda vence (o usuário a digitou agora). Evita conflito de classe para o mesmo ticker entre imports.|
 |**Dedupe não bloqueia, só desmarca (item 34)**|Duplicata mantém `r.ok = true` e só vem desmarcada — usuário pode forçar (ex.: dois buys legítimos idênticos no mesmo dia). Marcar `ok: false` impediria o import mesmo com o checkbox marcado.|
+|**Auto-detecção de formato de data no import CSV (PR #77)**|`detectDateFormat()` varre todos os valores de `date` antes de parsear: `A > 12` em `A/B/YYYY` → DMY; `B > 12` → MDY. Default MDY (US/Excel) quando ambíguo — a maioria dos CSVs processados vem de fontes US. Sem seleção manual.|
+|**Datas ISO não dependem do `fmt` (PR #77)**|`parseDate` trata `YYYY-MM-DD` no primeiro ramo, antes de checar `fmt`. O parâmetro `fmt` só é consultado para datas `A/B/YYYY` ambíguas — ISO sempre correto independente do que `detectDateFormat` retornar.|
+|**NET QTY row sobre linhas visíveis, não todas (PR #77)**|`tfoot` calcula `sum(buy) − sum(sell)` sobre `visible` (pós-filtro/sort). Filtrar por ticker mostra posição líquida daquele ativo especificamente.|
 
 -----
 
@@ -561,6 +564,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Confirmar reachability de API nova a partir de IPs de datacenter antes de implementar** (PR #73) — `api.nasdaq.com` dá 403 do Vercel (Akamai bloqueia datacenters). APIs keyless/scrape-like são suspeitas de bloqueio; APIs de servidor com key (Polygon, Finnhub, etc.) funcionam.
 - **PR base errada → commit órfão** — PR #72 foi baseado na branch do PR #71. Quando #71 foi mergeado, #72 ficou órfão e nunca chegou ao main. Sempre basear PRs de fix em `main`, não em outra feature branch.
 - **Cache por taxa/datas imutáveis = global, não por usuário** — pay dates da Polygon são fatos públicos. Cache com chave `dividends:paydates:v1:{ticker}` (sem storageKey do usuário) é warm uma única vez por ticker para todos os usuários.
+- **Auto-detecção de formato de data: varrer o conjunto antes de parsear (PR #77)** — detectar MDY vs DMY linha a linha não funciona quando ambos os campos são ≤ 12. Varrer todas as datas do arquivo e buscar evidência unambígua (campo > 12) resolve o problema sem precisar de input do usuário. Default MDY quando ambíguo, pois a fonte principal é Fidelity/Excel US.
+- **Ramos de parsing em sequência eliminam dependência do `fmt` para casos simples (PR #77)** — `parseDate` trata ISO YYYY-MM-DD no primeiro `if` e retorna imediatamente; o `fmt` só importa para o segundo ramo (`A/B/YYYY`). Estrutura de early-return evita que mudança de default quebre formatos unambíguos.
 
 -----
 
