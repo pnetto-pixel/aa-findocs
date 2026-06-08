@@ -1716,6 +1716,52 @@ function TransactionTable({
             })
           )}
         </tbody>
+        {(() => {
+          if (visible.length === 0) return null;
+          let netQty = 0;
+          for (const tx of visible) {
+            const q = Number(tx.qty) || 0;
+            netQty += tx.side === "sell" ? -q : q;
+          }
+          const netColor = netQty < 0 ? T.red : T.green;
+          const netStr = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(netQty);
+          return (
+            <tfoot>
+              <tr style={{ borderTop: `1px solid ${T.border}` }}>
+                <td />
+                <td />
+                <td />
+                <td />
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 9,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    color: T.textFaint,
+                  }}
+                >
+                  NET QTY
+                </td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: netColor,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {netStr}
+                </td>
+                <td colSpan={4} />
+              </tr>
+            </tfoot>
+          );
+        })()}
       </table>
 
       {openCol && (() => {
@@ -1787,10 +1833,32 @@ function isValidYMD(y, m, d) {
   );
 }
 
-function parseDate(raw) {
+// Scan raw date strings to infer DMY vs MDY without user input.
+// Logic: in A/B/YYYY — if any A > 12 it must be a day → DMY;
+// if any B > 12 it must be a day → MDY. Falls back to "dmy" when ambiguous.
+function detectDateFormat(dateStrings) {
+  let mdyEvidence = 0;
+  let dmyEvidence = 0;
+  for (const raw of dateStrings) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (/^\d{4}[\-\/]/.test(s)) continue; // ISO YYYY-… — skip, unambiguous
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-]\d{2,4}$/);
+    if (!m) continue;
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (a > 12 && b <= 12) dmyEvidence++;
+    else if (a <= 12 && b > 12) mdyEvidence++;
+  }
+  if (dmyEvidence > 0 && mdyEvidence === 0) return "dmy";
+  return "mdy"; // default: MDY (US/Excel)
+}
+
+// fmt: "mdy" (default, US/Excel) | "dmy" (BR DD/MM/YYYY)
+function parseDate(raw, fmt = "mdy") {
   if (!raw) return { value: null, error: "missing" };
   const s = String(raw).trim();
-  // ISO YYYY-MM-DD or YYYY/MM/DD
+  // ISO YYYY-MM-DD or YYYY/MM/DD — unambiguous, ignore fmt
   let m = s.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
   if (m) {
     const [, y, mo, d] = m;
@@ -1799,17 +1867,23 @@ function parseDate(raw) {
     if (!isValidYMD(y, mm, dd)) return { value: null, error: "bad date" };
     return { value: `${y}-${mm}-${dd}`, error: null };
   }
-  // DD/MM/YYYY or DD-MM-YYYY (BR default for ambiguous)
+  // Two-digit / slash date: DD/MM/YYYY (dmy) or MM/DD/YYYY (mdy)
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (m) {
-    let [, d, mo, y] = m;
+    let [, a, b, y] = m;
     if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    let d, mo;
+    if (fmt === "mdy") {
+      mo = a; d = b;
+    } else {
+      d = a; mo = b;
+      // Auto-swap when month part > 12 but day part ≤ 12 (unambiguous MDY).
+      if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
+        [d, mo] = [mo, d];
+      }
+    }
     d = d.padStart(2, "0");
     mo = mo.padStart(2, "0");
-    // If month > 12 but day <= 12, swap (it was MDY).
-    if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
-      [d, mo] = [mo, d];
-    }
     if (!isValidYMD(y, mo, d)) return { value: null, error: "bad date" };
     return { value: `${y}-${mo}-${d}`, error: null };
   }
@@ -1895,7 +1969,7 @@ function dupKey(tx) {
 
 // knownClassByTicker (optional Map ticker→assetClass): when a ticker already
 // exists in saved transactions, reuse its asset class instead of inferring one.
-function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
+function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   const errors = [];
   const rawNumbers = {
     qty: row.qty,
@@ -1903,7 +1977,7 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
     fee: row.fee,
   };
 
-  const d = parseDate(row.date);
+  const d = parseDate(row.date, opts.dateFormat || "dmy");
   if (d.error) errors.push(`date: ${d.error}`);
 
   const sd = parseSide(row.side);
@@ -1982,7 +2056,7 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null) {
 }
 
 // Re-parse rows treating comma as decimal in numeric fields.
-function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null) {
+function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   return rows.map((row) => {
     const patched = {
       ...row,
@@ -1993,7 +2067,7 @@ function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTick
           ? row.fee
           : parseNumberCommaDecimal(row.fee),
     };
-    return parseRow(patched, defaultCurrency, knownClassByTicker);
+    return parseRow(patched, defaultCurrency, knownClassByTicker, opts);
   });
 }
 
@@ -2318,7 +2392,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
   const [tab, setTab] = useState("upload"); // upload | fidelity
   const [text, setText] = useState("");
-  const [parsed, setParsed] = useState(null); // { results, hadHeader }
+  const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
   const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
@@ -2385,11 +2459,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setParsed(null);
       return;
     }
+    const fmt = detectDateFormat(out.rows.map((r) => r.date));
+    const opts = { dateFormat: fmt };
     // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
     if (out.structuralBreak && out.delimiter === ",") {
-      // Hold the parse result; show prompt offering BR auto-fix.
-      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
-      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
+      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
       initAllChecked(results);
       setEditingIdx(null);
       setEditDraft(null);
@@ -2398,9 +2473,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setFileError("");
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
-    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
     initAllChecked(results);
     setEditingIdx(null);
     setEditDraft(null);
@@ -2413,20 +2488,22 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     if (!parsed) return;
     setStructuralPrompt(false);
     if (!yes) return;
-    // Re-run parse with positional auto-fix enabled.
     const out = parseCSVOrPaste(parsed.sourceText, { autoFixBR: true });
     if (out.rows.length === 0) {
       setFileError("Reparse produced no rows");
       setParsed(null);
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker)));
+    const fmt = parsed.dateFormat || "dmy";
+    const opts = { dateFormat: fmt };
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({
       results,
       hadHeader: out.hadHeader,
       rawRows: out.rows,
       sourceText: parsed.sourceText,
+      dateFormat: fmt,
       reparseNote:
         out.unfixableRows > 0
           ? `${out.fixedRows} row(s) fixed, ${out.unfixableRows} could not be auto-fixed.`
@@ -2441,8 +2518,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   function applyCommaDecimal(useComma) {
     if (!parsed) return;
     if (useComma) {
+      const opts = { dateFormat: parsed.dateFormat || "dmy" };
       const next = annotateDuplicates(
-        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker)
+        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker, opts)
       );
       setParsed({ ...parsed, results: next });
     }
@@ -3023,6 +3101,19 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                 >
                   {parsed.hadHeader ? "header detected" : "no header"}
                 </div>
+                {parsed.dateFormat === "dmy" && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.gold,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    dates: DD/MM/YYYY detected
+                  </div>
+                )}
               </div>
 
               {parsed.reparseNote && (
