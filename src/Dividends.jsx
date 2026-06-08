@@ -378,7 +378,7 @@ function buildAssetClassRows(rows, transactions) {
 function PositionDividendsTable({ rows, transactions, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("total");
   const [sortDir, setSortDir] = useState("desc");
-  const [groupMode, setGroupMode] = useState("ticker");
+  const [groupMode, setGroupMode] = useState("class");
 
   function handleSort(col) {
     if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1148,9 +1148,9 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [selectedYears, setSelectedYears] = useState(new Set());
 
   const [incomeOpen, setIncomeOpen] = useState(true);
-  const [posOpen, setPosOpen] = useState(true);
+  const [posOpen, setPosOpen] = useState(false);
   const [histOpen, setHistOpen] = useState(false);
-  const [yoyOpen, setYoyOpen] = useState(true);
+  const [yoyOpen, setYoyOpen] = useState(false);
 
   const headers = authHeaders(auth);
 
