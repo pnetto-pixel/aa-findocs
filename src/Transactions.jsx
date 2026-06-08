@@ -1833,8 +1833,29 @@ function isValidYMD(y, m, d) {
   );
 }
 
-// fmt: "dmy" (default, BR) | "mdy" (US/Excel MM/DD/YYYY)
-function parseDate(raw, fmt = "dmy") {
+// Scan raw date strings to infer DMY vs MDY without user input.
+// Logic: in A/B/YYYY — if any A > 12 it must be a day → DMY;
+// if any B > 12 it must be a day → MDY. Falls back to "dmy" when ambiguous.
+function detectDateFormat(dateStrings) {
+  let mdyEvidence = 0;
+  let dmyEvidence = 0;
+  for (const raw of dateStrings) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (/^\d{4}[\-\/]/.test(s)) continue; // ISO YYYY-… — skip, unambiguous
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-]\d{2,4}$/);
+    if (!m) continue;
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (a > 12 && b <= 12) dmyEvidence++;
+    else if (a <= 12 && b > 12) mdyEvidence++;
+  }
+  if (dmyEvidence > 0 && mdyEvidence === 0) return "dmy";
+  return "mdy"; // default: MDY (US/Excel)
+}
+
+// fmt: "mdy" (default, US/Excel) | "dmy" (BR DD/MM/YYYY)
+function parseDate(raw, fmt = "mdy") {
   if (!raw) return { value: null, error: "missing" };
   const s = String(raw).trim();
   // ISO YYYY-MM-DD or YYYY/MM/DD — unambiguous, ignore fmt
@@ -2371,11 +2392,10 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
   const [tab, setTab] = useState("upload"); // upload | fidelity
   const [text, setText] = useState("");
-  const [parsed, setParsed] = useState(null); // { results, hadHeader }
+  const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
   const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
-  const [dateFormat, setDateFormat] = useState("dmy"); // dmy | mdy
   const [fileError, setFileError] = useState("");
   const [checkedRows, setCheckedRows] = useState(new Set());
   const [editingIdx, setEditingIdx] = useState(null);
@@ -2424,7 +2444,6 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setDecimalPrompt(false);
       setStructuralPrompt(false);
       setMode("append");
-      setDateFormat("dmy");
       setFileError("");
       setTab("upload");
       setCheckedRows(new Set());
@@ -2433,8 +2452,6 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     }
   }, [open]);
 
-  const parseOpts = () => ({ dateFormat });
-
   function doParse(rawText) {
     const out = parseCSVOrPaste(rawText);
     if (out.rows.length === 0) {
@@ -2442,10 +2459,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setParsed(null);
       return;
     }
+    const fmt = detectDateFormat(out.rows.map((r) => r.date));
+    const opts = { dateFormat: fmt };
     // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
     if (out.structuralBreak && out.delimiter === ",") {
-      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
-      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
+      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
       initAllChecked(results);
       setEditingIdx(null);
       setEditDraft(null);
@@ -2454,9 +2473,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setFileError("");
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
-    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
     initAllChecked(results);
     setEditingIdx(null);
     setEditDraft(null);
@@ -2475,13 +2494,16 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setParsed(null);
       return;
     }
-    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, parseOpts())));
+    const fmt = parsed.dateFormat || "dmy";
+    const opts = { dateFormat: fmt };
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({
       results,
       hadHeader: out.hadHeader,
       rawRows: out.rows,
       sourceText: parsed.sourceText,
+      dateFormat: fmt,
       reparseNote:
         out.unfixableRows > 0
           ? `${out.fixedRows} row(s) fixed, ${out.unfixableRows} could not be auto-fixed.`
@@ -2496,8 +2518,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   function applyCommaDecimal(useComma) {
     if (!parsed) return;
     if (useComma) {
+      const opts = { dateFormat: parsed.dateFormat || "dmy" };
       const next = annotateDuplicates(
-        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker, parseOpts())
+        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker, opts)
       );
       setParsed({ ...parsed, results: next });
     }
@@ -2884,29 +2907,6 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
               {tab === "upload" && (
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>
-                      Date format
-                    </span>
-                    {[{ v: "dmy", label: "DD/MM/YYYY" }, { v: "mdy", label: "MM/DD/YYYY (US/Excel)" }].map(({ v, label }) => (
-                      <button
-                        key={v}
-                        onClick={() => setDateFormat(v)}
-                        style={{
-                          background: dateFormat === v ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                          border: `1px solid ${dateFormat === v ? T.gold : T.border}`,
-                          color: dateFormat === v ? T.gold : T.textDim,
-                          padding: "5px 10px",
-                          fontFamily: FONT_MONO,
-                          fontSize: 10,
-                          letterSpacing: "0.1em",
-                          cursor: "pointer",
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
                   <Label>Select a CSV file</Label>
                   <input
                     ref={fileInputRef}
@@ -3101,6 +3101,19 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                 >
                   {parsed.hadHeader ? "header detected" : "no header"}
                 </div>
+                {parsed.dateFormat === "dmy" && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.gold,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    dates: DD/MM/YYYY detected
+                  </div>
+                )}
               </div>
 
               {parsed.reparseNote && (
