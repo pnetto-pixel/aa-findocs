@@ -232,11 +232,13 @@ function computeNetQty(transactions) {
 }
 
 // Returns patched holdings array if any qty changed, null otherwise.
-// Only updates auto holdings that have at least one transaction.
+// Updates ticker-backed (non-manual) holdings that have at least one transaction.
+// Uses type !== "manual" — the app-wide convention — so legacy holdings
+// that predate the type field (type === undefined) are correctly included.
 function applyTxQty(holdings, netQty) {
   let changed = false;
   const updated = holdings.map((h) => {
-    if (h.type !== "auto" || !(h.ticker in netQty)) return h;
+    if (h.type === "manual" || !(h.ticker in netQty)) return h;
     const computed = Math.max(0, netQty[h.ticker]);
     if (h.qty === computed) return h;
     changed = true;
