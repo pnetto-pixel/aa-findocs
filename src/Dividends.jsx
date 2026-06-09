@@ -121,6 +121,116 @@ function fmtDeltaUSD(n, hidden) {
   }).format(n);
 }
 
+// ── Bank Bonds estimated accrual (item 36) ────────────────────────────────────
+// CDs / US bank bonds pay periodic coupons but there is no free per-CUSIP
+// payment history API. We estimate accrued interest on the fly from the
+// buy/sell transactions plus the coupon% + maturity stored in `notes` by the
+// Fidelity parser ("5.45% | 03/15/2027").
+//
+// Per CUSIP we replay buy/sell events chronologically tracking the running
+// principal, and accrue principal x coupon x (days / 365) over each interval up
+// to min(today, maturity). Partial sells reduce the running principal so the
+// remaining accrual reflects the outstanding position (planner-accepted model:
+// accrual over the net principal vigente per period). Transactions with no
+// coupon/maturity in notes are skipped silently.
+//
+// Returns { byMonth: { "YYYY-MM": amount }, allTime } — all amounts in USD.
+// Bucketed by month so KPIs (All Time / YTD / This Month) can reuse the same
+// date-prefix logic as real dividend events.
+function parseBondNotes(notes) {
+  if (!notes) return null;
+  const m = String(notes).match(/(\d+(?:\.\d+)?)\s*%\s*\|\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return null;
+  const couponPct = parseFloat(m[1]);
+  if (!isFinite(couponPct) || couponPct <= 0) return null;
+  // notes maturity is MM/DD/YYYY -> ISO
+  const maturityISO = `${m[4]}-${m[2]}-${m[3]}`;
+  return { couponPct, maturityISO };
+}
+
+function daysBetweenISO(a, b) {
+  const da = new Date(a + "T00:00:00Z").getTime();
+  const db = new Date(b + "T00:00:00Z").getTime();
+  if (isNaN(da) || isNaN(db)) return 0;
+  return Math.max(0, (db - da) / 86400000);
+}
+
+function minISO(a, b) {
+  return a < b ? a : b;
+}
+
+function computeBankBondsAccrual(transactions, todayISO) {
+  const today = todayISO || new Date().toISOString().slice(0, 10);
+  // Group Bank Bonds transactions by CUSIP/ticker.
+  const byCusip = {};
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const meta = parseBondNotes(tx.notes);
+    if (!meta) continue; // no coupon/maturity -> skip silently
+    const t = (tx.ticker || "").toUpperCase();
+    if (!t) continue;
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!isFinite(qty) || !isFinite(price)) continue;
+    if (!byCusip[t]) byCusip[t] = { events: [], coupon: meta.couponPct, maturityISO: meta.maturityISO };
+    // Use the latest non-null coupon/maturity we see for this CUSIP.
+    byCusip[t].coupon = meta.couponPct;
+    byCusip[t].maturityISO = meta.maturityISO;
+    byCusip[t].events.push({
+      date: tx.date,
+      principalDelta: (tx.side === "sell" ? -1 : 1) * qty * price,
+    });
+  }
+
+  const byMonth = {};
+  let allTime = 0;
+
+  for (const t of Object.keys(byCusip)) {
+    const { events, coupon, maturityISO } = byCusip[t];
+    events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    // Accrual horizon for this CUSIP ends at maturity or today, whichever first.
+    const endISO = minISO(maturityISO, today);
+    const rate = coupon / 100;
+
+    let principal = 0;
+    for (let i = 0; i < events.length; i++) {
+      // Apply this event's principal change at its date.
+      principal += events[i].principalDelta;
+      if (principal < 0) principal = 0; // never accrue on negative principal
+      const segStart = events[i].date;
+      const segEnd = i + 1 < events.length ? events[i + 1].date : endISO;
+      if (segEnd <= segStart || principal <= 0) continue;
+      // Clamp the segment to the accrual horizon.
+      const clampedEnd = minISO(segEnd, endISO);
+      if (clampedEnd <= segStart) continue;
+      accrueSegment(byMonth, segStart, clampedEnd, principal, rate);
+    }
+  }
+
+  for (const k of Object.keys(byMonth)) allTime += byMonth[k];
+  return { byMonth, allTime };
+}
+
+// Spread principal x rate x days/365 across the calendar months the interval
+// touches, attributing each month's portion to that month's bucket.
+function accrueSegment(byMonth, startISO, endISO, principal, rate) {
+  let cursor = startISO;
+  while (cursor < endISO) {
+    // First day of next month after `cursor`.
+    const [y, m] = cursor.split("-");
+    const yi = parseInt(y, 10);
+    const mi = parseInt(m, 10);
+    const nextMonth = mi === 12 ? `${yi + 1}-01-01` : `${yi}-${String(mi + 1).padStart(2, "0")}-01`;
+    const chunkEnd = minISO(nextMonth, endISO);
+    const days = daysBetweenISO(cursor, chunkEnd);
+    if (days > 0) {
+      const key = cursor.slice(0, 7);
+      byMonth[key] = (byMonth[key] || 0) + principal * rate * (days / 365);
+    }
+    cursor = chunkEnd;
+  }
+}
+
 // Full history grouped by the chosen granularity, optional date filter.
 function buildChartData(events, groupBy, selectedYears) {
   const filtered = events.filter((e) => {
@@ -287,7 +397,7 @@ function CardTitle({ icon, children }) {
   );
 }
 
-function KpiCard({ label, value, color, yoy }) {
+function KpiCard({ label, value, color, yoy, sub }) {
   return (
     <div
       style={{
@@ -326,6 +436,11 @@ function KpiCard({ label, value, color, yoy }) {
         <div style={{ fontFamily: FONT_MONO, fontSize: 11, marginTop: 6 }}>
           <span style={{ color: growthColor(yoy) }}>{fmtPct(yoy)}</span>
           <span style={{ color: T.textFaint }}> vs prior year</span>
+        </div>
+      )}
+      {sub && (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 6 }}>
+          {sub}
         </div>
       )}
     </div>
@@ -1316,6 +1431,25 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
 
+  // Item 36: estimated accrued interest on US Bank Bonds, derived on the fly
+  // from buy/sell transactions + coupon/maturity in notes. Bucketed by month.
+  const bondAccrual = useMemo(() => computeBankBondsAccrual(transactions), [transactions]);
+
+  // Estimated Bank Bonds interest folded into the same KPI windows.
+  const bondKpis = useMemo(() => {
+    const now = new Date();
+    const thisYear = String(now.getFullYear());
+    const thisMonth = now.toISOString().slice(0, 7);
+    let allTime = 0, ytd = 0, month = 0;
+    for (const k of Object.keys(bondAccrual.byMonth)) {
+      const v = bondAccrual.byMonth[k];
+      allTime += v;
+      if (k.startsWith(thisYear)) ytd += v;
+      if (k === thisMonth) month += v;
+    }
+    return { allTime, ytd, month };
+  }, [bondAccrual]);
+
   const costBasis = useMemo(() => computeCostBasis(transactions), [transactions]);
   const positionRows = useMemo(
     () => buildPositionRows(events, costBasis),
@@ -1499,11 +1633,25 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   </div>
                 )}
 
-                {/* KPI cards */}
+                {/* KPI cards — dividends + estimated Bank Bonds accrued interest */}
                 <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-                  <KpiCard label="All Time" value={fmtUSD0(kpis.allTime, valuesHidden)} />
-                  <KpiCard label="YTD" value={fmtUSD0(kpis.ytd, valuesHidden)} yoy={kpis.yoyYtd} />
-                  <KpiCard label="This Month" value={fmtUSD0(kpis.month, valuesHidden)} yoy={kpis.yoyMonth} />
+                  <KpiCard
+                    label="All Time"
+                    value={fmtUSD0(kpis.allTime + bondKpis.allTime, valuesHidden)}
+                    sub={bondKpis.allTime > 0 ? `incl. ${fmtUSD0(bondKpis.allTime, valuesHidden)} est. bond interest` : null}
+                  />
+                  <KpiCard
+                    label="YTD"
+                    value={fmtUSD0(kpis.ytd + bondKpis.ytd, valuesHidden)}
+                    yoy={kpis.yoyYtd}
+                    sub={bondKpis.ytd > 0 ? `incl. ${fmtUSD0(bondKpis.ytd, valuesHidden)} est. bond interest` : null}
+                  />
+                  <KpiCard
+                    label="This Month"
+                    value={fmtUSD0(kpis.month + bondKpis.month, valuesHidden)}
+                    yoy={kpis.yoyMonth}
+                    sub={bondKpis.month > 0 ? `incl. ${fmtUSD0(bondKpis.month, valuesHidden)} est. bond interest` : null}
+                  />
                 </div>
 
                 {/* Group-by selector */}
