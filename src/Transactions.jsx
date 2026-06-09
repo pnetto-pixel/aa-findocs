@@ -2360,14 +2360,22 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     // Reuse a saved asset class for this ticker if known; else infer from the
     // symbol, falling back to "Stocks" for plain US tickers.
     const known = knownClassByTicker && knownClassByTicker.get(symbol);
+    const assetClass = known || inferAssetClass(symbol) || "Stocks";
+
+    // Item 40: Fidelity reports CD/bond prices as a percent-of-face decimal
+    // (e.g. 100.00 = 100% of a $1,000 face value per unit). Multiply by 10 so
+    // price becomes the real USD value per unit (100.00 -> $1,000). Only Bank
+    // Bonds (CUSIP_RX) get this correction; plain tickers are untouched.
+    const finalPrice = assetClass === "Bank Bonds" ? priceN * 10 : priceN;
+
     const tx = {
       id: newId(),
       date: isoDate,
       side,
       ticker: symbol,
-      assetClass: known || inferAssetClass(symbol) || "Stocks",
+      assetClass,
       qty,
-      price: priceN,
+      price: finalPrice,
       currency: "USD",
       fee,
       notes,

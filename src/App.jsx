@@ -246,6 +246,78 @@ function applyTxQty(holdings, netQty) {
   return changed ? updated : null;
 }
 
+// Permanent aggregated "US Bank Bonds" holding (item 37). One manual holding
+// whose value is the net principal invested across all Bank Bonds CUSIPs.
+const BANK_BONDS_ID = "bank-bonds-aggregate";
+
+// Net principal invested in Bank Bonds, derived from transactions:
+//   per CUSIP: Σ(buy qty × price) − Σ(sell qty × price)
+// Prices already in real USD per unit (Fidelity x10 correction is applied at
+// import time, item 40). Returns the total in USD (floored at 0 — fully
+// matured/sold positions read as zero, never negative).
+function computeBankBondsPrincipal(transactions) {
+  let total = 0;
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!isFinite(qty) || !isFinite(price)) continue;
+    const amt = qty * price;
+    if (tx.side === "buy") total += amt;
+    else if (tx.side === "sell") total -= amt;
+  }
+  return Math.max(0, total);
+}
+
+// Ensures a single manual "US Bank Bonds" holding reflects `principal`.
+// - Mirrors only the aggregated holding; Cash and other manual holdings (e.g.
+//   BRA Fixed Income) are never touched.
+// - When there are Bank Bonds transactions, the holding is created if missing
+//   and its manualValue kept in sync.
+// - When principal is 0 AND no holding exists yet, nothing is added (avoids an
+//   empty placeholder for users with no bonds).
+// Returns a patched holdings array if anything changed, null otherwise.
+function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
+  const arr = Array.isArray(holdings) ? holdings : [];
+  const existing = arr.find((h) => h && h.id === BANK_BONDS_ID);
+
+  if (!existing) {
+    if (!hasBankBondTx) return null; // nothing to track yet
+    return [
+      ...arr,
+      {
+        id: BANK_BONDS_ID,
+        type: "manual",
+        manualMode: "value",
+        ticker: "US BANK BONDS",
+        name: "US Bank Bonds",
+        assetClass: "Bank Bonds",
+        assetClassOverride: "Bank Bonds",
+        manualCurrency: "USD",
+        qty: null,
+        manualPrice: null,
+        manualValue: principal,
+        price: null,
+        target: existingTargetFallback(arr),
+        derivedFromTransactions: true,
+        lastUpdated: new Date().toISOString(),
+      },
+    ];
+  }
+
+  if (existing.manualValue === principal) return null;
+  return arr.map((h) =>
+    h.id === BANK_BONDS_ID
+      ? { ...h, manualValue: principal, lastUpdated: new Date().toISOString() }
+      : h
+  );
+}
+
+// Keep a 0 target by default (consistent with new manual holdings).
+function existingTargetFallback() {
+  return 0;
+}
+
 async function saveHoldingsToServer(auth, holdings) {
   const res = await fetch("/api/holdings", {
     method: "PUT",
@@ -637,10 +709,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         // Sync qty of auto holdings from the transactions log
         const txs = await fetchTransactionsForSync(auth);
         if (!cancelled && txs) {
+          let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
             loadedHoldings = patched;
-            saveHoldingsToServer(auth, patched).catch(() => {});
+            didChange = true;
+          }
+          // Item 37: sync the aggregated "US Bank Bonds" manual holding value
+          // from the net principal invested across Bank Bonds transactions.
+          const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+          const bbPatched = applyBankBondsHolding(
+            loadedHoldings,
+            computeBankBondsPrincipal(txs),
+            hasBankBondTx
+          );
+          if (bbPatched) {
+            loadedHoldings = bbPatched;
+            didChange = true;
+          }
+          if (didChange) {
+            saveHoldingsToServer(auth, loadedHoldings).catch(() => {});
           }
         }
 
@@ -897,6 +985,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const patched = applyTxQty(updated, netQty);
         if (patched) updated = patched;
       }
+      // Item 37: sync the aggregated "US Bank Bonds" manual holding value.
+      if (txs) {
+        const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+        const bbPatched = applyBankBondsHolding(
+          updated,
+          computeBankBondsPrincipal(txs),
+          hasBankBondTx
+        );
+        if (bbPatched) updated = bbPatched;
+      }
       return updated;
     });
 
@@ -934,7 +1032,15 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   function handleTransactionsChange(txs) {
     const netQty = computeNetQty(txs);
-    setHoldings((prev) => applyTxQty(prev, netQty) ?? prev);
+    const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+    const principal = computeBankBondsPrincipal(txs);
+    setHoldings((prev) => {
+      let next = applyTxQty(prev, netQty) ?? prev;
+      // Item 37: keep the aggregated "US Bank Bonds" holding in sync.
+      const bbPatched = applyBankBondsHolding(next, principal, hasBankBondTx);
+      if (bbPatched) next = bbPatched;
+      return next;
+    });
   }
 
   function removeHolding(id) {
