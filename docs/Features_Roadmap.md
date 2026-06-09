@@ -45,6 +45,7 @@
 - **Item 41** (jun/2026): Reordenacao de cards em `src/Dividends.jsx`. Ordem final: (1) Income History, (2) Position Dividends, (3) Dividends Monthly Y/Y, (4) Dividend History. Mudanca de layout puro, sem alteracao de logica.
 - **Item 42** (jun/2026): Default do month selector em "Dividends Monthly Y/Y" = mes corrente (`new Date().getMonth() + 1`) se presente nos dados; caso contrario, manter o mes mais recente com dados. Apenas `src/Dividends.jsx`.
 - **Item 43** (jun/2026): Group by Asset Class em "Dividends Monthly Y/Y" com grupos colapsaveis (mesmo padrao do Position Performance). State `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class". Apenas `src/Dividends.jsx`.
+- **Item 32** (jun/2026 — PR #81): Qty de auto holdings derivada automaticamente do log de Transactions. Três pontos de sync: **(1) load** — ao carregar a página, busca `/api/transactions`, computa net qty e corrige holdings no Redis se mudou; **(2) Refresh All** — transactions buscadas em paralelo com preços, qty sync aplicado no mesmo `setHoldings` atômico; **(3) live** — `persist()` em `TransactionsView` chama `onTransactionsChange?.(nextList)` após cada save (add, edit, delete, bulk delete, bulk class, import); `App.jsx` recebe e aplica imediatamente via `handleTransactionsChange`. Holdings sem nenhuma transação ficam inalterados (backwards-compatible). Input de Quantity removido do form de edição do `HoldingRow` — qty é somente leitura para auto holdings.
 
 ---
 
@@ -58,9 +59,7 @@
 
 
 ### Tab Holdings — Qty de live assets via Transactions
-- **Item 32** ⚠️ *Pré-requisito do Item 33*: Remover a possibilidade de editar manualmente a quantidade (`qty`) de holdings do tipo `auto` (live assets com ticker) no card Holdings. A quantidade deve ser derivada automaticamente do saldo líquido no log de Transactions (soma de buys menos sells). Enquanto o Item 33 não estiver implementado, o campo qty continua existindo no Redis mas o formulário de edição do holding não deve exibi-lo nem permitir alterá-lo.
-
-- **Item 33** ⚠️ *Depende do Item 32*: Remover o formulário de adição de live assets da tab Holdings. Todo ativo com ticker deve entrar pelo log de Transactions — o holding é criado/atualizado automaticamente a partir do saldo líquido das transações. Holdings `type: "manual"` e Cash continuam sendo adicionados diretamente em Holdings normalmente.
+- **Item 33** ⚠️ *Depende do Item 32 (concluído)*: Remover o formulário de adição de live assets da tab Holdings. Todo ativo com ticker deve entrar pelo log de Transactions — o holding é criado/atualizado automaticamente a partir do saldo líquido das transações. Holdings `type: "manual"` e Cash continuam sendo adicionados diretamente em Holdings normalmente.
 
 ### Tab Transactions — Split e Grouping de ativos
 - **Item 35** 🧠 *Opus recomendado*: Suporte a eventos de split e grouping (reverse split) de ações. Quando um split ocorrer (ex: NVDA 10:1), o histórico de transações anteriores deve ser ajustado para refletir a nova quantidade e preço unitário equivalentes, mantendo o custo total inalterado. Interface para registrar um evento de split/grouping (ticker, data, fator), com preview do impacto antes de aplicar. Afeta cálculo de Position Performance, YoC e custo médio.
