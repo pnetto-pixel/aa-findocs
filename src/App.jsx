@@ -208,6 +208,43 @@ async function fetchHoldingsFromServer(auth) {
   return await res.json();
 }
 
+async function fetchTransactionsForSync(auth) {
+  try {
+    const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.exists && Array.isArray(d.transactions) ? d.transactions : [];
+  } catch {
+    return null;
+  }
+}
+
+function computeNetQty(transactions) {
+  const net = {};
+  for (const tx of transactions) {
+    if (!tx.ticker || tx.qty == null) continue;
+    const t = tx.ticker.toUpperCase();
+    if (net[t] == null) net[t] = 0;
+    if (tx.side === "buy") net[t] += Number(tx.qty);
+    else if (tx.side === "sell") net[t] -= Number(tx.qty);
+  }
+  return net;
+}
+
+// Returns patched holdings array if any qty changed, null otherwise.
+// Only updates auto holdings that have at least one transaction.
+function applyTxQty(holdings, netQty) {
+  let changed = false;
+  const updated = holdings.map((h) => {
+    if (h.type !== "auto" || !(h.ticker in netQty)) return h;
+    const computed = Math.max(0, netQty[h.ticker]);
+    if (h.qty === computed) return h;
+    changed = true;
+    return { ...h, qty: computed };
+  });
+  return changed ? updated : null;
+}
+
 async function saveHoldingsToServer(auth, holdings) {
   const res = await fetch("/api/holdings", {
     method: "PUT",
@@ -589,20 +626,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const result = await fetchHoldingsFromServer(auth);
         if (cancelled) return;
 
+        let loadedHoldings;
         if (result.exists && Array.isArray(result.holdings)) {
           // Server has data → use it
-          const withCash = ensureCashAccount(result.holdings);
-          setHoldings(withCash);
-          try {
-            localStorage.setItem("holdings", JSON.stringify(withCash));
-          } catch (e) {}
+          loadedHoldings = ensureCashAccount(result.holdings);
           setSyncState("synced");
         } else if (localData && Array.isArray(localData) && localData.length > 0) {
           // Server empty but local has data → migrate up
-          const withCash = ensureCashAccount(localData);
-          setHoldings(withCash);
+          loadedHoldings = ensureCashAccount(localData);
           try {
-            const saveResult = await saveHoldingsToServer(auth, withCash);
+            const saveResult = await saveHoldingsToServer(auth, loadedHoldings);
             if (!cancelled) {
               setLastSavedAt(saveResult.savedAt);
               setSyncState("synced");
@@ -612,8 +645,25 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           }
         } else {
           // Both empty → fresh start, but cash always present
-          setHoldings(ensureCashAccount([]));
+          loadedHoldings = ensureCashAccount([]);
           setSyncState("synced");
+        }
+
+        // Sync qty of auto holdings from the transactions log
+        const txs = await fetchTransactionsForSync(auth);
+        if (!cancelled && txs) {
+          const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
+          if (patched) {
+            loadedHoldings = patched;
+            saveHoldingsToServer(auth, patched).catch(() => {});
+          }
+        }
+
+        if (!cancelled) {
+          setHoldings(loadedHoldings);
+          try {
+            localStorage.setItem("holdings", JSON.stringify(loadedHoldings));
+          } catch (e) {}
         }
       } catch (e) {
         if (cancelled) return;
@@ -3206,20 +3256,16 @@ function HoldingRow({
   onChangeEditClassValue,
 }) {
   const [editing, setEditing] = useState(false);
-  const [draftQty, setDraftQty] = useState("");
   const [draftTarget, setDraftTarget] = useState("");
 
   function startEdit() {
-    setDraftQty(holding.qty != null ? String(holding.qty) : "");
     setDraftTarget(holding.target != null ? String(holding.target) : "");
     setEditing(true);
   }
 
   function saveEdit() {
-    const q = parseFloat(draftQty);
     const t = draftTarget === "" ? 0 : parseFloat(draftTarget);
     const patch = {};
-    if (!isNaN(q) && q >= 0) patch.qty = q;
     if (!isNaN(t) && t >= 0 && t <= 100) patch.target = t;
     onUpdate(patch);
     setEditing(false);
@@ -3440,23 +3486,7 @@ function HoldingRow({
             marginTop: 8,
           }}
         >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 9,
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                  color: T.textFaint,
-                  fontFamily: FONT_MONO,
-                  marginBottom: 4,
-                }}
-              >
-                Quantity
-              </label>
-              <Input value={draftQty} onChange={(e) => setDraftQty(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
-            </div>
+          <div style={{ marginBottom: 8 }}>
             <div>
               <label
                 style={{
@@ -3471,7 +3501,7 @@ function HoldingRow({
               >
                 Target %
               </label>
-              <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" />
+              <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
