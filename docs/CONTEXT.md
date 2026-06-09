@@ -335,19 +335,21 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 ### Fontes de dados (validadas via probe PR #58)
 
-| Asset class | Fonte | Método |
+| Asset class | Fonte | Metodo |
 |---|---|---|
 | US Stocks, ETFs, REITs, Bonds ETFs | Yahoo `chart?events=div` | Auto server-side |
-| BRA Stocks / Fixed Income / Bank Bonds | Sem API gratuita | Fora do escopo atual |
+| Bank Bonds (CDs/bonds) | Accrual estimado (cupom% + maturidade do campo `notes`) | Frontend-only, sem endpoint |
+| BRA Stocks / BRA Fixed Income | Sem API gratuita | Fora do escopo atual |
 
 ### `api/dividends.js` (POST)
 
 - Recebe `{ transactions }`
 - Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`)
-- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrência 3
-- Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty ≤ 0
+- **Bank Bonds (CUSIP) nao passam por este endpoint** — income e calculado no frontend via accrual estimado (item 36, PR #86)
+- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrencia 3
+- Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty <= 0
 - Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }], meta }`
-- Cache Redis versionado (`:dividends:v1:<txHash>`), TTL até próximo fechamento do mercado US
+- Cache Redis versionado (`:dividends:v3:<txHash>`), TTL ate proximo fechamento do mercado US
 
 ### UI (`src/Dividends.jsx`)
 
@@ -355,6 +357,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Filtro por ano** (PR #62): dropdown `<select>` com "All years" + anos presentes nos dados (ordem decrescente). Substituiu os inputs de date range From/To.
   - **Y/Y nos KPIs YTD e This Month** (PR #62): variacao percentual ano-a-ano exibida abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`.
   - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
+  - **Bank Bonds accrual nos KPIs (PR #86, item 36):** `computeBankBondsAccrual` (helpers `parseBondNotes` + replay por CUSIP, ACT/365) calcula juros estimados de Bank Bonds no frontend. KPIs All Time, YTD e This Month somam o accrual com subtitulo "incl. $X est. bond interest". KPIs Y/Y (variacao percentual) comparam so dividendos reais — accrual excluido intencionalmente. Bar chart nao inclui accrual (so eventos reais da API).
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
   - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 - **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical. Quarto card — apos "Dividends Monthly Y/Y".
@@ -432,6 +435,10 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Responsividade via state + resize listener, sem CSS media queries (PR #85)**|Constraint de inline-styles-only e sem Tailwind/CSS files. Padrao adotado: `windowWidth` state com lazy init `window.innerWidth`, `useEffect` com listener de `resize` e cleanup no unmount. Dimensoes responsivas derivadas inline (ex: clamp de `donutSize` entre 140 e 220). Compativel com SSR defensivo.|
 |**`maxWidth` do container expandido de 640 para 1200 (PR #85)**|640px deixava o conteudo numa faixa estreita centralizada em monitores. 1200px cobre a maioria dos monitores sem precisar de layout de 2 colunas — entrega responsividade com risco minimo de regressao. Mobile (<640px) identico ao anterior.|
 |**DonutChart aceita prop `size` com geometria derivada (PR #85)**|Raios (`rOuter`, `rInner`) e font-sizes calculados proporcionalmente a partir de `size`. Permite escalar o grafico em qualquer contexto sem duplicar o componente. Default 140 preserva comportamento anterior.|
+|**Preco Fidelity Bank Bonds multiplicado por 10 no parser (PR #86, item 40)**|Fidelity registra preco de CDs/bonds como fator decimal (1.00 = 100% do valor de face, não $1.00). Fator 10 converte para USD real (ex: 1.00 * 10 = $10 por lote de $1.000 = $10.000 total). Logica isolada: so aplica quando `assetClass === "Bank Bonds"` (CUSIP); outros ativos intocados.|
+|**Holding Bank Bonds agregado por principal liquido (PR #86, item 37)**|Um unico holding `id: "bank-bonds-aggregate"` por usuario (nao um por CUSIP). Principal = Sigma(buy qty*price) - Sigma(sell qty*price), floored em 0. Mesmo padrao de sync de 3 pontos do item 32 (load, Refresh All, onTransactionsChange). Mantido como `manualMode: "value"` + `derivedFromTransactions: true` — nao e um auto holding (sem ticker live), mas o valor e derivado automaticamente.|
+|**Income Bank Bonds = accrual estimado no frontend, sem tocar endpoints (PR #86, item 36)**|Sem API gratuita de pagamentos historicos por CUSIP. Solucao: accrual pro-rata ACT/365 calculado em `src/Dividends.jsx` a partir de buy/sell + cupom%/maturidade no campo `notes`. Rotulado "est." na UI. Sem bump de cache (dividends v3, perf-history v12). KPIs Y/Y comparam so dividendos reais — accrual somado apenas nos KPIs de valor absoluto (All Time, YTD, This Month).|
+|**Transacoes Bank Bonds sem notas de cupom/maturidade ignoradas no accrual (PR #86)**|Se `notes` nao tiver o padrao "X.XX% \| MM/DD/YYYY", `parseBondNotes` retorna null e a transacao e ignorada no calculo de accrual. Silencioso por design — bond sem dados de cupom nao pode contribuir com estimativa.|
 
 -----
 
