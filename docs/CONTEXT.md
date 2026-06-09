@@ -425,6 +425,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**NET QTY row sobre linhas visíveis, não todas (PR #77)**|`tfoot` calcula `sum(buy) − sum(sell)` sobre `visible` (pós-filtro/sort). Filtrar por ticker mostra posição líquida daquele ativo especificamente.|
 |**Qty de auto holdings derivada de Transactions, não editada manualmente (PR #81)**|Três helpers module-level em `App.jsx`: `fetchTransactionsForSync(auth)`, `computeNetQty(transactions)`, `applyTxQty(holdings, netQty)`. Sync em três momentos: load inicial, Refresh All (em paralelo com preços), e live via callback `onTransactionsChange` de `TransactionsView`. Holdings sem nenhuma transação ficam intactos — compatível com dados antigos.|
 |**`onTransactionsChange` callback de TransactionsView → App.jsx (PR #81)**|`persist()` em `Transactions.jsx` é o único ponto de saída de todas as mutações (add, edit, delete, bulk delete, bulk class, import). Adicionar `onTransactionsChange?.(nextList)` ali cobre os 6 casos com um único hook. App.jsx passa `handleTransactionsChange` como prop — sem lifting de state, sem contexto global.|
+|**`applyTxQty` usa `type !== "manual"`, não `type === "auto"` (PR #82)**|Holdings legados criados antes do campo `type` existir têm `type: undefined`. A convenção do app inteiro é `h.type === "manual"` para excluir manuais — todo o resto é tratado como auto. Usar `h.type !== "auto"` em `applyTxQty` excluía silenciosamente esses holdings legados. Regra: nunca condicionar comportamento de auto holdings em `type === "auto"`.|
 
 -----
 
