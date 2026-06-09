@@ -977,6 +977,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     refreshOne(id, t);
   }
 
+  function handleTransactionsChange(txs) {
+    const netQty = computeNetQty(txs);
+    setHoldings((prev) => applyTxQty(prev, netQty) ?? prev);
+  }
+
   function removeHolding(id) {
     if (id === CASH_ID) return; // cash account is permanent
     setHoldings((prev) => prev.filter((h) => h.id !== id));
@@ -1777,6 +1782,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     .map((t) => String(t).toUpperCase())
                 )
               ).sort()}
+              onTransactionsChange={handleTransactionsChange}
             />
           )}
 

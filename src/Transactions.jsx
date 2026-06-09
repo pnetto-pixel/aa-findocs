@@ -3569,7 +3569,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
 // --- Main view -------------------------------------------------------------
 
-export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden }) {
+export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
@@ -3696,6 +3696,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     try {
       await saveTransactionsToServer(auth, nextList);
       setTransactions(nextList);
+      onTransactionsChange?.(nextList);
     } catch (err) {
       setError(err.message || "Save failed");
     } finally {
