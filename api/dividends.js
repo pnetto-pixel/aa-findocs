@@ -20,8 +20,9 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -273,6 +274,11 @@ export default async function handler(req, res) {
   const events = [];
   let payDatesMatched = 0;
   let payDatesMissing = 0;
+  let futureSkipped = 0;
+  // Cash that hasn't landed yet isn't received income. Yahoo lists recently-declared
+  // dividends whose ex-date has already passed (so qtyAtDate > 0 and we'd build an event)
+  // but whose pay date is still in the future — those must not show in history/KPIs.
+  const todayISO = new Date().toISOString().slice(0, 10);
   for (const { ticker, divs } of divsByTicker) {
     if (!Array.isArray(divs)) continue;
     const assetClass = relevant.find((tx) => tx.ticker === ticker)?.assetClass || 'Stocks';
@@ -286,6 +292,11 @@ export default async function handler(req, res) {
       else payDatesMissing++;
       // Bucket by pay date (when cash lands) when known; otherwise fall back to ex-date.
       const date = payDate || exDate;
+      // Skip dividends not yet paid (future pay date, or future ex-date in the fallback).
+      if (date > todayISO) {
+        futureSkipped++;
+        continue;
+      }
       events.push({
         date,
         exDate,
@@ -311,6 +322,7 @@ export default async function handler(req, res) {
       eventsFound: events.length,
       payDatesMatched,
       payDatesMissing,
+      futureSkipped,
       payDatesWarm: allWarm,
       payDatesSource: process.env.POLYGON_API_KEY ? 'polygon' : 'none',
     },
