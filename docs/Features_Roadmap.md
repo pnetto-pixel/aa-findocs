@@ -49,6 +49,7 @@
 - **Item 32** (jun/2026 — PR #81): Qty de auto holdings derivada automaticamente do log de Transactions. Tres pontos de sync: **(1) load** — ao carregar a pagina, busca `/api/transactions`, computa net qty e corrige holdings no Redis se mudou; **(2) Refresh All** — transactions buscadas em paralelo com precos, qty sync aplicado no mesmo `setHoldings` atomico; **(3) live** — `persist()` em `TransactionsView` chama `onTransactionsChange?.(nextList)` apos cada save (add, edit, delete, bulk delete, bulk class, import); `App.jsx` recebe e aplica imediatamente via `handleTransactionsChange`. Holdings sem nenhuma transacao ficam inalterados (backwards-compatible). Input de Quantity removido do form de edicao do `HoldingRow` — qty e somente leitura para auto holdings.
 - **Item 33** (jun/2026 — PR #84): Formulario "Add Live Asset" removido da tab Holdings em `src/App.jsx`. Removidos: funcao `handleCSVFile`, bloco JSX da section (~225 linhas) com form colapsavel, inputs Ticker/Quantity/Target%, botao "Add to portfolio", upload CSV, status bar. Todo ativo `type: "auto"` e criado/atualizado exclusivamente via sync com Transactions (item 32). Bundle reduziu de 312.74 kB para 307.89 kB. Holdings `type: "manual"` e Cash continuam sendo adicionados diretamente em Holdings normalmente.
 - **Item 39** (jun/2026): Duas partes. **(1) qtyHeld na ex-date — validado:** `qtyAtDate(transactions, ticker, exDate)` em `api/dividends.js` ja calcula corretamente a qty na ex-date para ambos os cenarios: venda entre ex-date e pay-date preserva a posicao da ex-date; compra entre ex-date e pay-date e excluida. **(2) Bug fix — dividendos futuros apareciam no historico:** o Yahoo lista dividendos recem-declarados cuja ex-date ja passou (qty > 0, evento gerado) mas cujo pay date do Polygon ainda esta no futuro. O evento era datado no futuro (`date = payDate || exDate`) e aparecia no Dividend History / KPIs / Total Return mesmo sem o dinheiro ter caido. Fix: guard `if (date > todayISO) continue;` no loop de eventos descarta dividendos ainda nao pagos (futuro estrito; pay date de hoje continua incluido). Contador `futureSkipped` no `meta` para diagnostico. Server-side, cobre Dividends e Performance num so ponto.
+- **Desktop responsivo** (jun/2026 — PR #85): Container principal expandido de `maxWidth: 640` para `maxWidth: 1200` em `src/App.jsx`. State `windowWidth` com lazy init e listener de `resize` com cleanup no unmount — padrao de responsividade sem CSS media queries. `DonutChart` agora aceita prop `size` (default 140) com raios e fontes derivados proporcionalmente; os dois donuts da secao de alocacao recebem `size` dinamico via IIFE com clamp `[140, 220]`. Mobile (<640px) identico ao anterior — zero regressao.
 
 ---
 
@@ -60,6 +61,11 @@
 ### Tab Aporte Quinzenal
 - **Item 28**: *Futuro:* verificar aportes automaticamente a partir do log de Transactions (reconciliacao plano × realizado)
 
+
+### Desktop responsivo — polish futuro
+- **Layout 2 colunas / sidebar em widescreen**: aproveitar a largura extra de telas > 1024px com layout de 2 colunas (ex: holdings + rebalance side-by-side). Fora do escopo do PR #85.
+- **Responsividade dedicada em sub-views**: Transactions, Performance, Dividends e AporteQuinzenal beneficiam do container expandido, mas nao receberam ajustes internos de layout para widescreen. Pode ser feito em sessions futuras por view.
+- **Font-size por breakpoint**: textos e headings podem escalar com a viewport em telas grandes. Nao implementado no PR #85.
 
 ### Tab Holdings — Mensagem de onboarding
 - **Polish pendente**: O texto "No positions yet. Add your first ticker above." ainda referencia o form removido no item 33. Pode ser atualizado para orientar o usuario a usar a tab Transactions. Nenhuma mensagem explicativa ("Para adicionar um ativo, use a aba Transactions") foi adicionada — pode ser feito num polish futuro.
