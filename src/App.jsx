@@ -869,8 +869,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     setRefreshing(true);
     setToast({ kind: "info", message: `Refreshing ${autoHoldings.length} positions…` });
 
-    // Kick off S&P 500 refresh in parallel (silent)
+    // Kick off S&P 500 refresh and transactions fetch in parallel (silent)
     refreshSp500();
+    const txsPromise = fetchTransactionsForSync(auth);
 
     const results = new Map(); // id -> { ok: true, patch } | { ok: false, error }
     const batchSize = 3;
@@ -897,15 +898,22 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       }
     }
 
-    // Apply everything atomically
-    setHoldings((prev) =>
-      prev.map((h) => {
+    // Apply price patches + qty sync atomically
+    const txs = await txsPromise;
+    const netQty = txs ? computeNetQty(txs) : null;
+    setHoldings((prev) => {
+      let updated = prev.map((h) => {
         const r = results.get(h.id);
         if (!r) return h;
         if (r.ok) return buildHoldingPatch(h, r.data, h.ticker);
         return { ...h, error: r.error };
-      })
-    );
+      });
+      if (netQty) {
+        const patched = applyTxQty(updated, netQty);
+        if (patched) updated = patched;
+      }
+      return updated;
+    });
 
     const successes = Array.from(results.values()).filter((r) => r.ok).length;
     const failures = autoHoldings.length - successes;
