@@ -458,6 +458,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Allocation chart grouping mode
   const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
 
+  // Responsive window width for scaling donuts
+  const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
+  useEffect(() => {
+    function handleResize() {
+      setWindowWidth(window.innerWidth);
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   // Collapsed states for tracked and manual sub-sections (default to collapsed for cleaner first view)
   // Collapsed states for the unified holdings section and the separate cash section.
   // Default collapsed for cleaner first view.
@@ -1316,7 +1326,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             "max(50px, calc(20px + env(safe-area-inset-top, 0px))) calc(16px + env(safe-area-inset-right, 0px)) calc(60px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))",
         }}
       >
-        <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           {/* Modal alert (blocks until OK is tapped) */}
           {alertModal && (
             <div
@@ -1912,31 +1922,43 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
-                  marginBottom: 14,
-                }}
-              >
-                <DonutChart
-                  slices={chartData.targetSlices}
-                  centerLabel="Target"
-                  centerValue={
-                    chartData.totalTarget < 99.5
-                      ? fmtPct(chartData.totalTarget)
-                      : "100%"
-                  }
-                  valuesHidden={valuesHidden}
-                />
-                <DonutChart
-                  slices={chartData.actualSlices}
-                  centerLabel="Actual"
-                  centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
-                  valuesHidden={valuesHidden}
-                />
-              </div>
+              {(() => {
+                // Responsive donut size: clamp [140, 220] based on available column width.
+                // Column width = (min(viewport, 1200) - 32 outer padding - 32 section padding - 12 gap) / 2
+                // Below 640px (mobile) the clamp floor of 140 ensures no regression.
+                const w = Math.min(windowWidth, 1200);
+                const colW = (w - 32 - 32 - 12) / 2;
+                const donutSize = Math.round(Math.min(Math.max(colW * 0.75, 140), 220));
+                return (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 12,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <DonutChart
+                      size={donutSize}
+                      slices={chartData.targetSlices}
+                      centerLabel="Target"
+                      centerValue={
+                        chartData.totalTarget < 99.5
+                          ? fmtPct(chartData.totalTarget)
+                          : "100%"
+                      }
+                      valuesHidden={valuesHidden}
+                    />
+                    <DonutChart
+                      size={donutSize}
+                      slices={chartData.actualSlices}
+                      centerLabel="Actual"
+                      centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
+                      valuesHidden={valuesHidden}
+                    />
+                  </div>
+                );
+              })()}
 
               {/* Shared legend */}
               <ChartLegend
@@ -4131,12 +4153,11 @@ function ToggleButton({ active, onClick, label }) {
   );
 }
 
-function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
-  const size = 140;
+function DonutChart({ slices, centerLabel, centerValue, valuesHidden, size = 140 }) {
   const cx = size / 2;
   const cy = size / 2;
-  const rOuter = 60;
-  const rInner = 38;
+  const rOuter = Math.round(size * 0.4286);
+  const rInner = Math.round(size * 0.2714);
 
   const [hoveredKey, setHoveredKey] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -4275,7 +4296,7 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
           <div
             style={{
               fontFamily: FONT_MONO,
-              fontSize: 8,
+              fontSize: Math.round(size * 0.057),
               letterSpacing: "0.18em",
               color: T.textDim,
               textTransform: "uppercase",
@@ -4287,7 +4308,7 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
           <div
             style={{
               fontFamily: FONT_DISPLAY,
-              fontSize: 15,
+              fontSize: Math.round(size * 0.107),
               fontWeight: 500,
               color: T.text,
               letterSpacing: "-0.01em",
