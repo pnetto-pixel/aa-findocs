@@ -423,6 +423,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Auto-detecção de formato de data no import CSV (PR #77)**|`detectDateFormat()` varre todos os valores de `date` antes de parsear: `A > 12` em `A/B/YYYY` → DMY; `B > 12` → MDY. Default MDY (US/Excel) quando ambíguo — a maioria dos CSVs processados vem de fontes US. Sem seleção manual.|
 |**Datas ISO não dependem do `fmt` (PR #77)**|`parseDate` trata `YYYY-MM-DD` no primeiro ramo, antes de checar `fmt`. O parâmetro `fmt` só é consultado para datas `A/B/YYYY` ambíguas — ISO sempre correto independente do que `detectDateFormat` retornar.|
 |**NET QTY row sobre linhas visíveis, não todas (PR #77)**|`tfoot` calcula `sum(buy) − sum(sell)` sobre `visible` (pós-filtro/sort). Filtrar por ticker mostra posição líquida daquele ativo especificamente.|
+|**Qty de auto holdings derivada de Transactions, não editada manualmente (PR #81)**|Três helpers module-level em `App.jsx`: `fetchTransactionsForSync(auth)`, `computeNetQty(transactions)`, `applyTxQty(holdings, netQty)`. Sync em três momentos: load inicial, Refresh All (em paralelo com preços), e live via callback `onTransactionsChange` de `TransactionsView`. Holdings sem nenhuma transação ficam intactos — compatível com dados antigos.|
+|**`onTransactionsChange` callback de TransactionsView → App.jsx (PR #81)**|`persist()` em `Transactions.jsx` é o único ponto de saída de todas as mutações (add, edit, delete, bulk delete, bulk class, import). Adicionar `onTransactionsChange?.(nextList)` ali cobre os 6 casos com um único hook. App.jsx passa `handleTransactionsChange` como prop — sem lifting de state, sem contexto global.|
 
 -----
 
@@ -461,6 +463,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
+- Item 33: Remover form de adição de live assets da tab Holdings (pré-requisito Item 32 ✅ concluído)
 - Tab Aporte Quinzenal item 28: reconciliacao plano x realizado automatica via Transactions
 - Tab Events (itens 20–22)
 - Validacao de slug/ticker ao adicionar transacao (deferred)
@@ -469,7 +472,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - Auto-refresh silencioso de token Google
 - DELL sell/buy timing agent
 - Refactor `api/price.js` e `api/index-quote.js` pro novo contrato de auth
-- Derivação automática de holdings a partir do log de transações
 - Import automático Fidelity via email parsing
 - Estimativa fixed income via SELIC/IPCA pro-rata
 
