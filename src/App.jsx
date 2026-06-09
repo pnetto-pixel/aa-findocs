@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
-import Papa from "papaparse";
 import TransactionsView from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
@@ -359,25 +358,6 @@ function isUserAdmin(auth) {
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
 const PROFILE_REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-// Flexible CSV field lookup — accepts variations in column naming
-function normalizeCSVRow(row) {
-  const find = (...keys) => {
-    for (const k of keys) {
-      for (const rk of Object.keys(row)) {
-        if (rk.toLowerCase().trim().replace(/[%_\s]/g, "") === k.replace(/[%_\s]/g, "")) {
-          return row[rk];
-        }
-      }
-    }
-    return null;
-  };
-  const ticker = String(find("ticker", "symbol", "stock") || "").trim().toUpperCase();
-  const qty = parseFloat(find("qty", "quantity", "shares", "amount", "units"));
-  const targetRaw = find("target", "targetpct", "allocation", "%", "percent", "target%", "alloc");
-  const target = targetRaw != null ? parseFloat(String(targetRaw).replace("%", "")) : 0;
-  return { ticker, qty, target: isNaN(target) ? 0 : target };
-}
-
 export default function App() {
   // Auth state can be either Google or password.
   //   { kind: 'google', googleToken, email, name, picture }
@@ -443,9 +423,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   const [holdings, setHoldings] = useState(() => ensureCashAccount([]));
   const [loaded, setLoaded] = useState(false);
-  const [ticker, setTicker] = useState("");
-  const [qty, setQty] = useState("");
-  const [target, setTarget] = useState("");
   const [busyIds, setBusyIds] = useState({});
   const [refreshing, setRefreshing] = useState(false);
   // Live USD/BRL rate (BRL per 1 USD), cached locally for offline/first paint.
@@ -453,15 +430,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     const v = parseFloat(localStorage.getItem("usdBrlRate"));
     return isFinite(v) && v > 0 ? v : null;
   });
-  const [formError, setFormError] = useState("");
-  const [csvStatus, setCsvStatus] = useState(null);
   const [showRebalance, setShowRebalance] = useState(false);
   const [newCash, setNewCash] = useState("");
-  const fileInputRef = useRef(null);
   const importJsonRef = useRef(null);
 
   // Manual asset form state
-  const [showAddForm, setShowAddForm] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
   const [manualName, setManualName] = useState("");
   const [manualMode, setManualMode] = useState("value"); // "value" | "qty_price"
@@ -949,36 +922,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
   }
 
-  async function addHolding() {
-    setFormError("");
-    const t = ticker.trim().toUpperCase();
-    const q = parseFloat(qty);
-    const tgt = target === "" ? 0 : parseFloat(target);
-    if (!t) return setFormError("Ticker required");
-    if (!q || q <= 0) return setFormError("Quantity must be > 0");
-    if (tgt < 0 || tgt > 100) return setFormError("Target % must be 0–100");
-
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const newH = {
-      id,
-      type: "auto",
-      ticker: t,
-      qty: q,
-      target: tgt,
-      price: null,
-      name: null,
-      assetClass: null,
-      assetClassOverride: null,
-      error: null,
-      lastUpdated: null,
-    };
-    setHoldings((prev) => [...prev, newH]);
-    setTicker("");
-    setQty("");
-    setTarget("");
-    refreshOne(id, t);
-  }
-
   function handleTransactionsChange(txs) {
     const netQty = computeNetQty(txs);
     setHoldings((prev) => applyTxQty(prev, netQty) ?? prev);
@@ -1112,76 +1055,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       }
     };
     reader.readAsText(file);
-  }
-
-  function handleCSVFile(file) {
-    if (!file) return;
-    setCsvStatus({ kind: "parsing", message: "Reading file…" });
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const rows = (results.data || []).map(normalizeCSVRow);
-        const valid = rows.filter((r) => r.ticker && r.qty > 0);
-        const invalid = rows.length - valid.length;
-
-        if (valid.length === 0) {
-          setCsvStatus({
-            kind: "error",
-            message: "No valid rows found. Need columns: ticker, qty, target (optional).",
-          });
-          return;
-        }
-
-        // Merge: if ticker already exists, update qty/target; otherwise add
-        const newPositions = [];
-        setHoldings((prev) => {
-          const existing = new Map(prev.map((h) => [h.ticker, h]));
-          const merged = [...prev];
-          for (const r of valid) {
-            if (existing.has(r.ticker)) {
-              const idx = merged.findIndex((h) => h.ticker === r.ticker);
-              merged[idx] = { ...merged[idx], qty: r.qty, target: r.target };
-            } else {
-              const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-              const pos = {
-                id,
-                type: "auto",
-                ticker: r.ticker,
-                qty: r.qty,
-                target: r.target,
-                price: null,
-                name: null,
-                assetClass: null,
-                assetClassOverride: null,
-                error: null,
-                lastUpdated: null,
-              };
-              merged.push(pos);
-              newPositions.push(pos);
-            }
-          }
-          return merged;
-        });
-
-        setCsvStatus({
-          kind: "success",
-          message: `Imported ${valid.length} ${valid.length === 1 ? "position" : "positions"}${invalid > 0 ? ` (${invalid} skipped)` : ""}. Fetching prices…`,
-        });
-
-        // Fetch prices for new positions
-        Promise.all(newPositions.map((p) => refreshOne(p.id, p.ticker))).then(() => {
-          setCsvStatus({
-            kind: "success",
-            message: `Imported ${valid.length} ${valid.length === 1 ? "position" : "positions"}.`,
-          });
-          setTimeout(() => setCsvStatus(null), 4000);
-        });
-      },
-      error: (err) => {
-        setCsvStatus({ kind: "error", message: `Parse failed: ${err.message}` });
-      },
-    });
   }
 
   // Rebalance: BUYS ONLY, integer shares, capped at $1000 per asset.
@@ -2484,231 +2357,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </>
           )}
 
-          {/* Add form */}
-          <section
-            style={{
-              marginTop: 18,
-              background: T.card,
-              border: `1px solid ${T.borderSoft}`,
-              borderRadius: 4,
-              padding: 14,
-            }}
-          >
-            <button
-              onClick={() => setShowAddForm(!showAddForm)}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: T.text,
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: 0,
-              }}
-            >
-              <span
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                  color: T.gold,
-                }}
-              >
-                <Plus size={12} />
-                Add Live Asset
-              </span>
-              <ChevronDown
-                size={14}
-                style={{
-                  color: T.textDim,
-                  transform: showAddForm ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                }}
-              />
-            </button>
-
-            {showAddForm && (
-              <div style={{ marginTop: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-              <Input
-                placeholder="Ticker"
-                value={ticker}
-                onChange={(e) => setTicker(e.target.value.toUpperCase())}
-                onEnter={addHolding}
-                style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}
-              />
-              <Input
-                placeholder="Quantity"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                onEnter={addHolding}
-                inputMode="decimal"
-              />
-              <Input
-                placeholder="Target %"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                onEnter={addHolding}
-                inputMode="decimal"
-              />
-            </div>
-            {/^[A-Z]{4}\d{1,2}$/.test(ticker.trim()) && (
-              <div
-                style={{
-                  fontSize: 10,
-                  color: "#7898a9",
-                  fontFamily: FONT_MONO,
-                  letterSpacing: "0.06em",
-                  marginBottom: 8,
-                  marginTop: -4,
-                }}
-              >
-                B3 ticker detected — price will be fetched in BRL and converted to USD.
-              </div>
-            )}
-            <button
-              onClick={addHolding}
-              style={{
-                width: "100%",
-                background: T.gold,
-                color: T.bg,
-                border: "none",
-                padding: "11px 16px",
-                fontWeight: 600,
-                fontSize: 12,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                borderRadius: 2,
-              }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              Add to portfolio
-            </button>
-            {formError && (
-              <div
-                style={{
-                  marginTop: 10,
-                  fontSize: 12,
-                  color: T.red,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <AlertCircle size={12} />
-                {formError}
-              </div>
-            )}
-
-            {/* Divider + CSV upload */}
-            <div
-              style={{
-                marginTop: 14,
-                paddingTop: 14,
-                borderTop: `1px dashed ${T.border}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-                flexWrap: "wrap",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: T.textDim,
-                  fontFamily: FONT_MONO,
-                  letterSpacing: "0.05em",
-                }}
-              >
-                Or import from CSV
-                <span style={{ color: T.textFaint, marginLeft: 6 }}>
-                  (ticker, qty, target)
-                </span>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  handleCSVFile(f);
-                  e.target.value = ""; // allow re-uploading same file
-                }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${T.gold}`,
-                  color: T.gold,
-                  padding: "7px 12px",
-                  fontSize: 11,
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  fontWeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  borderRadius: 2,
-                }}
-              >
-                <Upload size={12} strokeWidth={2.5} />
-                Upload CSV
-              </button>
-            </div>
-
-            {csvStatus && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: "8px 10px",
-                  background:
-                    csvStatus.kind === "error"
-                      ? T.redBg
-                      : csvStatus.kind === "success"
-                      ? T.greenBg
-                      : T.cardElev,
-                  border: `1px solid ${
-                    csvStatus.kind === "error"
-                      ? T.red
-                      : csvStatus.kind === "success"
-                      ? T.green
-                      : T.border
-                  }33`,
-                  borderRadius: 2,
-                  fontSize: 12,
-                  color:
-                    csvStatus.kind === "error"
-                      ? T.red
-                      : csvStatus.kind === "success"
-                      ? T.green
-                      : T.textDim,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontFamily: FONT_MONO,
-                }}
-              >
-                {csvStatus.kind === "error" && <AlertCircle size={12} />}
-                {csvStatus.kind === "success" && <CheckCircle2 size={12} />}
-                {csvStatus.kind === "parsing" && <RefreshCw size={12} className="spin" />}
-                {csvStatus.message}
-              </div>
-            )}
-              </div>
-            )}
-          </section>
           {/* Add manual asset section */}
           <section
             style={{

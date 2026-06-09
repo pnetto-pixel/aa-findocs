@@ -312,6 +312,7 @@ Loading / erro / vazio com mensagens específicas por `meta.reason`.
 - **Badge B3:** visível para holdings com `market === "B3"`
 - **Eye Toggle (`valuesHidden`):** state global em `App.jsx`, persiste em `localStorage`. Prop passado para `<TransactionsView>` e `<PerformanceView>`.
 - **Manage Users:** seção colapsável no dashboard, visível apenas para `isAdmin`
+- **Como adicionar holdings (PR #84 — jun/2026):** O formulario "Add Live Asset" foi removido. Tickers `type: "auto"` sao criados/atualizados exclusivamente via sync com o log de Transactions (item 32/33). Apenas o form "Add Manual Asset" permanece na tab Holdings — para holdings manuais e Cash.
 
 ### Holdings manuais — BRA Fixed Income (PR #49 — jun/2026)
 
@@ -427,6 +428,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Qty de auto holdings derivada de Transactions, não editada manualmente (PR #81)**|Três helpers module-level em `App.jsx`: `fetchTransactionsForSync(auth)`, `computeNetQty(transactions)`, `applyTxQty(holdings, netQty)`. Sync em três momentos: load inicial, Refresh All (em paralelo com preços), e live via callback `onTransactionsChange` de `TransactionsView`. Holdings sem nenhuma transação ficam intactos — compatível com dados antigos.|
 |**`onTransactionsChange` callback de TransactionsView → App.jsx (PR #81)**|`persist()` em `Transactions.jsx` é o único ponto de saída de todas as mutações (add, edit, delete, bulk delete, bulk class, import). Adicionar `onTransactionsChange?.(nextList)` ali cobre os 6 casos com um único hook. App.jsx passa `handleTransactionsChange` como prop — sem lifting de state, sem contexto global.|
 |**`applyTxQty` usa `type !== "manual"`, não `type === "auto"` (PR #82)**|Holdings legados criados antes do campo `type` existir têm `type: undefined`. A convenção do app inteiro é `h.type === "manual"` para excluir manuais — todo o resto é tratado como auto. Usar `h.type !== "auto"` em `applyTxQty` excluía silenciosamente esses holdings legados. Regra: nunca condicionar comportamento de auto holdings em `type === "auto"`.|
+|**Form "Add Live Asset" removido — auto holdings entram exclusivamente via Transactions (PR #84)**|Com item 32 concluido, o form manual de adicionar ticker + qty ficou obsoleto e era fonte potencial de inconsistencia (usuario poderia criar holding com qty errada, divergindo do saldo real em Transactions). Remover o form elimina o vetor de inconsistencia e simplifica a UX: um unico fluxo (Transactions) alimenta auto holdings.|
 
 -----
 
@@ -465,7 +467,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Item 33: Remover form de adição de live assets da tab Holdings (pré-requisito Item 32 ✅ concluído)
 - Tab Aporte Quinzenal item 28: reconciliacao plano x realizado automatica via Transactions
 - Tab Events (itens 20–22)
 - Validacao de slug/ticker ao adicionar transacao (deferred)
