@@ -181,9 +181,9 @@ Indicadores visuais no header: label dourado + seta `↑↓` se sort ativo, `•
 
 ### Import / Export
 
-Modal `ImportModal` com 2 tabs:
+Modal `ImportModal` com 2 tabs — abre por default na aba **Fidelity** (mudado no PR #90):
 
-- **Upload CSV** (default): file picker, parser genérico com:
+- **Upload CSV**: file picker, parser genérico com:
   - Auto-detect de delimitador (`,` `;` `\t` `|`)
   - Auto-detect de header (aliases PT/EN)
   - Decimal handling: prompt amarelo se vírgula detectada em campos numéricos → re-parse tratando como decimal BR
@@ -191,7 +191,8 @@ Modal `ImportModal` com 2 tabs:
   - Preview com tabela: contadores `N valid · M errors · X need class`, modo Append vs Replace
   - needsAssetClass: dropdown completo no preview pra resolver linha por linha
   - Sides aceitas: buy/sell/compra/venda/c/v
-- **Fidelity** (`parseFidelityCSV`): parser dedicado para o "Accounts History" CSV nativo da Fidelity:
+- **Fidelity** (`parseFidelityCSV`): parser dedicado para o "Accounts History" CSV nativo da Fidelity. Tab **default** do modal (PR #90):
+  - File picker aceita **multiplos arquivos** — resultados mergeados, deduplicados cross-arquivo via `dupKey` e ordenados por data (PR #90)
   - Pula BOM + 2 linhas em branco iniciais
   - Acha header pela presença de "Run Date" + "Action"
   - Importa **só** `YOU BOUGHT` e `YOU SOLD`
