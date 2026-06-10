@@ -1,28 +1,32 @@
 // api/dividends.js
 // POST { transactions }
-// Fetches US dividend history from Yahoo Finance (keyless, same host as perf-history.js).
+// Fetches US dividend history from Yahoo Finance (primary, keyless) with Finnhub as
+// fallback for tickers Yahoo returns null/empty for (e.g. ADRs like VALE).
 // Yahoo provides the EX-DIVIDEND date and per-share amount — that is the correct
 // date for share-entitlement (you must hold before the ex-date to earn the dividend).
 // But the cash actually lands on the PAY date, which Yahoo does NOT provide. We enrich
 // each event with the pay date from Polygon.io (v3/reference/dividends), matched by
 // ex-date, and store it as the event `date` so monthly buckets line up with brokerage
-// statements. (Nasdaq's api was tried first but Akamai blocks Vercel's datacenter IPs
-// with a 403; Polygon is a server-friendly keyed API that works from the cloud.)
+// statements. Finnhub (/stock/dividend) already includes payDate so Polygon is skipped
+// for Finnhub-sourced events. (Nasdaq's api was tried first but Akamai blocks Vercel's
+// datacenter IPs with a 403; Polygon is a server-friendly keyed API that works from cloud.)
 //
 // Polygon free tier is 5 req/min, so pay dates are cached PER TICKER in Redis (dividend
 // dates are immutable historical facts) and only a few cold tickers are fetched per
 // request — over a couple of loads every ticker warms up and the rate limit never bites.
 // Qty is always computed at the ex-date; if Polygon is unavailable/lacks a row (or no
 // POLYGON_API_KEY is set), the event gracefully falls back to the ex-date as `date`.
-// BRA Stocks and fixed income are covered by income-manual.js (no free API).
+// BRA Stocks is included in AUTO_CLASSES so US-listed tickers (e.g. VALE, a NYSE ADR)
+// that are tagged "BRA Stocks" are still fetched — isBrazilianTicker gates out B3 tickers.
 // Cache: Redis, versioned, TTL until next US market close.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -102,6 +106,32 @@ async function fetchYahooDividends(ticker) {
       .map((d) => ({
         date: new Date(d.date * 1000).toISOString().slice(0, 10),
         amount: d.amount,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  } catch {
+    return null;
+  }
+}
+
+// Fallback for tickers Yahoo returns null/empty on (e.g. ADRs).
+// Returns [{date:"YYYY-MM-DD", amount, payDate:"YYYY-MM-DD"|null}] or null on failure.
+async function fetchFinnhubDividends(ticker, apiKey) {
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - 10 * 365 * 86400000).toISOString().slice(0, 10);
+  const url =
+    `https://finnhub.io/api/v1/stock/dividend` +
+    `?symbol=${encodeURIComponent(ticker)}&from=${from}&to=${to}&token=${encodeURIComponent(apiKey)}`;
+  try {
+    const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (!Array.isArray(data) || !data.length) return null;
+    return data
+      .filter((d) => d.date && d.amount != null)
+      .map((d) => ({
+        date: d.date,                     // ex-date, already YYYY-MM-DD
+        amount: d.amount,
+        payDate: d.payDate || null,       // Finnhub includes pay date directly
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
   } catch {
@@ -267,9 +297,18 @@ export default async function handler(req, res) {
     return res.status(200).json({ events: [], meta: { tickers: 0, eventsFound: 0 } });
   }
 
-  // Yahoo (keyless) → ex-dates + amounts. Polygon (keyed, per-ticker cached) → pay dates.
+  // Yahoo (primary, keyless) → ex-dates + amounts.
+  // Finnhub (fallback, keyed) → used when Yahoo returns null or empty (common for ADRs).
+  // Polygon (keyed, per-ticker cached) → pay dates for Yahoo-sourced events.
+  const finnhubKey = process.env.FINNHUB_API_KEY;
   const [divsByTicker, payInfo] = await Promise.all([
-    mapConcurrent(tickers, async (ticker) => ({ ticker, divs: await fetchYahooDividends(ticker) }), 3),
+    mapConcurrent(tickers, async (ticker) => {
+      let divs = await fetchYahooDividends(ticker);
+      if (finnhubKey && (divs === null || divs.length === 0)) {
+        divs = await fetchFinnhubDividends(ticker, finnhubKey);
+      }
+      return { ticker, divs };
+    }, 3),
     loadPayDateRows(redis, tickers),
   ]);
   const { rowsByTicker, allWarm } = payInfo;
@@ -286,11 +325,12 @@ export default async function handler(req, res) {
     if (!Array.isArray(divs)) continue;
     const assetClass = relevant.find((tx) => tx.ticker === ticker)?.assetClass || 'Stocks';
     const payRows = rowsByTicker.get(ticker); // rows[] | null (not warmed yet)
-    for (const { date: exDate, amount } of divs) {
+    for (const { date: exDate, amount, payDate: divPayDate } of divs) {
       // Entitlement is fixed at the ex-date — that is the qty that earned this dividend.
       const qty = qtyAtDate(transactions, ticker, exDate);
       if (qty <= 0) continue;
-      const payDate = payDateForExDate(payRows, exDate);
+      // Finnhub supplies payDate directly; Yahoo-sourced events fall back to Polygon lookup.
+      const payDate = divPayDate || payDateForExDate(payRows, exDate);
       if (payDate) payDatesMatched++;
       else payDatesMissing++;
       // Bucket by pay date (when cash lands) when known; otherwise fall back to ex-date.
