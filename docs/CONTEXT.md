@@ -357,9 +357,10 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`)
 - **Bank Bonds (CUSIP) nao passam por este endpoint** — income e calculado no frontend (accrual estimado + pagamentos reais do campo `bondIncome`, itens 36/follow-up, PR #86 + #87)
 - Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrencia 3
+- **Fallback Finnhub:** quando Yahoo retorna null ou objeto vazio (`{}`), chama `fetchFinnhubDividends(ticker, apiKey)` via Finnhub `/stock/dividend`. Finnhub inclui `payDate` diretamente — lookup Polygon e pulado para esses eventos. Reutiliza `FINNHUB_API_KEY`. Confirmado necessario para ADRs US-listados como VALE (NYSE). (PR #94)
 - Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty <= 0
 - Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }], meta }`
-- Cache Redis versionado (`:dividends:v3:<txHash>`), TTL ate proximo fechamento do mercado US
+- Cache Redis versionado (`:dividends:v5:<txHash>`), TTL ate proximo fechamento do mercado US
 
 ### UI (`src/Dividends.jsx`)
 
@@ -421,6 +422,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**BRA Fixed Income aceita `manualCurrency: "BRL"` (PR #49)**|Tesouro e CDB são mantidos no NuBank em BRL — entrada natural é BRL, conversão automática via usdBrlRate|
 |**CONTEXT.md + Features_Roadmap.md em `docs/` no repo**|Docs versionados junto com código; Claude Code atualiza diretamente sem intermediário via Chat|
 |**Dividendos US via Yahoo `chart?events=div` (Tab Dividends)**|Finnhub `/stock/dividend` é premium (free tier retorna 403). Yahoo retorna histórico completo de dividendos keyless, mesmo endpoint já usado por `perf-history.js` para candles.|
+|**Finnhub como fallback de dividendos para ADRs (PR #94)**|Yahoo retorna HTTP 200 com `dividends: {}` vazio para alguns ADRs US-listados (VALE NYSE confirmado). `fetchFinnhubDividends` usa o mesmo `FINNHUB_API_KEY` já presente; Finnhub inclui `payDate` diretamente, dispensando lookup Polygon. `CACHE_VERSION` v4→v5 para invalidar caches vazios anteriores.|
 |**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
 |**BRA Stocks dividendos = manual (Tab Dividends)**|Sem API gratuita confirmada. Entrada manual no form da Tab Dividends, mesmo padrão de Tesouro/CDB nos Holdings.|
 |**Income model: `totalReceived` direto (Tab Dividends)**|Tesouro IPCA e Bank Bonds pagam cupom cujo valor depende do PU corrigido — mais natural lançar o total recebido do que qty × amountPerUnit.|
@@ -608,6 +610,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Ao refatorar funcao de transform, carregar todas as propriedades usadas downstream (PR #92)** — `buildClassGroups` inicialmente omitiu a propriedade `ticker: cls` que `sortRows` dependia para ordenar. O sort falhou silenciosamente (sem erro, resultado errado). Regra: ao criar funcao equivalente a outra, comparar os campos retornados um a um com os que o restante do codigo consome — nao apenas os campos que o novo codigo produz.
 - **Remover codigo morto imediatamente apos refactor (PR #92)** — `buildAssetClassRows` ficou orphan apos `buildClassGroups` substituir seu uso. Codigo nao referenciado deve ser apagado na mesma session que o refactor, nao deixado para "cleanup depois".
 - **Ler o arquivo antes de implementar evita retrabalho (PR #93)** — Task 1 (DIV TTM/YoC% para Bank Bonds) estava completamente implementada; nenhum codigo precisou ser escrito. Verificar o arquivo alvo antes de codar e mais rapido do que implementar algo que ja existe. Isso vale especialmente para features que foram entregues em PRs diferentes mas no mesmo arquivo.
+- **Yahoo Finance retorna HTTP 200 com `dividends: {}` vazio para alguns ADRs — falha silenciosa (PR #94)** — VALE (NYSE) confirmado. Nenhum erro é lançado, o campo simplesmente vem vazio. Qualquer pipeline que depende de Yahoo para dividendos de ADRs deve ter fallback explícito para esse caso (null-check + objeto vazio). Finnhub `/stock/dividend` funciona como fallback keyed e já estava disponível via `FINNHUB_API_KEY`. Sempre ter fallback para tickers esperados a pagar dividendos.
 
 -----
 
