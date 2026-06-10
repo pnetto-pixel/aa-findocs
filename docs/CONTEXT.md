@@ -265,7 +265,7 @@ Elementos principais:
 
 ### Tabela: Position Performance
 
-Card colapsável "Position Performance" (PR #38), mesmo padrão visual. Toggle "Group by class" movido para dentro do corpo do card.
+Card colapsável "Position Performance" (PR #38), mesmo padrão visual. Toggle "By Class / By Ticker" posicionado no header do card, alinhado a direita (PR #93). `e.stopPropagation()` no handler do toggle impede colapso acidental do card.
 
 **Colunas (10, todas clicáveis com sort asc/desc):**
 
@@ -316,6 +316,14 @@ Loading / erro / vazio com mensagens específicas por `meta.reason`.
 - **Manage Users:** seção colapsável no dashboard, visível apenas para `isAdmin`
 - **Como adicionar holdings (PR #84 — jun/2026):** O formulario "Add Live Asset" foi removido. Tickers `type: "auto"` sao criados/atualizados exclusivamente via sync com o log de Transactions (item 32/33). Apenas o form "Add Manual Asset" permanece na tab Holdings — para holdings manuais e Cash.
 
+### Holdings manuais — Bank Bonds (PR #93 — jun/2026)
+
+Holdings com `assetClass.includes("Bank Bonds") || derivedFromTransactions === true` sao protegidos de edicao parcial no modal de edicao (`ManualHoldingRow`):
+- Input de valor, input de asset class, botao remove e popup de class edit sao ocultados/desabilitados (guard `isBankBonds`).
+- `saveEdit` pula patch de `manualValue`, `assetClass`, `assetClassOverride` quando `isBankBonds`.
+- Target% permanece editavel normalmente.
+- Razao: o holding `bank-bonds-aggregate` e derivado de Transactions (item 37) — permitir edicao manual criaria divergencia entre o holding e o calculo de principal.
+
 ### Holdings manuais — BRA Fixed Income (PR #49 — jun/2026)
 
 Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCurrency: "BRL"`):
@@ -362,7 +370,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
   - **Bank Bonds interest em todos os cards (PR #86 + #87 + #88, item 36):** `buildBondEvents(transactions, bondIncome)` no frontend gera eventos no **mesmo shape** dos dividendos de acoes — pagamentos reais (`source: "fidelity"`, do campo `bondIncome` importado do Fidelity "INTEREST") + accrual estimado mensal (`source: "estimated"`, datado no fim do mes, ACT/365, preenchendo so o gap apos o ultimo pagamento real, sem double-count). O array `allEvents` (acoes + bonds) alimenta **todos** os cards: KPIs (subtitulo adaptativo "est. bond interest" / "bond interest (real + est.)" / "bond interest"), bar chart, Position Dividends (YoC/Recovered de CUSIPs via cost basis), Dividend History (badge "EST" nas linhas estimadas, "—" em $/Share e Qty) e tabela Y/Y. Comparacoes Y/Y % excluem eventos estimados (sem contraparte no ano anterior). Calibra `couponFreq` pela cadencia (`freqByCusip`, ainda nao renderizado).
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
-  - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
+  - **Toggle By Ticker / By Asset Class** (PR #62, movido para header PR #93): toggle posicionado no header do card, alinhado a direita; `e.stopPropagation()` impede colapso acidental. Quando "By Asset Class", agrega dividendos por classe derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
   - **By Class colapsavel com chevron (PR #92):** modo "By Asset Class" agora exibe grupos colapsaveis identico ao `YearVsYearTable`. `buildClassGroups()` computa subtotais; `collapsedClasses` state (Set) + `toggleClass()` handler; `renderGroupHeaderRow()` com ChevronDown rotacionado -90deg quando collapsed. Default: todos os grupos fechados ao montar com `groupMode === "class"` (via `useEffect`). Ao expandir, exibe tickers individuais ordenados por total desc. Funcao `buildAssetClassRows` (modo flat legado) foi removida.
 - **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical. Quarto card — apos "Dividends Monthly Y/Y".
 
@@ -372,7 +380,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Card "Dividends Monthly Y/Y"** (renomeado de "Year vs Year"): colapsavel, posicionado na ordem (1) Income History, (2) Position Dividends, (3) Dividends Monthly Y/Y, (4) Dividend History.
 - **Month selector:** dropdown com todos os meses com dados (CY ou PY). Default = mes corrente (`new Date().getMonth() + 1`) se presente nos dados; caso contrario, ultimo mes com dados.
 - **Tabela:** linhas = assets, colunas = PY (muted) · CY · Delta $ · Delta %. Linha TOTAL fixa no topo. Scroll horizontal no mobile. Empty state por mes.
-- **Group by Asset Class colapsavel (item 43):** state `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class" — todos os grupos fechados, mostrando so a linha de subtotal do grupo. Ao expandir, exibe tickers individuais da classe. Toggle "By Ticker" retorna para view flat. Mesmo padrao visual do Position Performance.
+- **Group by Asset Class colapsavel (item 43):** state `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class" — todos os grupos fechados, mostrando so a linha de subtotal do grupo. `useEffect` com `[groupMode]` dep re-colapsa grupos ao trocar para "By Class" (PR #93). Ao expandir, exibe tickers individuais da classe. Toggle "By Ticker" retorna para view flat. Toggle posicionado no header do card, alinhado a direita (PR #93). Mesmo padrao visual do Position Performance.
 - Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
 
 -----
@@ -447,6 +455,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Holding Bank Bonds agregado por principal liquido (PR #86, item 37)**|Um unico holding `id: "bank-bonds-aggregate"` por usuario (nao um por CUSIP). Principal = Sigma(buy qty*price) - Sigma(sell qty*price), floored em 0. Mesmo padrao de sync de 3 pontos do item 32 (load, Refresh All, onTransactionsChange). Mantido como `manualMode: "value"` + `derivedFromTransactions: true` — nao e um auto holding (sem ticker live), mas o valor e derivado automaticamente.|
 |**Income Bank Bonds = accrual estimado no frontend, sem tocar endpoints (PR #86, item 36)**|Sem API gratuita de pagamentos historicos por CUSIP. Solucao: accrual pro-rata ACT/365 calculado em `src/Dividends.jsx` a partir de buy/sell + cupom%/maturidade no campo `notes`. Rotulado "est." na UI. Sem bump de cache (dividends v3, perf-history v12). KPIs Y/Y comparam so dividendos reais — accrual somado apenas nos KPIs de valor absoluto (All Time, YTD, This Month).|
 |**Transacoes Bank Bonds sem notas de cupom/maturidade ignoradas no accrual (PR #86)**|Se `notes` nao tiver o padrao "X.XX% \| MM/DD/YYYY", `parseBondNotes` retorna null e a transacao e ignorada no calculo de accrual. Silencioso por design — bond sem dados de cupom nao pode contribuir com estimativa.|
+|**Toggle "By Class / By Ticker" no header do card, nao no corpo (PR #93)**|Toggle no corpo do card ocupava espaco visual e ficava deslocado do contexto do header. Mover para o header (alinhado a direita, mesmo nivel do titulo) e o padrao de controle de view de cards — consistente com outros controles inline no header. `e.stopPropagation()` obrigatorio para que o click no toggle nao propague para o `<button>` do header colapsavel.|
+|**`isBankBonds` guard em `ManualHoldingRow` (PR #93)**|Holdings `bank-bonds-aggregate` derivados de Transactions (item 37) nao devem ter valor/classe editados manualmente — editaria um campo que o sync de Transactions vai sobrescrever na proxima sincronizacao. Ocultar os inputs e ignorar os campos no `saveEdit` evita divergencia de dados sem precisar de logica de merge.|
 
 -----
 
@@ -597,6 +607,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Padrao de responsividade sem CSS neste codebase (PR #85)** — state `windowWidth` + listener `resize` com cleanup e o padrao adotado. Derivar dimensoes inline via clamp/IIFE. Confirmar que `window` e acessado de forma defensiva (lazy init ou guard `typeof window !== "undefined"`) para compatibilidade com SSR futuro.
 - **Ao refatorar funcao de transform, carregar todas as propriedades usadas downstream (PR #92)** — `buildClassGroups` inicialmente omitiu a propriedade `ticker: cls` que `sortRows` dependia para ordenar. O sort falhou silenciosamente (sem erro, resultado errado). Regra: ao criar funcao equivalente a outra, comparar os campos retornados um a um com os que o restante do codigo consome — nao apenas os campos que o novo codigo produz.
 - **Remover codigo morto imediatamente apos refactor (PR #92)** — `buildAssetClassRows` ficou orphan apos `buildClassGroups` substituir seu uso. Codigo nao referenciado deve ser apagado na mesma session que o refactor, nao deixado para "cleanup depois".
+- **Ler o arquivo antes de implementar evita retrabalho (PR #93)** — Task 1 (DIV TTM/YoC% para Bank Bonds) estava completamente implementada; nenhum codigo precisou ser escrito. Verificar o arquivo alvo antes de codar e mais rapido do que implementar algo que ja existe. Isso vale especialmente para features que foram entregues em PRs diferentes mas no mesmo arquivo.
 
 -----
 

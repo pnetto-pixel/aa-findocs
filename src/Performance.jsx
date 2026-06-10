@@ -57,7 +57,10 @@ async function loadTransactions(auth) {
     throw new Error(msg);
   }
   const data = await res.json();
-  return Array.isArray(data.transactions) ? data.transactions : [];
+  return {
+    transactions: Array.isArray(data.transactions) ? data.transactions : [],
+    bondIncome: Array.isArray(data.bondIncome) ? data.bondIncome : [],
+  };
 }
 
 async function postPerfHistory(auth, body) {
@@ -170,6 +173,149 @@ function computeXAxis(data, period) {
 
 function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
+}
+
+// ── Bank Bonds helpers (copied from Dividends.jsx) ────────────────────────────
+function parseBondNotes(tx) {
+  if (tx.couponRate != null && tx.maturityDate) {
+    const couponPct = Number(tx.couponRate);
+    if (isFinite(couponPct) && couponPct > 0 && /^\d{4}-\d{2}-\d{2}$/.test(tx.maturityDate)) {
+      return { couponPct, maturityISO: tx.maturityDate };
+    }
+  }
+  const notes = tx.notes || "";
+  if (!notes) return null;
+  const m = String(notes).match(/(\d+(?:\.\d+)?)\s*%\s*\|\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return null;
+  const couponPct = parseFloat(m[1]);
+  if (!isFinite(couponPct) || couponPct <= 0) return null;
+  const maturityISO = `${m[4]}-${m[2]}-${m[3]}`;
+  return { couponPct, maturityISO };
+}
+
+function daysBetweenISO(a, b) {
+  const da = new Date(a + "T00:00:00Z").getTime();
+  const db = new Date(b + "T00:00:00Z").getTime();
+  if (isNaN(da) || isNaN(db)) return 0;
+  return Math.max(0, (db - da) / 86400000);
+}
+
+function minISO(a, b) {
+  return a < b ? a : b;
+}
+
+function freqFromDays(d) {
+  if (!isFinite(d) || d <= 0) return null;
+  if (d <= 45) return "monthly";
+  if (d <= 135) return "quarterly";
+  if (d <= 270) return "semi-annual";
+  return "annual";
+}
+
+function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate, today) {
+  let cursor = startISO;
+  while (cursor < endISO) {
+    const [y, m] = cursor.split("-");
+    const yi = parseInt(y, 10);
+    const mi = parseInt(m, 10);
+    const nextMonth = mi === 12 ? `${yi + 1}-01-01` : `${yi}-${String(mi + 1).padStart(2, "0")}-01`;
+    const chunkEnd = minISO(nextMonth, endISO);
+    const days = daysBetweenISO(cursor, chunkEnd);
+    if (days > 0) {
+      const amt = principal * rate * (days / 365);
+      const d = new Date(chunkEnd + "T00:00:00Z");
+      d.setUTCDate(d.getUTCDate() - 1);
+      const eventDate = minISO(d.toISOString().slice(0, 10), today);
+      events.push({
+        id: `bond-est-${ticker}-${cursor.slice(0, 7)}`,
+        date: eventDate,
+        ticker,
+        assetClass: "Bank Bonds",
+        incomeType: "interest",
+        totalReceived: amt,
+        currency: "USD",
+        source: "estimated",
+        amountPerShare: null,
+        qtyHeld: null,
+      });
+    }
+    cursor = chunkEnd;
+  }
+}
+
+function buildBondEvents(transactions, bondIncome, todayISO) {
+  const today = todayISO || new Date().toISOString().slice(0, 10);
+  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  const events = [];
+
+  const realByCusip = {};
+  for (const ev of bondIncome || []) {
+    if (!ev || (ev.kind && ev.kind !== "interest")) continue;
+    const t = (ev.ticker || "").toUpperCase();
+    const amt = Number(ev.amount);
+    if (!t || !ev.date || !isFinite(amt) || amt <= 0) continue;
+    events.push({
+      id: ev.id || `bond-real-${t}-${ev.date}`,
+      date: ev.date,
+      ticker: t,
+      assetClass: "Bank Bonds",
+      incomeType: "interest",
+      totalReceived: amt,
+      currency: "USD",
+      source: "fidelity",
+      amountPerShare: null,
+      qtyHeld: null,
+    });
+    if (!realByCusip[t]) realByCusip[t] = [];
+    realByCusip[t].push({ date: ev.date, amount: amt });
+  }
+
+  const freqByCusip = {};
+  for (const [t, real] of Object.entries(realByCusip)) {
+    if (real.length < 2) continue;
+    const diffs = [];
+    const sorted = real.slice().sort(byDate);
+    for (let i = 1; i < sorted.length; i++) diffs.push(daysBetweenISO(sorted[i - 1].date, sorted[i].date));
+    diffs.sort((a, b) => a - b);
+    freqByCusip[t] = freqFromDays(diffs[Math.floor(diffs.length / 2)]);
+  }
+
+  const byCusip = {};
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const meta = parseBondNotes(tx);
+    if (!meta) continue;
+    const t = (tx.ticker || "").toUpperCase();
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!t || !isFinite(qty) || !isFinite(price)) continue;
+    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO };
+    byCusip[t].coupon = meta.couponPct;
+    byCusip[t].maturityISO = meta.maturityISO;
+    byCusip[t].txns.push({ date: tx.date, delta: (tx.side === "sell" ? -1 : 1) * qty * price });
+  }
+
+  for (const [t, { txns, coupon, maturityISO }] of Object.entries(byCusip)) {
+    txns.sort(byDate);
+    const endISO = minISO(maturityISO, today);
+    const rate = coupon / 100;
+    const realDates = (realByCusip[t] || []).slice().sort(byDate);
+    const accrueFrom = realDates.length ? realDates[realDates.length - 1].date : null;
+
+    let principal = 0;
+    for (let i = 0; i < txns.length; i++) {
+      principal += txns[i].delta;
+      if (principal < 0) principal = 0;
+      let segStart = txns[i].date;
+      const segEnd = i + 1 < txns.length ? txns[i + 1].date : endISO;
+      if (accrueFrom && segStart < accrueFrom) segStart = accrueFrom;
+      const clampedEnd = minISO(segEnd, endISO);
+      if (clampedEnd <= segStart || principal <= 0) continue;
+      accrueSegmentAsEvents(events, t, segStart, clampedEnd, principal, rate, today);
+    }
+  }
+
+  return { events, freqByCusip };
 }
 
 function fmtPrice(n) {
@@ -354,8 +500,21 @@ function aggFromRows(rows) {
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("ticker");
   const [sortDir, setSortDir] = useState("asc");
-  const [grouped, setGrouped] = useState(false);
+  const [grouped, setGrouped] = useState(true);
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+
+  // Auto-collapse all groups when switching to grouped mode or on mount (default grouped=true).
+  useEffect(() => {
+    if (grouped && rows.length > 0) {
+      const map = {};
+      for (const row of rows) {
+        const cls = row.assetClass || "Uncategorized";
+        if (!map[cls]) map[cls] = [];
+        map[cls].push(row);
+      }
+      setCollapsedClasses(new Set(Object.keys(map)));
+    }
+  }, [grouped]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleClass(cls) {
     setCollapsedClasses((prev) => {
@@ -554,14 +713,34 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           <BarChart2 size={14} strokeWidth={2} />
           Position Performance
         </span>
-        <ChevronDown
-          size={16}
-          style={{
-            color: T.textDim,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.2s",
-          }}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={(e) => { e.stopPropagation(); setGrouped((g) => !g); }}
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.1em",
+              padding: "4px 10px",
+              border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
+              borderRadius: 3,
+              background: grouped ? T.gold + "14" : "transparent",
+              color: grouped ? T.gold : T.textFaint,
+              cursor: "pointer",
+              transition: "color 0.15s, background 0.15s, border-color 0.15s",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {grouped ? "Flat view" : "Group by class"}
+          </button>
+          <ChevronDown
+            size={16}
+            style={{
+              color: T.textDim,
+              transform: open ? "rotate(180deg)" : "none",
+              transition: "transform 0.2s",
+            }}
+          />
+        </div>
       </button>
 
       {open && (
@@ -575,28 +754,6 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
             overflow: "hidden",
           }}
         >
-          {/* Group by toggle */}
-          <div style={{ padding: "12px 16px 0", display: "flex", justifyContent: "flex-end" }}>
-            <button
-              onClick={() => setGrouped((g) => !g)}
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 10,
-                letterSpacing: "0.1em",
-                padding: "4px 10px",
-                border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
-                borderRadius: 3,
-                background: grouped ? T.gold + "14" : "transparent",
-                color: grouped ? T.gold : T.textFaint,
-                cursor: "pointer",
-                transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {grouped ? "Flat view" : "Group by class"}
-            </button>
-          </div>
-
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", minWidth: 1060, borderCollapse: "collapse" }}>
               <thead>
@@ -670,7 +827,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
     (async () => {
       try {
-        const txs = await loadTransactions(auth);
+        const { transactions: txs, bondIncome } = await loadTransactions(auth);
         if (!cancelled) setTransactions(txs);
 
         const [perfResult, divResult] = await Promise.allSettled([
@@ -684,13 +841,17 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
         if (cancelled) return;
 
-        if (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events)) {
-          const events = divResult.value.events;
-          setDivEvents(events);
+        {
+          const stockEvents = (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events))
+            ? divResult.value.events
+            : [];
+          const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
+          const allEvents = [...stockEvents, ...bondEventsArr];
+          setDivEvents(allEvents);
           const todayMs = Date.now();
           const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
           const map = {};
-          for (const e of events) {
+          for (const e of allEvents) {
             if (!e.ticker || !e.date) continue;
             const t = e.ticker;
             if (!map[t]) map[t] = { ttm: 0, total: 0 };
