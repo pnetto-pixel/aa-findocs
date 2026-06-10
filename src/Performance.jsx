@@ -835,7 +835,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           fetch("/api/dividends", {
             method: "POST",
             headers: { ...authHeaders(auth), "Content-Type": "application/json" },
-            body: JSON.stringify({ transactions: txs }),
+            body: JSON.stringify({ transactions: txs, bondIncome }),
           }).then((r) => (r.ok ? r.json() : Promise.reject())),
         ]);
 

@@ -2348,6 +2348,27 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       continue;
     }
 
+    // Stock dividend payment rows: capture for non-CUSIP tickers (e.g. VALE, AAPL).
+    // Fidelity labels these "DIVIDEND RECEIVED", "CASH DIV", "ORDINARY DIVIDEND", etc.
+    // Amount ($) is the total cash received (not per-share). Skip REINVESTMENT rows.
+    if ((upper.includes("DIVIDEND") || upper === "CASH DIV") &&
+        !upper.includes("REINVEST") && idxAmount >= 0) {
+      const isoDateD = toISO(arr[idxDate]);
+      const symbolD = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountD = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      if (isoDateD && symbolD && !CUSIP_RX.test(symbolD) && isFinite(amountD) && amountD > 0) {
+        incomeEvents.push({
+          id: newId(),
+          date: isoDateD,
+          ticker: symbolD,
+          amount: amountD,
+          kind: "dividend",
+          source: "fidelity",
+        });
+      }
+      continue;
+    }
+
     let side = null;
     let isRedemption = false;
     if (upper.startsWith("YOU BOUGHT")) side = "buy";
@@ -3299,24 +3320,29 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                 </div>
               )}
 
-              {parsed.incomeEvents && parsed.incomeEvents.length > 0 && (
-                <div
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    color: T.green,
-                    marginBottom: 14,
-                    padding: 10,
-                    border: `1px solid ${T.green}`,
-                    background: "rgba(125, 211, 164, 0.05)",
-                    letterSpacing: "0.05em",
-                  }}
-                >
-                  {parsed.incomeEvents.length} bond interest payment
-                  {parsed.incomeEvents.length === 1 ? "" : "s"} detected — added
-                  to income on import.
-                </div>
-              )}
+              {parsed.incomeEvents && parsed.incomeEvents.length > 0 && (() => {
+                const bondCount = parsed.incomeEvents.filter(e => e.kind !== "dividend").length;
+                const divCount  = parsed.incomeEvents.filter(e => e.kind === "dividend").length;
+                const parts = [];
+                if (bondCount > 0) parts.push(`${bondCount} bond interest payment${bondCount === 1 ? "" : "s"}`);
+                if (divCount  > 0) parts.push(`${divCount} stock dividend payment${divCount  === 1 ? "" : "s"}`);
+                return (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.green,
+                      marginBottom: 14,
+                      padding: 10,
+                      border: `1px solid ${T.green}`,
+                      background: "rgba(125, 211, 164, 0.05)",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    {parts.join(" + ")} detected — added to income on import.
+                  </div>
+                );
+              })()}
 
               {/* Preview table */}
               <div

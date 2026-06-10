@@ -1554,7 +1554,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         const divRes = await fetch("/api/dividends", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ transactions: txs }),
+          body: JSON.stringify({ transactions: txs, bondIncome }),
         });
         if (divRes.status === 401) { onAuthFail?.(); return; }
         if (!divRes.ok) throw new Error(`Dividends: ${divRes.status}`);
