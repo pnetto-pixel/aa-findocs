@@ -1139,7 +1139,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 }}
               >
                 {meta?.reason === "no-eligible-transactions"
-                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income)."
+                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income, Unallocated USD)."
                   : meta?.reason === "no-priced-days"
                   ? "Could not fetch enough historical price data to build a chart."
                   : "No performance data available."}
@@ -1365,7 +1365,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     letterSpacing: "0.04em",
                   }}
                 >
-                  Excludes Cash and Unallocated assets. Updated daily after US market close.
+                  Excludes Cash and Unallocated BRL assets. Updated daily after US market close.
                   {" "}Total Return includes US dividends only (BRA and fixed income excluded).
                 </div>
               </>

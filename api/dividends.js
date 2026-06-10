@@ -38,10 +38,10 @@ const PAYDATE_CACHE_TTL_SECONDS = 7 * 24 * 3600;
 const MAX_FRESH_PAYDATE_FETCHES = 5;
 
 // Asset classes where we auto-fetch dividends via Yahoo (US tickers only).
-// BRA Stocks is also included here so that US-listed tickers (e.g. VALE) that the
-// user classifies under "BRA Stocks" still get dividend data — the isBrazilianTicker
-// guard below keeps actual B3 tickers (e.g. VALE3) out of the fetch.
-const AUTO_CLASSES = new Set(['Stocks', 'Real Estate', 'Alternative', 'Bonds', 'BRA Stocks']);
+// BRA Stocks is included so US-listed tickers (e.g. VALE NYSE ADR) tagged "BRA Stocks" still
+// get dividend data — isBrazilianTicker gates out actual B3 tickers (e.g. VALE3).
+// Unallocated USD is included so tickers not yet reclassified still receive dividend data.
+const AUTO_CLASSES = new Set(['Stocks', 'Real Estate', 'Alternative', 'Bonds', 'BRA Stocks', 'Unallocated USD']);
 
 function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);

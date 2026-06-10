@@ -39,13 +39,12 @@ await test('happy path: single AAPL buy, 3 days of candles', () => {
   assert.deepEqual(result.spy, [0, 1.11, 2.22]);
 });
 
-await test('excludes non-whitelisted classes', () => {
+await test('excludes non-whitelisted classes (Unallocated BRL)', () => {
   const result = computePerformance({
     transactions: [
-      { date: '2023-11-26', side: 'buy', ticker: 'TLT', qty: 5, price: 90, assetClass: 'Bonds' },
-      { date: '2023-11-26', side: 'buy', ticker: 'CASH', qty: 1, price: 100, assetClass: 'Unallocated USD' },
+      { date: '2023-11-26', side: 'buy', ticker: 'CASH', qty: 1, price: 100, assetClass: 'Unallocated BRL' },
     ],
-    candles: { TLT: { '2023-11-26': 90, '2023-11-27': 91 } },
+    candles: {},
     spyCandles: { '2023-11-26': 450, '2023-11-27': 455 },
     firstDate: '2023-11-26',
     todayDate: '2023-11-27',
