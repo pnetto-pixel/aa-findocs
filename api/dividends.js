@@ -23,10 +23,11 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v6: Fidelity-imported dividend events (bondIncome kind=dividend) bypass Yahoo/Finnhub entirely.
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -272,6 +273,13 @@ export default async function handler(req, res) {
 
   const transactions = body.transactions;
 
+  // Fidelity-imported stock dividend events: exact amounts, no API fetch needed.
+  // These come from bondIncome entries with kind="dividend" (same store as bond interest).
+  const fidelityDivEvents = Array.isArray(body.bondIncome)
+    ? body.bondIncome.filter((e) => e.kind === 'dividend' && e.ticker && e.date && e.amount > 0)
+    : [];
+  const fidelityTickers = new Set(fidelityDivEvents.map((e) => e.ticker));
+
   // Only US tickers in eligible classes
   const relevant = transactions.filter(
     (tx) =>
@@ -280,9 +288,14 @@ export default async function handler(req, res) {
       !isBrazilianTicker(tx.ticker)
   );
 
+  // Include a hash of Fidelity dividend events in the cache key so that importing
+  // new dividends from Fidelity immediately invalidates any stale cached response.
+  const fdHash = fidelityDivEvents.length > 0
+    ? simpleHash(fidelityDivEvents.map((e) => `${e.date}|${e.ticker}|${e.amount}`).join(';'))
+    : '';
   const txHashInput = relevant
     .map((tx) => `${tx.id}|${tx.date}|${tx.side}|${tx.ticker}|${tx.qty}`)
-    .join(';');
+    .join(';') + (fdHash ? `:fd:${fdHash}` : '');
   const txsHash = simpleHash(txHashInput);
   const key = cacheKey(auth, txsHash);
 
@@ -291,24 +304,30 @@ export default async function handler(req, res) {
     if (cached) return res.status(200).json(JSON.parse(cached));
   }
 
-  const tickers = [...new Set(relevant.map((tx) => tx.ticker))];
+  // Skip Yahoo/Finnhub for tickers already covered by Fidelity import (use exact data).
+  const tickers = [...new Set(relevant.map((tx) => tx.ticker))].filter(
+    (t) => !fidelityTickers.has(t)
+  );
 
-  if (!tickers.length) {
+  if (!tickers.length && !fidelityDivEvents.length) {
     return res.status(200).json({ events: [], meta: { tickers: 0, eventsFound: 0 } });
   }
 
   // Yahoo (primary, keyless) → ex-dates + amounts.
   // Finnhub (fallback, keyed) → used when Yahoo returns null or empty (common for ADRs).
   // Polygon (keyed, per-ticker cached) → pay dates for Yahoo-sourced events.
+  // When tickers is empty (all covered by Fidelity), skip external API calls entirely.
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const [divsByTicker, payInfo] = await Promise.all([
-    mapConcurrent(tickers, async (ticker) => {
-      let divs = await fetchYahooDividends(ticker);
-      if (finnhubKey && (divs === null || divs.length === 0)) {
-        divs = await fetchFinnhubDividends(ticker, finnhubKey);
-      }
-      return { ticker, divs };
-    }, 3),
+    tickers.length
+      ? mapConcurrent(tickers, async (ticker) => {
+          let divs = await fetchYahooDividends(ticker);
+          if (finnhubKey && (divs === null || divs.length === 0)) {
+            divs = await fetchFinnhubDividends(ticker, finnhubKey);
+          }
+          return { ticker, divs };
+        }, 3)
+      : Promise.resolve([]),
     loadPayDateRows(redis, tickers),
   ]);
   const { rowsByTicker, allWarm } = payInfo;
@@ -317,10 +336,31 @@ export default async function handler(req, res) {
   let payDatesMatched = 0;
   let payDatesMissing = 0;
   let futureSkipped = 0;
+  const todayISO = new Date().toISOString().slice(0, 10);
+
+  // Convert Fidelity-imported dividend events directly — exact amounts, no API reconstruction.
+  for (const fe of fidelityDivEvents) {
+    if (fe.date > todayISO) { futureSkipped++; continue; }
+    const assetClass = relevant.find((tx) => tx.ticker === fe.ticker)?.assetClass || 'Stocks';
+    events.push({
+      date: fe.date,
+      exDate: fe.date,
+      payDate: fe.date,
+      ticker: fe.ticker,
+      assetClass,
+      incomeType: 'dividend',
+      amountPerShare: null,
+      qtyHeld: null,
+      totalReceived: Math.round(fe.amount * 100) / 100,
+      currency: 'USD',
+      source: 'fidelity',
+    });
+    payDatesMatched++;
+  }
+
   // Cash that hasn't landed yet isn't received income. Yahoo lists recently-declared
   // dividends whose ex-date has already passed (so qtyAtDate > 0 and we'd build an event)
   // but whose pay date is still in the future — those must not show in history/KPIs.
-  const todayISO = new Date().toISOString().slice(0, 10);
   for (const { ticker, divs } of divsByTicker) {
     if (!Array.isArray(divs)) continue;
     const assetClass = relevant.find((tx) => tx.ticker === ticker)?.assetClass || 'Stocks';
@@ -362,6 +402,7 @@ export default async function handler(req, res) {
     events,
     meta: {
       tickers: tickers.length,
+      fidelityTickers: fidelityTickers.size,
       eventsFound: events.length,
       payDatesMatched,
       payDatesMissing,
