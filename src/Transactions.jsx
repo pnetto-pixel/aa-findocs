@@ -2346,27 +2346,68 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       if (isFinite(fn) && fn > 0) fee = fn;
     }
 
-    // Extract coupon rate and maturity date from the Symbol Description field.
-    let notes = "";
-    if (idxDesc >= 0) {
-      const desc = String(arr[idxDesc] || "");
-      const couponM = desc.match(/(\d+\.\d+)%/);
-      const maturityM = desc.match(/(\d{2}\/\d{2}\/\d{4})$/);
-      if (couponM && maturityM) {
-        notes = `${couponM[1]}% | ${maturityM[1]}`;
-      }
-    }
-
     // Reuse a saved asset class for this ticker if known; else infer from the
     // symbol, falling back to "Stocks" for plain US tickers.
     const known = knownClassByTicker && knownClassByTicker.get(symbol);
     const assetClass = known || inferAssetClass(symbol) || "Stocks";
 
     // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
-    // (e.g. 1000 = one $1,000 CD), while Price ($) is already the real USD
-    // value per unit. Divide qty by 1,000 to get unit count. Only Bank Bonds
-    // (CUSIP_RX) get this correction; plain tickers are untouched.
+    // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face
+    // (e.g. 100.00 = 100% of $1,000 face = $1,000/unit). Both corrections
+    // apply together only for Bank Bonds (CUSIP_RX); plain tickers untouched.
     const qty = assetClass === "Bank Bonds" ? qtyAbs / 1000 : qtyAbs;
+    const price = assetClass === "Bank Bonds" ? priceN * 10 : priceN;
+
+    // Extract bond metadata from the Symbol Description field.
+    let notes = "";
+    let couponRate = null;    // numeric %, e.g. 5.45
+    let maturityDate = null;  // ISO date string, e.g. "2027-03-15"
+    let bondType = null;      // "Treasury" | "Agency" | "CD" | "Corporate"
+    let shortName = null;     // issuer name extracted from description
+    let couponFreq = null;    // "monthly" | "quarterly" | "semi-annual" | "at-maturity"
+    if (idxDesc >= 0 && assetClass === "Bank Bonds") {
+      const desc = String(arr[idxDesc] || "");
+      const couponM = desc.match(/(\d+(?:\.\d+)?)%/);
+      const maturityM = desc.match(/(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (couponM) {
+        couponRate = parseFloat(couponM[1]);
+      }
+      if (maturityM) {
+        const [, mm, dd, yyyy] = maturityM;
+        maturityDate = `${yyyy}-${mm}-${dd}`;
+      }
+      // Short name: everything before the coupon rate pattern, trimmed.
+      const nameEnd = desc.search(/\d+(?:\.\d+)?%/);
+      if (nameEnd > 0) {
+        shortName = desc.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null;
+      }
+      // Bond type and default coupon frequency by issuer keywords.
+      const u = desc.toUpperCase();
+      if (u.includes("TREASURY") || u.includes("US TREAS")) {
+        bondType = "Treasury";
+        couponFreq = "semi-annual";
+      } else if (
+        u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
+        u.includes("FEDERAL FARM") || u.includes("FFCB") ||
+        u.includes("FNMA") || u.includes("FHLMC") ||
+        u.includes("FREDDIE") || u.includes("FANNIE")
+      ) {
+        bondType = "Agency";
+        couponFreq = "semi-annual";
+      } else if (
+        u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
+        u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
+      ) {
+        bondType = "Corporate";
+        couponFreq = "semi-annual";
+      } else {
+        bondType = "CD";
+        couponFreq = "monthly"; // conservative default; CDs vary widely
+      }
+      if (couponRate !== null && maturityDate) {
+        notes = `${couponRate.toFixed(2)}% | ${maturityM[1]}/${maturityM[2]}/${maturityM[3]}`;
+      }
+    }
 
     const tx = {
       id: newId(),
@@ -2375,10 +2416,17 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       ticker: symbol,
       assetClass,
       qty,
-      price: priceN,
+      price,
       currency: "USD",
       fee,
       notes,
+      ...(assetClass === "Bank Bonds" && {
+        couponRate,
+        maturityDate,
+        bondType,
+        shortName,
+        couponFreq,
+      }),
       createdAt: new Date().toISOString(),
     };
 

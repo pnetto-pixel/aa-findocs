@@ -137,13 +137,23 @@ function fmtDeltaUSD(n, hidden) {
 // Returns { byMonth: { "YYYY-MM": amount }, allTime } — all amounts in USD.
 // Bucketed by month so KPIs (All Time / YTD / This Month) can reuse the same
 // date-prefix logic as real dividend events.
-function parseBondNotes(notes) {
+// Prefers dedicated fields added by the Fidelity parser (couponRate, maturityDate);
+// falls back to parsing the legacy notes string "5.45% | 03/15/2027".
+function parseBondNotes(tx) {
+  // New dedicated fields (parser v2+)
+  if (tx.couponRate != null && tx.maturityDate) {
+    const couponPct = Number(tx.couponRate);
+    if (isFinite(couponPct) && couponPct > 0 && /^\d{4}-\d{2}-\d{2}$/.test(tx.maturityDate)) {
+      return { couponPct, maturityISO: tx.maturityDate };
+    }
+  }
+  // Legacy fallback: parse from notes string
+  const notes = tx.notes || "";
   if (!notes) return null;
   const m = String(notes).match(/(\d+(?:\.\d+)?)\s*%\s*\|\s*(\d{2})\/(\d{2})\/(\d{4})/);
   if (!m) return null;
   const couponPct = parseFloat(m[1]);
   if (!isFinite(couponPct) || couponPct <= 0) return null;
-  // notes maturity is MM/DD/YYYY -> ISO
   const maturityISO = `${m[4]}-${m[2]}-${m[3]}`;
   return { couponPct, maturityISO };
 }
@@ -165,7 +175,7 @@ function computeBankBondsAccrual(transactions, todayISO) {
   const byCusip = {};
   for (const tx of transactions || []) {
     if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
-    const meta = parseBondNotes(tx.notes);
+    const meta = parseBondNotes(tx);
     if (!meta) continue; // no coupon/maturity -> skip silently
     const t = (tx.ticker || "").toUpperCase();
     if (!t) continue;
