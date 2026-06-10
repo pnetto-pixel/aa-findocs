@@ -3909,6 +3909,7 @@ function ModeButton({ active, onClick, label }) {
 }
 
 function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+  const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
@@ -3956,19 +3957,21 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
     const patch = {
       target: draftTarget === "" ? 0 : parseFloat(draftTarget) || 0,
     };
-    if (!locked) {
+    if (!locked && !isBankBonds) {
       patch.assetClass = draftClass.trim() || "Manual";
       patch.assetClassOverride = draftClass.trim() || null;
     }
-    if (holding.manualMode === "value") {
-      const v = parseFloat(draftValue);
-      patch.manualValue = isNaN(v) ? 0 : v;
-      patch.manualCurrency = allowBrl && draftCurrency === "BRL" ? "BRL" : "USD";
-    } else {
-      const q = parseFloat(draftQty);
-      const p = parseFloat(draftPrice);
-      patch.qty = isNaN(q) ? 0 : q;
-      patch.manualPrice = isNaN(p) ? 0 : p;
+    if (!isBankBonds) {
+      if (holding.manualMode === "value") {
+        const v = parseFloat(draftValue);
+        patch.manualValue = isNaN(v) ? 0 : v;
+        patch.manualCurrency = allowBrl && draftCurrency === "BRL" ? "BRL" : "USD";
+      } else {
+        const q = parseFloat(draftQty);
+        const p = parseFloat(draftPrice);
+        patch.qty = isNaN(q) ? 0 : q;
+        patch.manualPrice = isNaN(p) ? 0 : p;
+      }
     }
     onUpdate(patch);
     setEditing(false);
@@ -4053,7 +4056,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
-          {!locked && (
+          {!locked && !isBankBonds && (
             <IconButton onClick={onRemove} label="Remove" danger>
               <Trash2 size={12} />
             </IconButton>
@@ -4117,7 +4120,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             ) : (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-                {!locked ? (
+                {!locked && !isBankBonds ? (
                   <button
                     type="button"
                     onClick={() => { setDraftPopupClass(holding.assetClass || ""); setEditingPopupClass(true); }}
@@ -4145,7 +4148,11 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             marginTop: 8,
           }}
         >
-          {holding.manualMode === "value" ? (
+          {isBankBonds ? (
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Auto-calculated from transactions</span>
+            </div>
+          ) : holding.manualMode === "value" ? (
             <div style={{ marginBottom: 8 }}>
               <Input
                 placeholder={allowBrl && draftCurrency === "BRL" ? "Value in BRL (e.g. Nubank)" : "Current value"}
@@ -4189,9 +4196,9 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               <Input placeholder="Price" value={draftPrice} onChange={(e) => setDraftPrice(e.target.value)} inputMode="decimal" />
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: locked ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: (locked || isBankBonds) ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <Input placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
-            {!locked && (
+            {!locked && !isBankBonds && (
               <Input placeholder="Class" value={draftClass} onChange={(e) => setDraftClass(e.target.value)} />
             )}
           </div>
