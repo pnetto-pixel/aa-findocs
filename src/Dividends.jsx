@@ -631,7 +631,7 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   const totals = useMemo(() => aggPositions(rows), [rows]);
 
   const COLS = [
-    { key: "ticker", label: groupMode === "class" ? "Class" : "Ticker", align: "left" },
+    { key: "ticker", label: "Ticker", align: "left" },
     { key: "total", label: "Total", align: "right" },
     { key: "ytd", label: "YTD", align: "right" },
     { key: "yoyPct", label: "Y/Y YTD", align: "right" },
@@ -1247,7 +1247,7 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                   <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
-                        <th style={stickyTh()}>{groupMode === "class" ? "Class" : "Ticker"}</th>
+                        <th style={stickyTh()}>Ticker</th>
                         <th style={thStyle}>{priorYear}</th>
                         <th style={thStyle}>{curYear}</th>
                         <th style={thStyle}>Δ $</th>
@@ -1260,7 +1260,7 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                         ? classGroups.map(group => (
                             <Fragment key={group.label}>
                               {renderGroupHeaderRow(group.label, group.py, group.cy)}
-                              {!collapsedClasses.has(group.label) && group.tickers.map(r => renderDataRow(r.ticker, r.py, r.cy, false))}
+                              {!collapsedClasses.has(group.label) && group.tickers.slice().sort((a, b) => (b.cy + b.py) - (a.cy + a.py)).map(r => renderDataRow(r.ticker, r.py, r.cy, false))}
                             </Fragment>
                           ))
                         : tickerRows
