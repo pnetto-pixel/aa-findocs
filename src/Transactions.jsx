@@ -2349,9 +2349,16 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     }
 
     let side = null;
+    let isRedemption = false;
     if (upper.startsWith("YOU BOUGHT")) side = "buy";
     else if (upper.startsWith("YOU SOLD")) side = "sell";
-    else continue; // skip dividends, contributions, redemptions, etc.
+    else if (upper.includes("REDEMPTION") || upper.startsWith("REDEEMED")) {
+      // Bond/CD maturity: Fidelity returns the principal as a REDEMPTION row.
+      // Record it as a sell of the CUSIP so the position math removes the
+      // matching qty/price bought earlier (zeroes the holding's principal).
+      side = "sell";
+      isRedemption = true;
+    } else continue; // skip dividends, contributions, etc.
 
     // Fidelity dates are always MM/DD/YYYY (US format). Override the
     // BR-default parseDate which would interpret 05/08/2026 as DMY.
@@ -2360,13 +2367,34 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 
     const symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
     if (!symbol) continue;
+    // Redemptions only make sense for CUSIP-symboled bonds/CDs.
+    if (isRedemption && !CUSIP_RX.test(symbol)) continue;
 
-    const priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
-    if (!isFinite(priceN) || priceN < 0) continue;
+    const amountAbs = idxAmount >= 0
+      ? Math.abs(parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, "")))
+      : NaN;
 
-    const qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
+    let qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
+    // Redemption rows sometimes omit Quantity; the Amount ($) equals the face
+    // value returned, which is the same unit Fidelity uses for bond Quantity.
+    if (isRedemption && (!isFinite(qtyRaw) || qtyRaw === 0) && isFinite(amountAbs) && amountAbs > 0) {
+      qtyRaw = amountAbs;
+    }
     if (!isFinite(qtyRaw) || qtyRaw === 0) continue;
     const qtyAbs = Math.abs(qtyRaw);
+
+    let priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
+    // Redemption rows usually have a blank Price ($): the bond is paid back at
+    // face. Derive percent-of-face from Amount/units when available, else par
+    // (100.00 = 100% of $1,000/unit) — same space as bought rows, so the
+    // qty/1000 + price*10 corrections below apply uniformly.
+    if (isRedemption && (!isFinite(priceN) || priceN <= 0)) {
+      const units = qtyAbs / 1000;
+      priceN = isFinite(amountAbs) && amountAbs > 0 && units > 0
+        ? amountAbs / units / 10
+        : 100;
+    }
+    if (!isFinite(priceN) || priceN < 0) continue;
 
     let fee = 0;
     if (idxFees >= 0) {
@@ -2454,6 +2482,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
         shortName,
         couponFreq,
       }),
+      ...(isRedemption && { redemption: true }),
       createdAt: new Date().toISOString(),
     };
 
@@ -3080,11 +3109,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                       lineHeight: 1.6,
                     }}
                   >
-                    Imports YOU BOUGHT / YOU SOLD rows as transactions, and
-                    bond INTEREST payments as income. Dividends, contributions,
-                    and redemptions are skipped. CUSIP symbols are classified as
-                    Bank Bonds with coupon and maturity extracted from the
-                    description. All other transactions default to "Stocks".
+                    Imports YOU BOUGHT / YOU SOLD rows as transactions, bond
+                    INTEREST payments as income, and bond REDEMPTIONS
+                    (maturity) as sells. Dividends and contributions are
+                    skipped. CUSIP symbols are classified as Bank Bonds with
+                    coupon and maturity extracted from the description. All
+                    other transactions default to "Stocks".
                   </div>
                   {fileError && (
                     <div
