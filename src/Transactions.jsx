@@ -2381,11 +2381,10 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       if (nameEnd > 0) {
         shortName = desc.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null;
       }
-      // Bond type and default coupon frequency by issuer keywords.
+      // Bond type inferred by issuer keywords (display/metadata only).
       const u = desc.toUpperCase();
       if (u.includes("TREASURY") || u.includes("US TREAS")) {
         bondType = "Treasury";
-        couponFreq = "semi-annual";
       } else if (
         u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
         u.includes("FEDERAL FARM") || u.includes("FFCB") ||
@@ -2393,17 +2392,17 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
         u.includes("FREDDIE") || u.includes("FANNIE")
       ) {
         bondType = "Agency";
-        couponFreq = "semi-annual";
       } else if (
         u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
         u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
       ) {
         bondType = "Corporate";
-        couponFreq = "semi-annual";
       } else {
         bondType = "CD";
-        couponFreq = "monthly"; // conservative default; CDs vary widely
       }
+      // Default coupon frequency is monthly; refined later when real interest
+      // payments are detected on Account History import.
+      couponFreq = "monthly";
       if (couponRate !== null && maturityDate) {
         notes = `${couponRate.toFixed(2)}% | ${maturityM[1]}/${maturityM[2]}/${maturityM[3]}`;
       }
