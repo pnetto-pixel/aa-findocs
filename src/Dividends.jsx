@@ -535,7 +535,9 @@ function BarTooltip({ active, payload, label, hidden }) {
 
 // ── Asset class grouping helper ───────────────────────────────────────────────
 
-function buildAssetClassRows(rows, transactions) {
+// Returns an array of group objects for collapsible class-mode rendering.
+// Each group: { label, ticker (= label, for sort compat), total, ytd, priorYtd, ttm, cost, yoyPct, yoc, recovered, tickers }
+function buildClassGroups(rows, transactions) {
   const tickerToClass = {};
   const sorted = [...transactions].sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : 0
@@ -549,13 +551,14 @@ function buildAssetClassRows(rows, transactions) {
   const byClass = {};
   for (const row of rows) {
     const cls = tickerToClass[row.ticker] || "Unknown";
-    if (!byClass[cls]) byClass[cls] = { ticker: cls, total: 0, ytd: 0, priorYtd: 0, ttm: 0, cost: 0, _isClass: true };
+    if (!byClass[cls]) byClass[cls] = { label: cls, ticker: cls, total: 0, ytd: 0, priorYtd: 0, ttm: 0, cost: 0, tickers: [] };
     const g = byClass[cls];
     g.total += row.total;
     g.ytd += row.ytd;
     g.priorYtd += row.priorYtd;
     g.ttm += row.ttm;
     g.cost += row.cost || 0;
+    g.tickers.push(row);
   }
 
   return Object.values(byClass).map((g) => ({
@@ -572,18 +575,48 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   const [sortCol, setSortCol] = useState("total");
   const [sortDir, setSortDir] = useState("desc");
   const [groupMode, setGroupMode] = useState("class");
+  const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+
+  // On initial mount in class mode, collapse all groups by default.
+  useEffect(() => {
+    if (groupMode === "class" && rows.length > 0 && transactions.length > 0) {
+      const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
+      setCollapsedClasses(allClasses);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggleClass(cls) {
+    setCollapsedClasses((prev) => {
+      const next = new Set(prev);
+      next.has(cls) ? next.delete(cls) : next.add(cls);
+      return next;
+    });
+  }
 
   function handleSort(col) {
     if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortCol(col); setSortDir("desc"); }
   }
 
+  // In class mode, displayRows is the array of group objects (not flat ticker rows).
+  // In ticker mode, displayRows is the flat rows array.
   const displayRows = useMemo(() => {
-    if (groupMode === "class") return buildAssetClassRows(rows, transactions);
+    if (groupMode === "class") return buildClassGroups(rows, transactions);
     return rows;
   }, [rows, transactions, groupMode]);
 
+  // sortedRows only applies when groupMode === "ticker".
+  // In class mode we sort groups directly.
   const sortedRows = useMemo(() => {
+    if (groupMode === "class") {
+      return [...displayRows].sort((a, b) => {
+        const av = a[sortCol], bv = b[sortCol];
+        if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+        const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
+        const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
+        return sortDir === "asc" ? an - bn : bn - an;
+      });
+    }
     return [...displayRows].sort((a, b) => {
       const av = a[sortCol], bv = b[sortCol];
       if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -591,9 +624,11 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
       const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
       return sortDir === "asc" ? an - bn : bn - an;
     });
-  }, [displayRows, sortCol, sortDir]);
+  }, [displayRows, sortCol, sortDir, groupMode]);
 
-  const totals = useMemo(() => aggPositions(displayRows), [displayRows]);
+  // Totals always aggregate from the base ticker rows, not from displayRows
+  // (which in class mode contains group objects, not flat ticker rows).
+  const totals = useMemo(() => aggPositions(rows), [rows]);
 
   const COLS = [
     { key: "ticker", label: groupMode === "class" ? "Class" : "Ticker", align: "left" },
@@ -660,6 +695,46 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
     }
   }
 
+  function renderGroupHeaderRow(group) {
+    const collapsed = collapsedClasses.has(group.label);
+    const groupTd = {
+      ...tdBase,
+      background: T.cardElev,
+      fontWeight: 600,
+      borderTop: `1px solid ${T.border}`,
+      borderBottom: `1px solid ${T.border}`,
+    };
+    return (
+      <tr key={`group-${group.label}`} style={{ cursor: "pointer" }} onClick={() => toggleClass(group.label)}>
+        <td style={{
+          ...groupTd,
+          ...stickyCol(T.cardElev, 2),
+          textAlign: "left",
+          color: T.gold,
+          letterSpacing: "0.06em",
+        }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <ChevronDown
+              size={12}
+              style={{
+                color: T.gold,
+                transform: collapsed ? "rotate(-90deg)" : "none",
+                transition: "transform 0.2s",
+                flexShrink: 0,
+              }}
+            />
+            {group.label}
+          </span>
+        </td>
+        <td style={groupTd}>{fmtUSD(group.total, valuesHidden)}</td>
+        <td style={groupTd}>{fmtUSD(group.ytd, valuesHidden)}</td>
+        <td style={{ ...groupTd, color: growthColor(group.yoyPct), fontWeight: 600 }}>{fmtPct(group.yoyPct)}</td>
+        <td style={groupTd}>{fmtYoc(group.yoc)}</td>
+        <td style={{ ...groupTd, color: T.gold }}>{fmtYoc(group.recovered)}</td>
+      </tr>
+    );
+  }
+
   function renderTotalRow() {
     const summaryTd = { ...tdBase, background: T.cardElev, fontWeight: 600, borderBottom: `1px solid ${T.border}`, borderTop: `1px solid ${T.border}` };
     return COLS.map((col) => {
@@ -704,7 +779,16 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
               return (
                 <button
                   key={mode}
-                  onClick={() => setGroupMode(mode)}
+                  onClick={() => {
+                    if (mode === "class") {
+                      setGroupMode("class");
+                      const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
+                      setCollapsedClasses(allClasses);
+                    } else {
+                      setGroupMode("ticker");
+                      setCollapsedClasses(new Set());
+                    }
+                  }}
                   style={{
                     background: active ? T.gold : T.cardElev,
                     border: `1px solid ${active ? T.gold : T.border}`,
@@ -751,9 +835,30 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
                 </thead>
                 <tbody>
                   <tr>{renderTotalRow()}</tr>
-                  {sortedRows.map((row) => (
-                    <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                  ))}
+                  {groupMode === "class"
+                    ? sortedRows.map((group) => (
+                        <Fragment key={group.label}>
+                          {renderGroupHeaderRow(group)}
+                          {!collapsedClasses.has(group.label) &&
+                            group.tickers
+                              .slice()
+                              .sort((a, b) => {
+                                const av = a[sortCol], bv = b[sortCol];
+                                if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+                                const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
+                                const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
+                                return sortDir === "asc" ? an - bn : bn - an;
+                              })
+                              .map((row) => (
+                                <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                              ))
+                          }
+                        </Fragment>
+                      ))
+                    : sortedRows.map((row) => (
+                        <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                      ))
+                  }
                 </tbody>
               </table>
             </div>
