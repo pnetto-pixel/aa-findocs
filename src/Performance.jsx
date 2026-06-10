@@ -714,24 +714,32 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           Position Performance
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={(e) => { e.stopPropagation(); setGrouped((g) => !g); }}
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.1em",
-              padding: "4px 10px",
-              border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
-              borderRadius: 3,
-              background: grouped ? T.gold + "14" : "transparent",
-              color: grouped ? T.gold : T.textFaint,
-              cursor: "pointer",
-              transition: "color 0.15s, background 0.15s, border-color 0.15s",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {grouped ? "Flat view" : "Group by class"}
-          </button>
+          {open && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
+              {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
+                const active = (mode === "class") === grouped;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setGrouped(mode === "class")}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <ChevronDown
             size={16}
             style={{
@@ -1139,7 +1147,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 }}
               >
                 {meta?.reason === "no-eligible-transactions"
-                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income)."
+                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income, Unallocated USD)."
                   : meta?.reason === "no-priced-days"
                   ? "Could not fetch enough historical price data to build a chart."
                   : "No performance data available."}
@@ -1365,7 +1373,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     letterSpacing: "0.04em",
                   }}
                 >
-                  Excludes Cash and Unallocated assets. Updated daily after US market close.
+                  Excludes Cash and Unallocated BRL assets. Updated daily after US market close.
                   {" "}Total Return includes US dividends only (BRA and fixed income excluded).
                 </div>
               </>

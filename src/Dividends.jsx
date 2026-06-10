@@ -710,14 +710,14 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
           ...groupTd,
           ...stickyCol(T.cardElev, 2),
           textAlign: "left",
-          color: T.gold,
+          color: T.text,
           letterSpacing: "0.06em",
         }}>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <ChevronDown
               size={12}
               style={{
-                color: T.gold,
+                color: T.textFaint,
                 transform: collapsed ? "rotate(-90deg)" : "none",
                 transition: "transform 0.2s",
                 flexShrink: 0,
@@ -760,39 +760,41 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
       <button onClick={onToggle} style={cardHeaderStyle(open)}>
         <CardTitle icon={<BarChart2 size={14} strokeWidth={2} />}>Position Dividends</CardTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
-            {[["ticker", "By Ticker"], ["class", "By Asset Class"]].map(([mode, label]) => {
-              const active = groupMode === mode;
-              return (
-                <button
-                  key={mode}
-                  onClick={() => {
-                    if (mode === "class") {
-                      setGroupMode("class");
-                      const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
-                      setCollapsedClasses(allClasses);
-                    } else {
-                      setGroupMode("ticker");
-                      setCollapsedClasses(new Set());
-                    }
-                  }}
-                  style={{
-                    background: active ? T.gold : T.cardElev,
-                    border: `1px solid ${active ? T.gold : T.border}`,
-                    borderRadius: 4,
-                    color: active ? T.bg : T.textDim,
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: "0.08em",
-                    padding: "5px 12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
+          {open && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
+              {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
+                const active = groupMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      if (mode === "class") {
+                        setGroupMode("class");
+                        const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
+                        setCollapsedClasses(allClasses);
+                      } else {
+                        setGroupMode("ticker");
+                        setCollapsedClasses(new Set());
+                      }
+                    }}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
         </div>
       </button>
@@ -1120,14 +1122,14 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
           width: TICKER_COL_WIDTH,
           minWidth: TICKER_COL_WIDTH,
           borderRight: `1px solid ${T.border}`,
-          color: T.gold,
+          color: T.text,
           letterSpacing: "0.06em",
         }}>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <ChevronDown
               size={12}
               style={{
-                color: T.gold,
+                color: T.textFaint,
                 transform: collapsed ? "rotate(-90deg)" : "none",
                 transition: "transform 0.2s",
                 flexShrink: 0,
@@ -1157,39 +1159,41 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
       <button onClick={onToggle} style={cardHeaderStyle(open)}>
         <CardTitle icon={<BarChart2 size={14} strokeWidth={2} />}>Dividends Monthly Y/Y</CardTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
-            {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
-              const active = groupMode === mode;
-              return (
-                <button
-                  key={mode}
-                  onClick={() => {
-                    if (mode === "class") {
-                      setGroupMode("class");
-                      const allClasses = new Set(tickerRows.map(r => tickerToClass[r.ticker] || "Unknown"));
-                      setCollapsedClasses(allClasses);
-                    } else {
-                      setGroupMode("ticker");
-                      setCollapsedClasses(new Set());
-                    }
-                  }}
-                  style={{
-                    background: active ? T.gold : T.cardElev,
-                    border: `1px solid ${active ? T.gold : T.border}`,
-                    borderRadius: 4,
-                    color: active ? T.bg : T.textDim,
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: "0.08em",
-                    padding: "5px 12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
+          {open && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
+              {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
+                const active = groupMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      if (mode === "class") {
+                        setGroupMode("class");
+                        const allClasses = new Set(tickerRows.map(r => tickerToClass[r.ticker] || "Unknown"));
+                        setCollapsedClasses(allClasses);
+                      } else {
+                        setGroupMode("ticker");
+                        setCollapsedClasses(new Set());
+                      }
+                    }}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
         </div>
       </button>
