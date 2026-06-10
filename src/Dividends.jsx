@@ -295,11 +295,13 @@ function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate
   }
 }
 
-// Full history grouped by the chosen granularity, optional date filter.
-function buildChartData(events, groupBy, selectedYears) {
+// Full history grouped by the chosen granularity, optional date/ticker/assetClass filter.
+function buildChartData(events, groupBy, selectedYears, filterTicker, filterAssetClass) {
   const filtered = events.filter((e) => {
     if (!e.date) return false;
     if (selectedYears.size > 0 && !selectedYears.has(e.date.slice(0, 4))) return false;
+    if (filterTicker && filterTicker !== "All" && e.ticker !== filterTicker) return false;
+    if (filterAssetClass && filterAssetClass !== "All" && e.assetClass !== filterAssetClass) return false;
     return true;
   });
   if (!filtered.length) return [];
@@ -1402,6 +1404,8 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
   const [groupBy, setGroupBy] = useState("Month");
   const [selectedYears, setSelectedYears] = useState(new Set());
+  const [selectedTicker, setSelectedTicker] = useState("All");
+  const [selectedAssetClass, setSelectedAssetClass] = useState("All");
 
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(false);
@@ -1525,9 +1529,17 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     return ys;
   }, [allEvents]);
 
+  const availableTickers = useMemo(() => {
+    return ["All", ...[...new Set(allEvents.map((e) => e.ticker))].sort()];
+  }, [allEvents]);
+
+  const availableAssetClasses = useMemo(() => {
+    return ["All", ...[...new Set(allEvents.map((e) => e.assetClass).filter(Boolean))].sort()];
+  }, [allEvents]);
+
   const chartData = useMemo(
-    () => buildChartData(allEvents, groupBy, selectedYears),
-    [allEvents, groupBy, selectedYears]
+    () => buildChartData(allEvents, groupBy, selectedYears, selectedTicker, selectedAssetClass),
+    [allEvents, groupBy, selectedYears, selectedTicker, selectedAssetClass]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
@@ -1763,7 +1775,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 </div>
 
                 {/* Year filter */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
                   {["All", ...availableYears].map((y) => {
                     const isAll = y === "All";
                     const active = isAll ? selectedYears.size === 0 : selectedYears.has(y);
@@ -1798,6 +1810,49 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                       </button>
                     );
                   })}
+                </div>
+
+                {/* Ticker and Asset Class filters */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>Filter:</span>
+                  <select
+                    value={selectedTicker}
+                    onChange={(e) => setSelectedTicker(e.target.value)}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${selectedTicker !== "All" ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                      outline: "none",
+                    }}
+                  >
+                    {availableTickers.map((t) => (
+                      <option key={t} value={t}>{t === "All" ? "All tickers" : t}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={selectedAssetClass}
+                    onChange={(e) => setSelectedAssetClass(e.target.value)}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${selectedAssetClass !== "All" ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                      outline: "none",
+                    }}
+                  >
+                    {availableAssetClasses.map((c) => (
+                      <option key={c} value={c}>{c === "All" ? "All asset classes" : c}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {!hasChartData ? (
