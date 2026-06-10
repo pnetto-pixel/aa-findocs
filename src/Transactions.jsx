@@ -98,14 +98,18 @@ async function fetchTransactionsFromServer(auth) {
   return await res.json();
 }
 
-async function saveTransactionsToServer(auth, transactions) {
+async function saveTransactionsToServer(auth, transactions, bondIncome) {
+  // bondIncome is optional; when omitted the server preserves the existing
+  // value (read-modify-write), so non-import saves never wipe it.
+  const body = { transactions };
+  if (Array.isArray(bondIncome)) body.bondIncome = bondIncome;
   const res = await fetch("/api/transactions", {
     method: "PUT",
     headers: {
       ...authHeaders(auth),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ transactions }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     let msg = `Save ${res.status}`;
@@ -2291,43 +2295,67 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
   const idxPrice = colOf("Price ($)");
   const idxQty = colOf("Quantity");
   const idxFees = colOf("Fees ($)");
+  const idxAmount = colOf("Amount ($)");
 
   if (idxDate < 0 || idxAction < 0 || idxSymbol < 0 || idxPrice < 0 || idxQty < 0) {
     return { results: [], hadHeader: true, rawRows: [], sourceText: text, error: "Required Fidelity columns missing" };
   }
 
+  // Parse a Fidelity MM/DD/YYYY (or MM/DD/YY) date string to ISO, or null.
+  const toISO = (rawDate) => {
+    const mdy = String(rawDate || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (!mdy) return null;
+    let [, mo, d, y] = mdy;
+    if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    mo = mo.padStart(2, "0");
+    d = d.padStart(2, "0");
+    const yi = parseInt(y, 10), mi = parseInt(mo, 10), di = parseInt(d, 10);
+    if (mi < 1 || mi > 12 || di < 1 || di > 31 || yi < 1900 || yi > 2100) return null;
+    const dt = new Date(yi, mi - 1, di);
+    if (dt.getFullYear() !== yi || dt.getMonth() !== mi - 1 || dt.getDate() !== di) return null;
+    return `${y}-${mo}-${d}`;
+  };
+
   const results = [];
   const rawRows = [];
+  // Real interest/coupon payments detected from the Account History (item 36
+  // follow-up). Stored separately from buy/sell transactions; never enter the
+  // position-math path (computeNetQty/dupKey).
+  const incomeEvents = [];
   for (let i = headerIdx + 1; i < result.data.length; i++) {
     const arr = result.data[i];
     if (!arr || arr.length === 0) continue;
     const action = String(arr[idxAction] || "").trim();
     const upper = action.toUpperCase();
+
+    // Interest/coupon payment rows: capture as real income events, not txns.
+    // Fidelity labels these "INTEREST" / "INTEREST EARNED" with the amount in
+    // the Amount ($) column. Only keep CUSIP-symboled (bond/CD) payments.
+    if (upper.includes("INTEREST") && idxAmount >= 0) {
+      const isoDateI = toISO(arr[idxDate]);
+      const symbolI = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountI = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      if (isoDateI && symbolI && CUSIP_RX.test(symbolI) && isFinite(amountI) && amountI > 0) {
+        incomeEvents.push({
+          id: newId(),
+          date: isoDateI,
+          ticker: symbolI,
+          amount: amountI,
+          kind: "interest",
+          source: "fidelity",
+        });
+      }
+      continue;
+    }
+
     let side = null;
     if (upper.startsWith("YOU BOUGHT")) side = "buy";
     else if (upper.startsWith("YOU SOLD")) side = "sell";
-    else continue; // skip dividends, contributions, interest, redemptions, etc.
+    else continue; // skip dividends, contributions, redemptions, etc.
 
-    const rawDate = String(arr[idxDate] || "").trim();
     // Fidelity dates are always MM/DD/YYYY (US format). Override the
     // BR-default parseDate which would interpret 05/08/2026 as DMY.
-    const mdy = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-    let isoDate = null;
-    if (mdy) {
-      let [, mo, d, y] = mdy;
-      if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
-      mo = mo.padStart(2, "0");
-      d = d.padStart(2, "0");
-      const yi = parseInt(y, 10);
-      const mi = parseInt(mo, 10);
-      const di = parseInt(d, 10);
-      if (mi >= 1 && mi <= 12 && di >= 1 && di <= 31 && yi >= 1900 && yi <= 2100) {
-        const dt = new Date(yi, mi - 1, di);
-        if (dt.getFullYear() === yi && dt.getMonth() === mi - 1 && dt.getDate() === di) {
-          isoDate = `${y}-${mo}-${d}`;
-        }
-      }
-    }
+    const isoDate = toISO(arr[idxDate]);
     if (!isoDate) continue; // skip malformed rows silently
 
     const symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
@@ -2441,7 +2469,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     rawRows.push(arr);
   }
 
-  return { results, hadHeader: true, rawRows, sourceText: text };
+  return { results, incomeEvents, hadHeader: true, rawRows, sourceText: text };
 }
 
 function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
@@ -2622,14 +2650,16 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
       setText(content);
       const out = parseFidelityCSV(content, knownClassByTicker);
-      if (out.error || out.results.length === 0) {
-        setFileError(out.error || "No BUY/SELL transactions found in this Fidelity file");
+      const incomeCount = (out.incomeEvents || []).length;
+      if (out.error || (out.results.length === 0 && incomeCount === 0)) {
+        setFileError(out.error || "No BUY/SELL or interest rows found in this Fidelity file");
         setParsed(null);
         return;
       }
       const annotated = annotateDuplicates(out.results);
       setParsed({
         results: annotated,
+        incomeEvents: out.incomeEvents || [],
         hadHeader: true,
         rawRows: out.rawRows,
         sourceText: content,
@@ -2651,8 +2681,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     const validTx = parsed.results
       .filter((r, i) => r.ok && checkedRows.has(i))
       .map((r) => r.tx);
-    if (validTx.length === 0) return;
-    onConfirm(validTx, mode);
+    const income = parsed.incomeEvents || [];
+    if (validTx.length === 0 && income.length === 0) return;
+    onConfirm(validTx, mode, income);
   }
 
   function startPreviewEdit(idx) {
@@ -2723,6 +2754,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   const checkedValidCount = parsed
     ? parsed.results.filter((r, i) => r.ok && checkedRows.has(i)).length
     : 0;
+  const incomeCount = parsed?.incomeEvents?.length || 0;
   const totalCount = parsed ? parsed.results.length : 0;
   const errorCount = parsed
     ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass).length
@@ -3048,11 +3080,11 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                       lineHeight: 1.6,
                     }}
                   >
-                    Imports only YOU BOUGHT / YOU SOLD rows. Dividends,
-                    contributions, interest, and redemptions are skipped.
-                    CUSIP symbols are classified as Bank Bonds with coupon and
-                    maturity extracted from the description. All other
-                    transactions default to "Stocks".
+                    Imports YOU BOUGHT / YOU SOLD rows as transactions, and
+                    bond INTEREST payments as income. Dividends, contributions,
+                    and redemptions are skipped. CUSIP symbols are classified as
+                    Bank Bonds with coupon and maturity extracted from the
+                    description. All other transactions default to "Stocks".
                   </div>
                   {fileError && (
                     <div
@@ -3184,6 +3216,25 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                   }}
                 >
                   {parsed.reparseNote}
+                </div>
+              )}
+
+              {parsed.incomeEvents && parsed.incomeEvents.length > 0 && (
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.green,
+                    marginBottom: 14,
+                    padding: 10,
+                    border: `1px solid ${T.green}`,
+                    background: "rgba(125, 211, 164, 0.05)",
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  {parsed.incomeEvents.length} bond interest payment
+                  {parsed.incomeEvents.length === 1 ? "" : "s"} detected — added
+                  to income on import.
                 </div>
               )}
 
@@ -3576,7 +3627,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={handleConfirm}
-                  disabled={checkedValidCount === 0}
+                  disabled={checkedValidCount === 0 && incomeCount === 0}
                   style={{
                     background: T.gold,
                     border: "none",
@@ -3586,11 +3637,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                     fontSize: 11,
                     letterSpacing: "0.15em",
                     textTransform: "uppercase",
-                    cursor: checkedValidCount > 0 ? "pointer" : "default",
-                    opacity: checkedValidCount > 0 ? 1 : 0.4,
+                    cursor: checkedValidCount > 0 || incomeCount > 0 ? "pointer" : "default",
+                    opacity: checkedValidCount > 0 || incomeCount > 0 ? 1 : 0.4,
                   }}
                 >
                   Import {checkedValidCount} of {totalCount} rows
+                  {incomeCount > 0 ? ` + ${incomeCount} interest` : ""}
                 </button>
                 <button
                   onClick={() => {
@@ -3628,6 +3680,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  // Bond interest payments (separate income store; not in the transactions
+  // array, so position math never sees them). Persisted alongside in the same
+  // /api/transactions blob under a `bondIncome` field.
+  const [bondIncome, setBondIncome] = useState([]);
   const [saving, setSaving] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
@@ -3728,6 +3784,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           return { ...t, assetClass: cls };
         });
         setTransactions(migrated);
+        setBondIncome(Array.isArray(data.bondIncome) ? data.bondIncome : []);
         setLoading(false);
         // Validate tickers against the price API in the background.
         verifyTickers(migrated);
@@ -3746,11 +3803,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     };
   }, [auth]);
 
-  async function persist(nextList) {
+  async function persist(nextList, nextIncome) {
     setSaving(true);
     try {
-      await saveTransactionsToServer(auth, nextList);
+      await saveTransactionsToServer(auth, nextList, nextIncome);
       setTransactions(nextList);
+      if (Array.isArray(nextIncome)) setBondIncome(nextIncome);
       onTransactionsChange?.(nextList);
     } catch (err) {
       setError(err.message || "Save failed");
@@ -3792,9 +3850,20 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     await persist(next);
   }
 
-  async function handleImport(newTxs, mode) {
+  async function handleImport(newTxs, mode, newIncome = []) {
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
-    await persist(next);
+    // Merge detected interest payments into the income store, deduping by
+    // date+ticker+amount. On "replace" the income store is rebuilt from scratch.
+    const base = mode === "replace" ? [] : bondIncome;
+    const seen = new Set(base.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
+    const mergedIncome = [...base];
+    for (const e of newIncome) {
+      const k = `${e.date}|${e.ticker}|${e.amount}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      mergedIncome.push(e);
+    }
+    await persist(next, mergedIncome);
     setImportOpen(false);
     verifyTickers(newTxs);
   }

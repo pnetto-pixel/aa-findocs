@@ -37,6 +37,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const raw = await redis.get(storageKey);
       let transactions = null;
+      let bondIncome = [];
       let savedAt = null;
       let exists = false;
       if (raw) {
@@ -47,6 +48,7 @@ export default async function handler(req, res) {
           } else if (parsed && Array.isArray(parsed.transactions)) {
             transactions = parsed.transactions;
             savedAt = parsed.savedAt || null;
+            if (Array.isArray(parsed.bondIncome)) bondIncome = parsed.bondIncome;
           }
           exists = Array.isArray(transactions);
         } catch {
@@ -56,6 +58,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         exists,
         transactions: transactions || [],
+        bondIncome,
         savedAt,
         method: auth.method,
         email: auth.email,
@@ -69,8 +72,25 @@ export default async function handler(req, res) {
       if (!Array.isArray(transactions)) {
         return res.status(400).json({ error: 'transactions array required' });
       }
+      // bondIncome is a separate income store kept in the same blob. When the
+      // request omits it, preserve whatever is already stored so ordinary
+      // transaction saves don't wipe imported interest payments.
+      let bondIncome = [];
+      if (Array.isArray(body.bondIncome)) {
+        bondIncome = body.bondIncome;
+      } else {
+        try {
+          const prev = await redis.get(storageKey);
+          if (prev) {
+            const parsedPrev = JSON.parse(prev);
+            if (parsedPrev && Array.isArray(parsedPrev.bondIncome)) {
+              bondIncome = parsedPrev.bondIncome;
+            }
+          }
+        } catch {}
+      }
       const savedAt = new Date().toISOString();
-      const payload = JSON.stringify({ transactions, savedAt });
+      const payload = JSON.stringify({ transactions, bondIncome, savedAt });
       await redis.set(storageKey, payload);
       return res.status(200).json({ ok: true, savedAt });
     }

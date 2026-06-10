@@ -169,9 +169,28 @@ function minISO(a, b) {
   return a < b ? a : b;
 }
 
-function computeBankBondsAccrual(transactions, todayISO) {
+// Map a median spacing (in days) between real coupon payments to a frequency.
+function freqFromDays(d) {
+  if (!isFinite(d) || d <= 0) return null;
+  if (d <= 45) return "monthly";
+  if (d <= 135) return "quarterly";
+  if (d <= 270) return "semi-annual";
+  return "annual";
+}
+
+// Bank Bonds interest income, combining real coupon payments (imported from the
+// Fidelity Account History) with an estimated accrual for the period not yet
+// covered by a real payment. Returns merged monthly buckets plus a real/est
+// split and per-CUSIP calibrated frequency.
+//   - Real payments are bucketed into their actual month.
+//   - The estimate fills only the gap from the last real payment to today
+//     (or the full life if there are no real payments yet).
+//   - Coupon frequency is calibrated from the cadence of real payments.
+function computeBankBondsAccrual(transactions, bondIncome, todayISO) {
   const today = todayISO || new Date().toISOString().slice(0, 10);
-  // Group Bank Bonds transactions by CUSIP/ticker.
+  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+
+  // Group Bank Bonds buy/sell transactions by CUSIP/ticker.
   const byCusip = {};
   for (const tx of transactions || []) {
     if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
@@ -183,7 +202,6 @@ function computeBankBondsAccrual(transactions, todayISO) {
     const price = Number(tx.price);
     if (!isFinite(qty) || !isFinite(price)) continue;
     if (!byCusip[t]) byCusip[t] = { events: [], coupon: meta.couponPct, maturityISO: meta.maturityISO };
-    // Use the latest non-null coupon/maturity we see for this CUSIP.
     byCusip[t].coupon = meta.couponPct;
     byCusip[t].maturityISO = meta.maturityISO;
     byCusip[t].events.push({
@@ -192,39 +210,76 @@ function computeBankBondsAccrual(transactions, todayISO) {
     });
   }
 
-  const byMonth = {};
-  let allTime = 0;
+  // Group real interest payments by CUSIP.
+  const realByCusip = {};
+  for (const ev of bondIncome || []) {
+    if (!ev || (ev.kind && ev.kind !== "interest")) continue;
+    const t = (ev.ticker || "").toUpperCase();
+    const amt = Number(ev.amount);
+    if (!t || !ev.date || !isFinite(amt) || amt <= 0) continue;
+    if (!realByCusip[t]) realByCusip[t] = [];
+    realByCusip[t].push({ date: ev.date, amount: amt });
+  }
 
-  for (const t of Object.keys(byCusip)) {
-    const { events, coupon, maturityISO } = byCusip[t];
-    events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-    // Accrual horizon for this CUSIP ends at maturity or today, whichever first.
+  const byMonth = {};
+  let realTotal = 0;
+  let estimatedTotal = 0;
+  const freqByCusip = {};
+
+  const allCusips = new Set([...Object.keys(byCusip), ...Object.keys(realByCusip)]);
+
+  for (const t of allCusips) {
+    const real = (realByCusip[t] || []).slice().sort(byDate);
+
+    // 1) Real payments -> their own month.
+    for (const p of real) {
+      const key = p.date.slice(0, 7);
+      byMonth[key] = (byMonth[key] || 0) + p.amount;
+      realTotal += p.amount;
+    }
+
+    // 2) Calibrate coupon frequency from cadence (needs >= 2 payments).
+    if (real.length >= 2) {
+      const diffs = [];
+      for (let i = 1; i < real.length; i++) diffs.push(daysBetweenISO(real[i - 1].date, real[i].date));
+      diffs.sort((a, b) => a - b);
+      freqByCusip[t] = freqFromDays(diffs[Math.floor(diffs.length / 2)]);
+    }
+
+    // 3) Estimate the gap after the last real payment (or full life if none).
+    const cusip = byCusip[t];
+    if (!cusip) continue; // real payments but no buy/sell txns -> nothing to estimate
+    const { events, coupon, maturityISO } = cusip;
+    events.sort(byDate);
     const endISO = minISO(maturityISO, today);
     const rate = coupon / 100;
+    const accrueFrom = real.length ? real[real.length - 1].date : null;
 
     let principal = 0;
     for (let i = 0; i < events.length; i++) {
-      // Apply this event's principal change at its date.
       principal += events[i].principalDelta;
       if (principal < 0) principal = 0; // never accrue on negative principal
-      const segStart = events[i].date;
+      let segStart = events[i].date;
       const segEnd = i + 1 < events.length ? events[i + 1].date : endISO;
-      if (segEnd <= segStart || principal <= 0) continue;
-      // Clamp the segment to the accrual horizon.
+      // Don't double-count: estimate only after the last real payment.
+      if (accrueFrom && segStart < accrueFrom) segStart = accrueFrom;
       const clampedEnd = minISO(segEnd, endISO);
-      if (clampedEnd <= segStart) continue;
-      accrueSegment(byMonth, segStart, clampedEnd, principal, rate);
+      if (clampedEnd <= segStart || principal <= 0) continue;
+      estimatedTotal += accrueSegment(byMonth, segStart, clampedEnd, principal, rate);
     }
   }
 
+  let allTime = 0;
   for (const k of Object.keys(byMonth)) allTime += byMonth[k];
-  return { byMonth, allTime };
+  return { byMonth, allTime, realTotal, estimatedTotal, freqByCusip };
 }
 
 // Spread principal x rate x days/365 across the calendar months the interval
-// touches, attributing each month's portion to that month's bucket.
+// touches, attributing each month's portion to that month's bucket. Returns
+// the total amount added.
 function accrueSegment(byMonth, startISO, endISO, principal, rate) {
   let cursor = startISO;
+  let added = 0;
   while (cursor < endISO) {
     // First day of next month after `cursor`.
     const [y, m] = cursor.split("-");
@@ -235,10 +290,13 @@ function accrueSegment(byMonth, startISO, endISO, principal, rate) {
     const days = daysBetweenISO(cursor, chunkEnd);
     if (days > 0) {
       const key = cursor.slice(0, 7);
-      byMonth[key] = (byMonth[key] || 0) + principal * rate * (days / 365);
+      const amt = principal * rate * (days / 365);
+      byMonth[key] = (byMonth[key] || 0) + amt;
+      added += amt;
     }
     cursor = chunkEnd;
   }
+  return added;
 }
 
 // Full history grouped by the chosen granularity, optional date filter.
@@ -1336,6 +1394,7 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
 
 export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [transactions, setTransactions] = useState([]);
+  const [bondIncome, setBondIncome] = useState([]);
   const [events, setEvents] = useState([]);
   const [state, setState] = useState("loading"); // loading | done | error
   const [error, setError] = useState(null);
@@ -1362,7 +1421,10 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         if (!txRes.ok) throw new Error(`Transactions: ${txRes.status}`);
         const txData = await txRes.json();
         const txs = Array.isArray(txData.transactions) ? txData.transactions : [];
-        if (!cancelled) setTransactions(txs);
+        if (!cancelled) {
+          setTransactions(txs);
+          setBondIncome(Array.isArray(txData.bondIncome) ? txData.bondIncome : []);
+        }
 
         if (!txs.length) {
           if (!cancelled) { setEvents([]); setState("done"); }
@@ -1441,11 +1503,15 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
 
-  // Item 36: estimated accrued interest on US Bank Bonds, derived on the fly
-  // from buy/sell transactions + coupon/maturity in notes. Bucketed by month.
-  const bondAccrual = useMemo(() => computeBankBondsAccrual(transactions), [transactions]);
+  // Item 36: US Bank Bonds interest income — real coupon payments imported from
+  // the Fidelity Account History, plus an estimated accrual for the gap not yet
+  // covered by a real payment. Bucketed by month.
+  const bondAccrual = useMemo(
+    () => computeBankBondsAccrual(transactions, bondIncome),
+    [transactions, bondIncome]
+  );
 
-  // Estimated Bank Bonds interest folded into the same KPI windows.
+  // Bank Bonds interest (real + estimated) folded into the same KPI windows.
   const bondKpis = useMemo(() => {
     const now = new Date();
     const thisYear = String(now.getFullYear());
@@ -1457,7 +1523,13 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
       if (k.startsWith(thisYear)) ytd += v;
       if (k === thisMonth) month += v;
     }
-    return { allTime, ytd, month };
+    // Qualifier: pure estimate, pure real, or a mix — drives the KPI subtitle.
+    const hasReal = (bondAccrual.realTotal || 0) > 0.005;
+    const hasEst = (bondAccrual.estimatedTotal || 0) > 0.005;
+    const label = !hasReal ? "est. bond interest"
+      : hasEst ? "bond interest (real + est.)"
+      : "bond interest";
+    return { allTime, ytd, month, label };
   }, [bondAccrual]);
 
   const costBasis = useMemo(() => computeCostBasis(transactions), [transactions]);
@@ -1643,24 +1715,24 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   </div>
                 )}
 
-                {/* KPI cards — dividends + estimated Bank Bonds accrued interest */}
+                {/* KPI cards — dividends + Bank Bonds interest (real + estimated) */}
                 <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <KpiCard
                     label="All Time"
                     value={fmtUSD0(kpis.allTime + bondKpis.allTime, valuesHidden)}
-                    sub={bondKpis.allTime > 0 ? `incl. ${fmtUSD0(bondKpis.allTime, valuesHidden)} est. bond interest` : null}
+                    sub={bondKpis.allTime > 0 ? `incl. ${fmtUSD0(bondKpis.allTime, valuesHidden)} ${bondKpis.label}` : null}
                   />
                   <KpiCard
                     label="YTD"
                     value={fmtUSD0(kpis.ytd + bondKpis.ytd, valuesHidden)}
                     yoy={kpis.yoyYtd}
-                    sub={bondKpis.ytd > 0 ? `incl. ${fmtUSD0(bondKpis.ytd, valuesHidden)} est. bond interest` : null}
+                    sub={bondKpis.ytd > 0 ? `incl. ${fmtUSD0(bondKpis.ytd, valuesHidden)} ${bondKpis.label}` : null}
                   />
                   <KpiCard
                     label="This Month"
                     value={fmtUSD0(kpis.month + bondKpis.month, valuesHidden)}
                     yoy={kpis.yoyMonth}
-                    sub={bondKpis.month > 0 ? `incl. ${fmtUSD0(bondKpis.month, valuesHidden)} est. bond interest` : null}
+                    sub={bondKpis.month > 0 ? `incl. ${fmtUSD0(bondKpis.month, valuesHidden)} ${bondKpis.label}` : null}
                   />
                 </div>
 
