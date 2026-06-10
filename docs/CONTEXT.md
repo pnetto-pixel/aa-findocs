@@ -199,6 +199,7 @@ Modal `ImportModal` com 2 tabs — abre por default na aba **Fidelity** (mudado 
   - `YOU SOLD` com quantidade negativa → `side="sell"`, qty = abs
   - **Datas MDY** (americano) — override do default DMY
   - Todas as transações entram como USD + assetClass via `inferAssetClass()`
+  - **Dividendos (PR #95):** linhas `DIVIDEND RECEIVED` / `CASH DIV` (exceto `REINVEST`) capturadas como `incomeEvents` com `kind: "dividend"`, `source: "fidelity"`, `{ id, date, ticker, amount }` — armazenadas em `bondIncome` (mesmo store de interest payments) e enviadas a `/api/dividends` no body. UI de import exibe contagem separada: "N bond interest + M stock dividend payments detected."
 
 **Import inteligente (item 34):**
 - **Reuso de classe conhecida:** `parseRow` e `parseFidelityCSV` recebem `knownClassByTicker` (Map ticker→assetClass das transações salvas). Prioridade de classe: coluna explícita → histórico → `inferAssetClass()` → manual. Flag `classFromHistory` + chip "N class reused".
@@ -342,6 +343,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ### Storage
 
 - **Auto income** (US Stocks/ETFs): calculado server-side por `api/dividends.js`, cache Redis versionado. Sem storage manual.
+- **Fidelity dividend import (PR #95):** linhas `DIVIDEND RECEIVED`/`CASH DIV` capturadas por `parseFidelityCSV` e armazenadas em `bondIncome` (campo `bondIncome` no blob de `/api/transactions`, mesmo store de interest payments). Campo `kind: "dividend"` distingue de interest (`kind: "interest"`). Enviadas a `/api/dividends` no POST body como fonte autoritativa para os tickers cobertos.
 
 ### Fontes de dados (validadas via probe PR #58)
 
@@ -353,14 +355,15 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 ### `api/dividends.js` (POST)
 
-- Recebe `{ transactions }`
-- Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`)
+- Recebe `{ transactions, bondIncome? }`
+- Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`, `BRA Stocks`)
 - **Bank Bonds (CUSIP) nao passam por este endpoint** — income e calculado no frontend (accrual estimado + pagamentos reais do campo `bondIncome`, itens 36/follow-up, PR #86 + #87)
-- Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrencia 3
+- **Fidelity dividend import (PR #95):** eventos `kind: "dividend"` de `bondIncome` usados como fonte autoritativa — `totalReceived` exato (sem reconstrução por $/share × qty). Tickers cobertos por Fidelity pulam Yahoo e Finnhub inteiramente. Cache key inclui hash dos eventos Fidelity (`fd:${hash}`).
+- Para tickers NÃO cobertos por Fidelity: busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrencia 3
 - **Fallback Finnhub:** quando Yahoo retorna null ou objeto vazio (`{}`), chama `fetchFinnhubDividends(ticker, apiKey)` via Finnhub `/stock/dividend`. Finnhub inclui `payDate` diretamente — lookup Polygon e pulado para esses eventos. Reutiliza `FINNHUB_API_KEY`. Confirmado necessario para ADRs US-listados como VALE (NYSE). (PR #94)
 - Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty <= 0
-- Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }], meta }`
-- Cache Redis versionado (`:dividends:v5:<txHash>`), TTL ate proximo fechamento do mercado US
+- Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api"|"fidelity" }], meta }`
+- Cache Redis versionado (`:dividends:v6:<txHash>`), TTL ate proximo fechamento do mercado US
 
 ### UI (`src/Dividends.jsx`)
 
@@ -459,6 +462,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Transacoes Bank Bonds sem notas de cupom/maturidade ignoradas no accrual (PR #86)**|Se `notes` nao tiver o padrao "X.XX% \| MM/DD/YYYY", `parseBondNotes` retorna null e a transacao e ignorada no calculo de accrual. Silencioso por design — bond sem dados de cupom nao pode contribuir com estimativa.|
 |**Toggle "By Class / By Ticker" no header do card, nao no corpo (PR #93)**|Toggle no corpo do card ocupava espaco visual e ficava deslocado do contexto do header. Mover para o header (alinhado a direita, mesmo nivel do titulo) e o padrao de controle de view de cards — consistente com outros controles inline no header. `e.stopPropagation()` obrigatorio para que o click no toggle nao propague para o `<button>` do header colapsavel.|
 |**`isBankBonds` guard em `ManualHoldingRow` (PR #93)**|Holdings `bank-bonds-aggregate` derivados de Transactions (item 37) nao devem ter valor/classe editados manualmente — editaria um campo que o sync de Transactions vai sobrescrever na proxima sincronizacao. Ocultar os inputs e ignorar os campos no `saveEdit` evita divergencia de dados sem precisar de logica de merge.|
+|**Fidelity dividends como fonte autoritativa, pulando Yahoo/Finnhub (PR #95)**|Yahoo retorna `{}` para alguns ADRs (VALE confirmado); Finnhub funciona mas e ponto de falha. Quando o usuario ja importou dividendos reais do Fidelity CSV, esses valores sao os dados definitivos — nao ha razao para tentar reconstrui-los via API. Tickers cobertos por `bondIncome[kind=dividend]` pulam completamente o fetch externo; `totalReceived` exato e usado direto. Unico pre-requisito: usuario deve reimportar o CSV Fidelity para capturar linhas de dividendo.|
+|**`CACHE_VERSION` v5→v6 em `api/dividends.js` (PR #95)**|Cache key inclui hash dos eventos Fidelity (`fd:${simpleHash(...)}`). Bump v5→v6 invalida caches anteriores que nao tinham Fidelity dividends — sem o bump, usuario veria cache vazio mesmo apos reimportar o CSV.|
 
 -----
 
@@ -611,6 +616,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Remover codigo morto imediatamente apos refactor (PR #92)** — `buildAssetClassRows` ficou orphan apos `buildClassGroups` substituir seu uso. Codigo nao referenciado deve ser apagado na mesma session que o refactor, nao deixado para "cleanup depois".
 - **Ler o arquivo antes de implementar evita retrabalho (PR #93)** — Task 1 (DIV TTM/YoC% para Bank Bonds) estava completamente implementada; nenhum codigo precisou ser escrito. Verificar o arquivo alvo antes de codar e mais rapido do que implementar algo que ja existe. Isso vale especialmente para features que foram entregues em PRs diferentes mas no mesmo arquivo.
 - **Yahoo Finance retorna HTTP 200 com `dividends: {}` vazio para alguns ADRs — falha silenciosa (PR #94)** — VALE (NYSE) confirmado. Nenhum erro é lançado, o campo simplesmente vem vazio. Qualquer pipeline que depende de Yahoo para dividendos de ADRs deve ter fallback explícito para esse caso (null-check + objeto vazio). Finnhub `/stock/dividend` funciona como fallback keyed e já estava disponível via `FINNHUB_API_KEY`. Sempre ter fallback para tickers esperados a pagar dividendos.
+- **Parser Fidelity descartava linhas de dividendo explicitamente com `else continue` (PR #95)** — A linha `else continue; // skip dividends` foi adicionada intencionalmente no parser original para ignorar tudo que não fosse `YOU BOUGHT`/`YOU SOLD`/`INTEREST`. Isso descartava silenciosamente todas as linhas `DIVIDEND RECEIVED` sem aviso. A lição: ao auditar um parser que "não captura X", procurar `continue` / `break` com comentário skip antes de assumir que o dado nunca chegou ao parser. Solução defensiva: capturar dividendos **antes** do bloco de side-detection, num guard dedicado, com `continue` explícito que documenta a intenção.
+- **Dado real do usuário (Fidelity import) supera dado de API quando disponível** — Para dividendos recebidos, o extrato da corretora tem o valor exato creditado. APIs externas (Yahoo, Finnhub) recalculam qty × $/share, o que pode divergir por arredondamento, splits não reportados, ou falha silenciosa (VALE Yahoo vazio). Padrão: se `bondIncome` contiver eventos para um ticker, usá-los diretamente e pular o fetch externo. Custo: usuário precisa manter o CSV Fidelity importado.
 
 -----
 
