@@ -2385,14 +2385,14 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 
     let priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
     // Redemption rows usually have a blank Price ($): the bond is paid back at
-    // face. Derive percent-of-face from Amount/units when available, else par
-    // (100.00 = 100% of $1,000/unit) — same space as bought rows, so the
-    // qty/1000 + price*10 corrections below apply uniformly.
+    // face. For redemptions Fidelity uses decimal-fraction space (1.0 = par),
+    // not percent-of-face (100.0 = par) — so derive in the same decimal space
+    // and apply the ×1000 correction below uniformly.
     if (isRedemption && (!isFinite(priceN) || priceN <= 0)) {
       const units = qtyAbs / 1000;
       priceN = isFinite(amountAbs) && amountAbs > 0 && units > 0
-        ? amountAbs / units / 10
-        : 100;
+        ? amountAbs / units / 1000
+        : 1;
     }
     if (!isFinite(priceN) || priceN < 0) continue;
 
@@ -2408,11 +2408,13 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     const assetClass = known || inferAssetClass(symbol) || "Stocks";
 
     // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
-    // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face
-    // (e.g. 100.00 = 100% of $1,000 face = $1,000/unit). Both corrections
-    // apply together only for Bank Bonds (CUSIP_RX); plain tickers untouched.
+    // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face for
+    // buys/sells (100.00 → ×10 = $1,000/unit), but as decimal-fraction for
+    // redemptions (1.00 → ×1000 = $1,000/unit). Plain tickers untouched.
     const qty = assetClass === "Bank Bonds" ? qtyAbs / 1000 : qtyAbs;
-    const price = assetClass === "Bank Bonds" ? priceN * 10 : priceN;
+    const price = assetClass === "Bank Bonds"
+      ? (isRedemption ? priceN * 1000 : priceN * 10)
+      : priceN;
 
     // Extract bond metadata from the Symbol Description field.
     let notes = "";
