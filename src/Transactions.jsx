@@ -2502,7 +2502,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 }
 
 function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
-  const [tab, setTab] = useState("upload"); // upload | fidelity
+  const [tab, setTab] = useState("fidelity"); // upload | fidelity
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
@@ -2557,7 +2557,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setStructuralPrompt(false);
       setMode("append");
       setFileError("");
-      setTab("upload");
+      setTab("fidelity");
       setCheckedRows(new Set());
       setEditingIdx(null);
       setEditDraft(null);
@@ -2670,28 +2670,58 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   }
 
   function handleFidelityFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      // Strip BOM if present.
-      let content = String(ev.target?.result || "");
-      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
-      setText(content);
-      const out = parseFidelityCSV(content, knownClassByTicker);
-      const incomeCount = (out.incomeEvents || []).length;
-      if (out.error || (out.results.length === 0 && incomeCount === 0)) {
-        setFileError(out.error || "No BUY/SELL or interest rows found in this Fidelity file");
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const fileContents = [];
+    let loaded = 0;
+    let readError = false;
+
+    function onAllLoaded() {
+      let mergedResults = [];
+      let mergedIncome = [];
+      let mergedRawRows = [];
+      const crossFileKeys = new Set();
+
+      for (const content of fileContents) {
+        const out = parseFidelityCSV(content, knownClassByTicker);
+        if (out.error && mergedResults.length === 0 && mergedIncome.length === 0) {
+          setFileError(out.error);
+          setParsed(null);
+          return;
+        }
+        const fileResults = out.results || [];
+        const deduped = fileResults.map((r) => {
+          if (!r.tx) return r;
+          const k = dupKey(r.tx);
+          if (crossFileKeys.has(k)) return { ...r, duplicate: true };
+          crossFileKeys.add(k);
+          return r;
+        });
+        mergedResults = mergedResults.concat(deduped);
+        mergedIncome = mergedIncome.concat(out.incomeEvents || []);
+        mergedRawRows = mergedRawRows.concat(out.rawRows || []);
+      }
+
+      if (mergedResults.length === 0 && mergedIncome.length === 0) {
+        setFileError("No BUY/SELL or interest rows found in this Fidelity file");
         setParsed(null);
         return;
       }
-      const annotated = annotateDuplicates(out.results);
+
+      mergedResults.sort((a, b) => {
+        const da = a.tx?.date || "";
+        const db = b.tx?.date || "";
+        return da < db ? -1 : da > db ? 1 : 0;
+      });
+
+      const annotated = annotateDuplicates(mergedResults);
       setParsed({
         results: annotated,
-        incomeEvents: out.incomeEvents || [],
+        incomeEvents: mergedIncome,
         hadHeader: true,
-        rawRows: out.rawRows,
-        sourceText: content,
+        rawRows: mergedRawRows,
+        sourceText: "",
         sourceLabel: "Fidelity",
       });
       initAllChecked(annotated);
@@ -2700,9 +2730,26 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setDecimalPrompt(false);
       setStructuralPrompt(false);
       setFileError("");
-    };
-    reader.onerror = () => setFileError("Failed to read file");
-    reader.readAsText(file);
+    }
+
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (readError) return;
+        let content = String(ev.target?.result || "");
+        if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+        fileContents[idx] = content;
+        loaded += 1;
+        if (loaded === files.length) onAllLoaded();
+      };
+      reader.onerror = () => {
+        if (!readError) {
+          readError = true;
+          setFileError("Failed to read file");
+        }
+      };
+      reader.readAsText(file);
+    });
   }
 
   function handleConfirm() {
@@ -3084,10 +3131,11 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
               {tab === "fidelity" && (
                 <div>
-                  <Label>Select your Fidelity "Accounts History" CSV</Label>
+                  <Label>Select one or more Fidelity "Accounts History" CSVs</Label>
                   <input
                     type="file"
                     accept=".csv,text/csv,text/plain"
+                    multiple
                     onChange={handleFidelityFile}
                     style={{
                       display: "block",
