@@ -464,6 +464,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`isBankBonds` guard em `ManualHoldingRow` (PR #93)**|Holdings `bank-bonds-aggregate` derivados de Transactions (item 37) nao devem ter valor/classe editados manualmente — editaria um campo que o sync de Transactions vai sobrescrever na proxima sincronizacao. Ocultar os inputs e ignorar os campos no `saveEdit` evita divergencia de dados sem precisar de logica de merge.|
 |**Fidelity dividends como fonte autoritativa, pulando Yahoo/Finnhub (PR #95)**|Yahoo retorna `{}` para alguns ADRs (VALE confirmado); Finnhub funciona mas e ponto de falha. Quando o usuario ja importou dividendos reais do Fidelity CSV, esses valores sao os dados definitivos — nao ha razao para tentar reconstrui-los via API. Tickers cobertos por `bondIncome[kind=dividend]` pulam completamente o fetch externo; `totalReceived` exato e usado direto. Unico pre-requisito: usuario deve reimportar o CSV Fidelity para capturar linhas de dividendo.|
 |**`CACHE_VERSION` v5→v6 em `api/dividends.js` (PR #95)**|Cache key inclui hash dos eventos Fidelity (`fd:${simpleHash(...)}`). Bump v5→v6 invalida caches anteriores que nao tinham Fidelity dividends — sem o bump, usuario veria cache vazio mesmo apos reimportar o CSV.|
+|**`computeHalfInvested` derivada ao vivo de Transactions, sem persistencia (PR #98)**|Valor realizado de aporte por quinzena nao e persistido em localStorage nem em Redis — calculado no `useMemo([transactions, usdBrlRate])` a cada render. Mesmo padrao de `buildChartData` e `buildPositionRows`: funcao pura fora do componente + useMemo por dentro. Elimina o vetor de divergencia entre o dado manual salvo e o log de Transactions, que e a fonte de verdade.|
 
 -----
 
@@ -502,7 +503,6 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Tab Aporte Quinzenal item 28: reconciliacao plano x realizado automatica via Transactions
 - Tab Events (itens 20–22)
 - Validacao de slug/ticker ao adicionar transacao (deferred)
 
