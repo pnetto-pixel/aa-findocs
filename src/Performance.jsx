@@ -714,24 +714,32 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           Position Performance
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={(e) => { e.stopPropagation(); setGrouped((g) => !g); }}
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.1em",
-              padding: "4px 10px",
-              border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
-              borderRadius: 3,
-              background: grouped ? T.gold + "14" : "transparent",
-              color: grouped ? T.gold : T.textFaint,
-              cursor: "pointer",
-              transition: "color 0.15s, background 0.15s, border-color 0.15s",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {grouped ? "Flat view" : "Group by class"}
-          </button>
+          {open && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
+              {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
+                const active = (mode === "class") === grouped;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setGrouped(mode === "class")}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <ChevronDown
             size={16}
             style={{
