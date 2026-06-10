@@ -75,6 +75,7 @@ Tab nova, separada do Dashboard. Storage isolado.
 - Chave Redis: `portfolio:<auth>:transactions` (paralela ao `:holdings`, sem refator do existente).
 - Endpoint: `api/transactions.js` (GET / PUT, mesmo padrão de `api/holdings.js`).
 - Storage key é derivada de `auth.storageKey` substituindo `:holdings` por `:transactions`.
+- Blob: `{ transactions, bondIncome, savedAt }`. `bondIncome` (PR #87) é o store separado de pagamentos reais de juros de Bank Bonds — fica fora do array de transações, então não entra na matemática de posição. PUT preserva `bondIncome` quando o body o omite.
 
 ### Modelo de transação
 
@@ -338,14 +339,14 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 | Asset class | Fonte | Metodo |
 |---|---|---|
 | US Stocks, ETFs, REITs, Bonds ETFs | Yahoo `chart?events=div` | Auto server-side |
-| Bank Bonds (CDs/bonds) | Accrual estimado (cupom% + maturidade do campo `notes`) | Frontend-only, sem endpoint |
+| Bank Bonds (CDs/bonds) | Pagamentos reais (Fidelity "INTEREST") + accrual estimado no gap | Frontend-only; income real no campo `bondIncome` de `/api/transactions` |
 | BRA Stocks / BRA Fixed Income | Sem API gratuita | Fora do escopo atual |
 
 ### `api/dividends.js` (POST)
 
 - Recebe `{ transactions }`
 - Filtra tickers US (non-B3) em `AUTO_CLASSES` (`Stocks`, `Real Estate`, `Alternative`, `Bonds`)
-- **Bank Bonds (CUSIP) nao passam por este endpoint** — income e calculado no frontend via accrual estimado (item 36, PR #86)
+- **Bank Bonds (CUSIP) nao passam por este endpoint** — income e calculado no frontend (accrual estimado + pagamentos reais do campo `bondIncome`, itens 36/follow-up, PR #86 + #87)
 - Busca `chart?events=div` via Yahoo para cada ticker (mesmo host de `perf-history.js`), concorrencia 3
 - Calcula `qtyHeld` na pay-date cruzando com transactions; ignora eventos com qty <= 0
 - Retorna `{ events: [{ date, ticker, assetClass, incomeType: "dividend", amountPerShare, qtyHeld, totalReceived, currency: "USD", source: "api" }], meta }`
@@ -357,7 +358,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Filtro por ano** (PR #62): dropdown `<select>` com "All years" + anos presentes nos dados (ordem decrescente). Substituiu os inputs de date range From/To.
   - **Y/Y nos KPIs YTD e This Month** (PR #62): variacao percentual ano-a-ano exibida abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`.
   - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
-  - **Bank Bonds accrual nos KPIs (PR #86, item 36):** `computeBankBondsAccrual` (helpers `parseBondNotes` + replay por CUSIP, ACT/365) calcula juros estimados de Bank Bonds no frontend. KPIs All Time, YTD e This Month somam o accrual com subtitulo "incl. $X est. bond interest". KPIs Y/Y (variacao percentual) comparam so dividendos reais — accrual excluido intencionalmente. Bar chart nao inclui accrual (so eventos reais da API).
+  - **Bank Bonds interest nos KPIs (PR #86 + PR #87, item 36):** `computeBankBondsAccrual(transactions, bondIncome)` no frontend. **PR #86:** accrual estimado (`parseBondNotes` + replay por CUSIP, ACT/365). **PR #87:** mescla pagamentos **reais** (campo `bondIncome`, importados do Fidelity "INTEREST") bucketados no mes real + estimativa preenchendo so o gap apos o ultimo pagamento real (sem double-count); calibra `couponFreq` pela cadencia (`freqByCusip`, ainda nao renderizado). KPIs All Time/YTD/This Month somam o total com subtitulo adaptativo ("est. bond interest" / "bond interest (real + est.)" / "bond interest"). KPIs Y/Y comparam so dividendos de acoes. Bar chart nao inclui bond interest (so eventos da API de acoes).
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
   - **Toggle By Ticker / By Asset Class** (PR #62): quando "By Asset Class", agrega dividendos por classe (Stocks, Real Estate, etc.) derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
 - **Dividend History** (auditoria): tabela colapsavel com todo historico de pagamentos (Date · Ticker · $/Share · Qty · Total), ordenada por data desc, scroll vertical. Quarto card — apos "Dividends Monthly Y/Y".
@@ -435,7 +436,9 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**Responsividade via state + resize listener, sem CSS media queries (PR #85)**|Constraint de inline-styles-only e sem Tailwind/CSS files. Padrao adotado: `windowWidth` state com lazy init `window.innerWidth`, `useEffect` com listener de `resize` e cleanup no unmount. Dimensoes responsivas derivadas inline (ex: clamp de `donutSize` entre 140 e 220). Compativel com SSR defensivo.|
 |**`maxWidth` do container expandido de 640 para 1200 (PR #85)**|640px deixava o conteudo numa faixa estreita centralizada em monitores. 1200px cobre a maioria dos monitores sem precisar de layout de 2 colunas — entrega responsividade com risco minimo de regressao. Mobile (<640px) identico ao anterior.|
 |**DonutChart aceita prop `size` com geometria derivada (PR #85)**|Raios (`rOuter`, `rInner`) e font-sizes calculados proporcionalmente a partir de `size`. Permite escalar o grafico em qualquer contexto sem duplicar o componente. Default 140 preserva comportamento anterior.|
-|**Preco Fidelity Bank Bonds multiplicado por 10 no parser (PR #86, item 40)**|Fidelity registra preco de CDs/bonds como fator decimal (1.00 = 100% do valor de face, não $1.00). Fator 10 converte para USD real (ex: 1.00 * 10 = $10 por lote de $1.000 = $10.000 total). Logica isolada: so aplica quando `assetClass === "Bank Bonds"` (CUSIP); outros ativos intocados.|
+|**Qty E preco Fidelity Bank Bonds corrigidos no parser (PR #86 + PR #87, item 40)**|Fidelity reporta a Quantity de CDs/bonds como valor de face em dolares (1000 = um CD de $1.000) **e** o Price ($) como percent-of-face (100.00 = 100% de $1.000). Correcao final (PR #87): `tx.qty = qtyAbs / 1000` **e** `tx.price = priceN * 10`, ambas so quando `assetClass === "Bank Bonds"` (CUSIP). Ex: qty=1000/price=100.00 → qty=1/price=1000 → $1.000. `rawNumbers` guarda os brutos. O PR #86 aplicou so `price * 10` (incompleto) — transacoes importadas antes do PR #87 devem ser apagadas e re-importadas.|
+|**Metadados de bond extraidos no parser (PR #87, item 40)**|Para Bank Bonds, `parseFidelityCSV` extrai do Symbol Description campos dedicados: `couponRate` (number), `maturityDate` (ISO), `bondType` (Treasury/Agency/CD/Corporate por keywords do issuer), `shortName`, `couponFreq` (default `monthly` para todos por decisao de produto). `parseBondNotes` (Dividends) prefere esses campos e cai de volta no formato legado `notes` "5.45% \| 03/15/2027" — transacoes antigas continuam acruando sem re-import.|
+|**Income real de Bank Bonds em store separado (PR #87, item 36 follow-up)**|Pagamentos de juros detectados no import (Action contem "INTEREST" + Symbol e CUSIP) sao guardados no campo `bondIncome` do blob `/api/transactions`, **fora** do array de transacoes — nunca entram em `computeNetQty`/`dupKey` (cumpre a decisao de nao criar `side: "income"`). PUT preserva `bondIncome` quando o body o omite (read-modify-write), entao saves normais de transacao nao o apagam. `computeBankBondsAccrual(transactions, bondIncome)` mescla pagamentos reais (no mes real) com accrual estimado preenchendo **so o gap apos o ultimo pagamento real** (sem double-count); calibra `couponFreq` pela cadencia (`freqByCusip`, computado mas ainda nao renderizado). Sem bump de cache (calculo no frontend).|
 |**Holding Bank Bonds agregado por principal liquido (PR #86, item 37)**|Um unico holding `id: "bank-bonds-aggregate"` por usuario (nao um por CUSIP). Principal = Sigma(buy qty*price) - Sigma(sell qty*price), floored em 0. Mesmo padrao de sync de 3 pontos do item 32 (load, Refresh All, onTransactionsChange). Mantido como `manualMode: "value"` + `derivedFromTransactions: true` — nao e um auto holding (sem ticker live), mas o valor e derivado automaticamente.|
 |**Income Bank Bonds = accrual estimado no frontend, sem tocar endpoints (PR #86, item 36)**|Sem API gratuita de pagamentos historicos por CUSIP. Solucao: accrual pro-rata ACT/365 calculado em `src/Dividends.jsx` a partir de buy/sell + cupom%/maturidade no campo `notes`. Rotulado "est." na UI. Sem bump de cache (dividends v3, perf-history v12). KPIs Y/Y comparam so dividendos reais — accrual somado apenas nos KPIs de valor absoluto (All Time, YTD, This Month).|
 |**Transacoes Bank Bonds sem notas de cupom/maturidade ignoradas no accrual (PR #86)**|Se `notes` nao tiver o padrao "X.XX% \| MM/DD/YYYY", `parseBondNotes` retorna null e a transacao e ignorada no calculo de accrual. Silencioso por design — bond sem dados de cupom nao pode contribuir com estimativa.|
@@ -465,8 +468,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |---|---|
 | `GET /api/holdings` | Retorna `{ exists, holdings, savedAt, method, email, admin }` |
 | `PUT /api/holdings` | Salva array de holdings |
-| `GET /api/transactions` | Retorna `{ exists, transactions, savedAt, method, email, admin }` |
-| `PUT /api/transactions` | Salva array de transações |
+| `GET /api/transactions` | Retorna `{ exists, transactions, bondIncome, savedAt, method, email, admin }` |
+| `PUT /api/transactions` | Salva `{ transactions, bondIncome? }`; quando `bondIncome` e omitido, preserva o valor existente (read-modify-write) |
 | `GET /api/price` | Quote real-time de um ticker (Finnhub para US, brapi para B3); `?fx=USDBRL` retorna taxa de câmbio |
 | `GET /api/index-quote` | Quote do SPY |
 | `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v11) |
