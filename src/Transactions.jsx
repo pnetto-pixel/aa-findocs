@@ -2338,7 +2338,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 
     const qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
     if (!isFinite(qtyRaw) || qtyRaw === 0) continue;
-    const qty = Math.abs(qtyRaw);
+    const qtyAbs = Math.abs(qtyRaw);
 
     let fee = 0;
     if (idxFees >= 0) {
@@ -2362,11 +2362,11 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     const known = knownClassByTicker && knownClassByTicker.get(symbol);
     const assetClass = known || inferAssetClass(symbol) || "Stocks";
 
-    // Item 40: Fidelity reports CD/bond prices as a percent-of-face decimal
-    // (e.g. 100.00 = 100% of a $1,000 face value per unit). Multiply by 10 so
-    // price becomes the real USD value per unit (100.00 -> $1,000). Only Bank
-    // Bonds (CUSIP_RX) get this correction; plain tickers are untouched.
-    const finalPrice = assetClass === "Bank Bonds" ? priceN * 10 : priceN;
+    // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
+    // (e.g. 1000 = one $1,000 CD), while Price ($) is already the real USD
+    // value per unit. Divide qty by 1,000 to get unit count. Only Bank Bonds
+    // (CUSIP_RX) get this correction; plain tickers are untouched.
+    const qty = assetClass === "Bank Bonds" ? qtyAbs / 1000 : qtyAbs;
 
     const tx = {
       id: newId(),
@@ -2375,7 +2375,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       ticker: symbol,
       assetClass,
       qty,
-      price: finalPrice,
+      price: priceN,
       currency: "USD",
       fee,
       notes,
