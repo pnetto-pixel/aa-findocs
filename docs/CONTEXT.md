@@ -66,6 +66,8 @@ Single page com view switcher no topo:
 
 O switcher fica logo abaixo do H1 dinâmico. State `activeView` em `PortfolioTracker`.
 
+No header do app há um **ícone de notificação global (Bell)** com badge de contagem para splits/groupings pendentes de revisão (ver "Feature: Split Detection & Approval"). Clicar abre o painel de revisão modal.
+
 -----
 
 ## 💼 Feature: Transactions (Fase 1 completa)
@@ -77,7 +79,7 @@ Tab nova, separada do Dashboard. Storage isolado.
 - Chave Redis: `portfolio:<auth>:transactions` (paralela ao `:holdings`, sem refator do existente).
 - Endpoint: `api/transactions.js` (GET / PUT, mesmo padrão de `api/holdings.js`).
 - Storage key é derivada de `auth.storageKey` substituindo `:holdings` por `:transactions`.
-- Blob: `{ transactions, bondIncome, savedAt }`. `bondIncome` (PR #87) é o store separado de pagamentos reais de juros de Bank Bonds — fica fora do array de transações, então não entra na matemática de posição. PUT preserva `bondIncome` quando o body o omite.
+- Blob: `{ transactions, bondIncome, splitEvents, savedAt }`. `bondIncome` (PR #87) é o store separado de pagamentos reais de juros de Bank Bonds — fica fora do array de transações, então não entra na matemática de posição. `splitEvents` (commit 4e66bd9) registra splits/groupings já aplicados ao histórico (`applied`/`dismissed`) — ver "Feature: Split Detection & Approval". PUT preserva `bondIncome` E `splitEvents` quando o body os omite (read-modify-write única).
 
 ### Modelo de transação
 
@@ -446,6 +448,48 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 
 -----
 
+## 🔔 Feature: Split Detection & Approval (commit 4e66bd9 — jun/2026)
+
+Sistema que detecta automaticamente splits/groupings ja ocorridos (dados Yahoo/Polygon) ainda **nao refletidos** no historico de transacoes, sinaliza com icone de sino (Bell) + badge no header do app, e oferece um fluxo de aprovacao. Estende o item 35 (SplitModal manual) com deteccao automatica.
+
+### Endpoint `api/split-detect.js`
+
+- `POST { tickers }`, auth obrigatoria.
+- Busca **TODOS** os splits historicos (Yahoo `chart?events=split` com `range=10y`, **sem** filtro de janela; fallback Polygon `v3/reference/splits`), concorrencia 3.
+- Cache Redis **GLOBAL** proprio: chave `splitdetect:v1:{hash(tickers)}`, TTL ate o fechamento do mercado US.
+- **Endpoint separado de `api/events.js`** (que filtra janela -30d/+90d) porque a deteccao precisa do historico completo de splits desde a 1a transacao — ver Decisoes Tecnicas.
+
+### Modelo de dados `splitEvents`
+
+Array no blob de `/api/transactions` (espelha `bondIncome`):
+
+```js
+{ ticker, date, numerator, denominator, status: "applied" | "dismissed", appliedAt }
+```
+
+- `PUT /api/transactions` agora faz **uma unica leitura read-modify-write** que preserva `bondIncome` E `splitEvents` quando o body os omite. Payload final: `{ transactions, bondIncome, splitEvents, savedAt }`.
+
+### Helper `applySplitToTransactions` (exportado, `src/Transactions.jsx`)
+
+`applySplitToTransactions(transactions, { ticker, date, numerator, denominator })` — module-level, ajusta `qty × (num/den)`, `price × (den/num)`, grava audit trail (`splitAdjusted`, `originalQty`, `originalPrice`, `splitDate`), guard rigoroso `tx.date < splitDate`. `SplitModal.handleApply` foi refatorado para usa-lo (o caminho manual agora tambem grava `splitDate`). `saveTransactionsToServer` ganhou 4o arg opcional `splitEvents`.
+
+### UI e fluxo (`src/App.jsx`)
+
+- Icone Bell + badge no header. Funcao pura `detectPendingSplits(transactions, detectedSplits, splitEvents)` (idempotente via decided-set + guard `splitAdjusted && splitDate`). `refreshPendingSplits` (POST nao-bloqueante, failure-silent) dispara no load e apos `handleTransactionsChange`.
+- Painel modal de revisao com **preview por split** (qty→nova, preco→novo, total invariante) e botoes **Approve** / **Dismiss**.
+- **Approve:** aplica o ajuste via `applySplitToTransactions`, grava entry `status: "applied"` + data do split, persiste (omite `bondIncome` → servidor preserva), dispara cascade via `handleTransactionsChange` → `applyTxQty` → cache perf-history v12 invalidado.
+- **Dismiss:** grava `status: "dismissed"`, persiste, some da lista. Importante porque dados Fidelity geralmente ja vem split-adjusted — o usuario decide por split.
+
+### Fora do escopo
+
+- B3/CUSIP (sem API gratuita de splits), undo de approve, validacao de ticker.
+
+### Pendencia de validacao em producao
+
+- Reachability Yahoo/Polygon do `api/split-detect.js` **nao validada em producao** (hosts externos bloqueados no sandbox de implementacao).
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -528,6 +572,9 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 |**Payout como evento separado do ex_dividend quando as datas diferem (commit aecef28)**|Yahoo retorna apenas ex-date; Polygon fornece pay date. Quando payDate != exDate, `api/events.js` gera dois eventos distintos: `ex_dividend` na ex-date (entitlement) e `payout` na pay date (cash landing). O usuario ve os dois momentos distintos no calendario — mais util do que colapsar em um unico evento com data ambigua.|
 |**Audit trail em splits (commit d6dc43b)**|`splitAdjusted: true` + `originalQty` + `originalPrice` preservados na transaction mutada — permite implementar "Undo Split" no futuro sem re-importar o CSV.|
 |**`buildBondProjections` usa intervalDays fixo por frequência (commit d6dc43b)**|30/91/182/365 dias por pagamento — aproximação suficiente para estimativa; dia exato do calendário (ex: todo dia 15) adicionaria complexidade sem ganho para uso pessoal.|
+|**Endpoint `api/split-detect.js` separado de `api/events.js` (commit 4e66bd9)**|Detecção precisa de TODOS os splits históricos desde a 1ª transação; events.js filtra janela -30d/+90d em 2 pontos + cache key sem modo. Endpoint dedicado isola blast radius, tem cache próprio e só busca splits.|
+|**`splitEvents` no blob de transactions, não em chave Redis separada (commit 4e66bd9)**|Acoplado às transactions (registra splits já aplicados ao histórico); approve deve gravar qtys ajustadas E o split atomicamente. Chave separada arriscaria divergência em escrita não-atômica. Read-modify-write espelha o padrão testado de bondIncome.|
+|**Dismiss de split persiste (commit 4e66bd9)**|Dados Fidelity geralmente já vêm split-adjusted — split detectado pode já estar no cost basis. Persistir o dismiss evita re-sinalizar a cada load; usuário decide por split.|
 
 -----
 
@@ -536,6 +583,7 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 - **Google App:** ✅ **Publicado** (saiu do modo Testing — confirmado em 21/mai/2026)
 - **Env vars no Vercel:** ⚠️ **Verificação pendente.** Lista esperada: `APP_PASSWORD`, `FINNHUB_API_KEY`, `BRAPI_API_KEY`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `ADMIN_EMAILS`, `VITE_ADMIN_EMAILS`, `POLYGON_API_KEY`.
 - **Tab Events — Yahoo `events=earn` em producao:** ⚠️ **Nao validado.** Hosts externos estavam bloqueados no sandbox de implementacao. Comportamento esperado: Yahoo pode retornar apenas earnings passados dependendo do ticker/janela. Se confirmado, earnings futuros dependem exclusivamente de `FINNHUB_API_KEY`. Validar com um ticker de earnings proximo (ex: AAPL pre-earnings) apos o primeiro deploy.
+- **Split Detection — reachability Yahoo/Polygon do `api/split-detect.js`:** ⚠️ **Nao validado.** Hosts externos estavam bloqueados no sandbox de implementacao (commit 4e66bd9). O endpoint busca splits historicos via Yahoo `chart?events=split` (primario) e Polygon `v3/reference/splits` (fallback). Validar a deteccao com um ticker que teve split recente apos o primeiro deploy.
 - **Admin atual:** `pnetto@gmail.com`
 - **Usuários ativos:** Pedro + 1 amigo
 
@@ -547,7 +595,7 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 - Frontend Transactions: `src/Transactions.jsx`
 - Frontend Performance: `src/Performance.jsx`
 - Frontend Events: `src/Events.jsx`
-- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`
+- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`, `api/split-detect.js`
 - Auth + Redis: `lib/auth.js`, `lib/redis.js`
 
 **Endpoints (resumo):**
@@ -556,13 +604,14 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 |---|---|
 | `GET /api/holdings` | Retorna `{ exists, holdings, savedAt, method, email, admin }` |
 | `PUT /api/holdings` | Salva array de holdings |
-| `GET /api/transactions` | Retorna `{ exists, transactions, bondIncome, savedAt, method, email, admin }` |
-| `PUT /api/transactions` | Salva `{ transactions, bondIncome? }`; quando `bondIncome` e omitido, preserva o valor existente (read-modify-write) |
+| `GET /api/transactions` | Retorna `{ exists, transactions, bondIncome, splitEvents, savedAt, method, email, admin }` |
+| `PUT /api/transactions` | Salva `{ transactions, bondIncome?, splitEvents? }`; quando `bondIncome` e/ou `splitEvents` sao omitidos, preserva os valores existentes (read-modify-write unica) |
 | `GET /api/price` | Quote real-time de um ticker (Finnhub para US, brapi para B3); `?fx=USDBRL` retorna taxa de câmbio |
 | `GET /api/index-quote` | Quote do SPY |
 | `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v11) |
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
 | `POST /api/events` | Recebe `{ tickers }`, retorna eventos corporativos (ex_dividend, payout, earnings, split) janela -30d/+90d; cache Redis GLOBAL por hash de tickers, TTL ate proximo fechamento de mercado |
+| `POST /api/split-detect` | Recebe `{ tickers }`, retorna TODOS os splits historicos (Yahoo `chart?events=split` range=10y, fallback Polygon) para deteccao de splits nao refletidos no historico; cache Redis GLOBAL `splitdetect:v1:{hash}`, TTL ate proximo fechamento de mercado |
 
 -----
 
