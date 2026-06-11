@@ -315,6 +315,33 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 
 -----
 
+## 📅 Feature: Events (src/Events.jsx)
+
+Tab de eventos de mercado: ex-div dates, earnings, splits, groupings.
+
+### Filtro de tickers elegíveis
+
+`extractEligibleTickers` calcula a posição líquida de cada ticker a partir do log de transações. Tickers com net qty ≤ 0 são excluídos antes do POST `/api/events` — sells totais ou posições zeradas não geram chamadas à API de eventos. (commit d6dc43b)
+
+-----
+
+## 💰 Feature: Dividends (src/Dividends.jsx)
+
+Tab de dividendos recebidos e projeções futuras.
+
+### Card Bond Projections (5º card — commit d6dc43b)
+
+Card colapsável adicionado como 5º card na tab. Função pura `buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, nMonths=12)`:
+
+- **Forward-only:** a partir do último pagamento real (de `bondIncome`), avança pelo intervalo de frequência até `min(maturityISO, today+12m)`.
+- **Frequência calibrada:** usa `freqByCusip[cusip]` (calibrado pelos pagamentos reais do Fidelity); fallback: `tx.couponFreq` → `"monthly"`.
+- **intervalDays fixo por frequência:** `monthly=30`, `quarterly=91`, `semi-annual=182`, `annual=365` — aproximação ACT, não dia exato do calendário.
+- **Valor estimado:** `principal × couponPct/100 × intervalDays/365`.
+- **CUSIPs excluídos:** `principal=0` ou `maturity` já passada.
+- **UI:** sub-header por bond, tabela Date | Est. Amount, total por bond, badge "EST". Valores mascarados por `valuesHidden`.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -350,6 +377,8 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 |**Tesouro Direto = manual em BRL (PR #49)**|Brapi `/treasury` é pago (403); tesourodireto.com.br descontinuado (410); CKAN desativado (400). Nenhuma fonte gratuita viável.|
 |**BRA Fixed Income aceita `manualCurrency: "BRL"` (PR #49)**|Tesouro e CDB são mantidos no NuBank em BRL — entrada natural é BRL, conversão automática via usdBrlRate|
 |**CONTEXT.md + Features_Roadmap.md em `docs/` no repo**|Docs versionados junto com código; Claude Code atualiza diretamente sem intermediário via Chat|
+|**Audit trail em splits (commit d6dc43b)**|`splitAdjusted: true` + `originalQty` + `originalPrice` preservados na transaction mutada — permite implementar "Undo Split" no futuro sem re-importar o CSV.|
+|**`buildBondProjections` usa intervalDays fixo por frequência (commit d6dc43b)**|30/91/182/365 dias por pagamento — aproximação suficiente para estimativa; dia exato do calendário (ex: todo dia 15) adicionaria complexidade sem ganho para uso pessoal.|
 
 -----
 
@@ -388,7 +417,6 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Próximas sessions:**
-- Fix disclaimer Performance.jsx ("Excludes fixed income" desatualizado)
 - Tab Dividends (itens 17–19, 24)
 - Tab Aporte Quinzenal (itens 25–28) ⭐
 - Tab Events (itens 20–22)
