@@ -98,11 +98,12 @@ async function fetchTransactionsFromServer(auth) {
   return await res.json();
 }
 
-async function saveTransactionsToServer(auth, transactions, bondIncome) {
-  // bondIncome is optional; when omitted the server preserves the existing
-  // value (read-modify-write), so non-import saves never wipe it.
+export async function saveTransactionsToServer(auth, transactions, bondIncome, splitEvents) {
+  // bondIncome / splitEvents are optional; when omitted the server preserves
+  // the existing value (read-modify-write), so non-import saves never wipe them.
   const body = { transactions };
   if (Array.isArray(bondIncome)) body.bondIncome = bondIncome;
+  if (Array.isArray(splitEvents)) body.splitEvents = splitEvents;
   const res = await fetch("/api/transactions", {
     method: "PUT",
     headers: {
@@ -2252,6 +2253,28 @@ function downloadCSV(filename, content) {
 // CUSIP pattern used to block non-stock tickers from splits.
 const CUSIP_RX_SPLIT = /^[0-9]{3}[A-Z0-9]{6}[0-9]$/;
 
+// Apply a split/grouping to a transaction list. Adjusts every transaction for
+// the ticker dated strictly BEFORE the split date: qty x (num/den), price x
+// (den/num), and records an audit trail (originalQty/originalPrice/splitDate).
+// Transactions on or after the split date, or for other tickers, pass through.
+export function applySplitToTransactions(transactions, { ticker, date, numerator, denominator }) {
+  const num = Number(numerator), den = Number(denominator);
+  const tkr = String(ticker).toUpperCase();
+  return transactions.map((tx) => {
+    if ((tx.ticker || "").toUpperCase() !== tkr || tx.date >= date) return tx;
+    const origQty = tx.qty, origPrice = tx.price;
+    return {
+      ...tx,
+      qty: parseFloat((origQty * (num / den)).toFixed(6)),
+      price: parseFloat((origPrice * (den / num)).toFixed(6)),
+      splitAdjusted: true,
+      originalQty: origQty,
+      originalPrice: origPrice,
+      splitDate: date,
+    };
+  });
+}
+
 function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }) {
   const [form, setForm] = useState({ ticker: "", date: "", type: "split", numerator: "", denominator: "" });
   const [showTickerList, setShowTickerList] = useState(false);
@@ -2320,20 +2343,11 @@ function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }
 
   function handleApply() {
     if (!isValid || affected.length === 0) return;
-    const next = transactions.map((tx) => {
-      if ((tx.ticker || "").toUpperCase() !== ticker || tx.date >= date) return tx;
-      const origQty = tx.qty;
-      const origPrice = tx.price;
-      const newQty = parseFloat((origQty * (num / den)).toFixed(6));
-      const newPrice = parseFloat((origPrice * (den / num)).toFixed(6));
-      return {
-        ...tx,
-        qty: newQty,
-        price: newPrice,
-        splitAdjusted: true,
-        originalQty: origQty,
-        originalPrice: origPrice,
-      };
+    const next = applySplitToTransactions(transactions, {
+      ticker,
+      date,
+      numerator: num,
+      denominator: den,
     });
     onApply(next);
     handleClose();

@@ -38,6 +38,7 @@ export default async function handler(req, res) {
       const raw = await redis.get(storageKey);
       let transactions = null;
       let bondIncome = [];
+      let splitEvents = [];
       let savedAt = null;
       let exists = false;
       if (raw) {
@@ -49,6 +50,7 @@ export default async function handler(req, res) {
             transactions = parsed.transactions;
             savedAt = parsed.savedAt || null;
             if (Array.isArray(parsed.bondIncome)) bondIncome = parsed.bondIncome;
+            if (Array.isArray(parsed.splitEvents)) splitEvents = parsed.splitEvents;
           }
           exists = Array.isArray(transactions);
         } catch {
@@ -59,6 +61,7 @@ export default async function handler(req, res) {
         exists,
         transactions: transactions || [],
         bondIncome,
+        splitEvents,
         savedAt,
         method: auth.method,
         email: auth.email,
@@ -72,25 +75,32 @@ export default async function handler(req, res) {
       if (!Array.isArray(transactions)) {
         return res.status(400).json({ error: 'transactions array required' });
       }
-      // bondIncome is a separate income store kept in the same blob. When the
-      // request omits it, preserve whatever is already stored so ordinary
-      // transaction saves don't wipe imported interest payments.
-      let bondIncome = [];
-      if (Array.isArray(body.bondIncome)) {
-        bondIncome = body.bondIncome;
-      } else {
+      // bondIncome and splitEvents are separate stores kept in the same blob.
+      // When the request omits either, preserve whatever is already stored so
+      // ordinary saves don't wipe imported interest payments or split history.
+      // Read the existing blob ONCE and reuse it for both fields.
+      let bondIncome = Array.isArray(body.bondIncome) ? body.bondIncome : null;
+      let splitEvents = Array.isArray(body.splitEvents) ? body.splitEvents : null;
+      if (bondIncome === null || splitEvents === null) {
         try {
           const prev = await redis.get(storageKey);
           if (prev) {
             const parsedPrev = JSON.parse(prev);
-            if (parsedPrev && Array.isArray(parsedPrev.bondIncome)) {
-              bondIncome = parsedPrev.bondIncome;
+            if (parsedPrev && typeof parsedPrev === 'object') {
+              if (bondIncome === null && Array.isArray(parsedPrev.bondIncome)) {
+                bondIncome = parsedPrev.bondIncome;
+              }
+              if (splitEvents === null && Array.isArray(parsedPrev.splitEvents)) {
+                splitEvents = parsedPrev.splitEvents;
+              }
             }
           }
         } catch {}
       }
+      if (bondIncome === null) bondIncome = [];
+      if (splitEvents === null) splitEvents = [];
       const savedAt = new Date().toISOString();
-      const payload = JSON.stringify({ transactions, bondIncome, savedAt });
+      const payload = JSON.stringify({ transactions, bondIncome, splitEvents, savedAt });
       await redis.set(storageKey, payload);
       return res.status(200).json({ ok: true, savedAt });
     }
