@@ -77,8 +77,22 @@ const ELIGIBLE_CLASSES = new Set([
   'Stocks', 'Real Estate', 'Alternative', 'Bonds', 'BRA Stocks', 'Unallocated USD',
 ]);
 
-// Derive unique US tickers from transactions
+// Compute net quantity per ticker across all transactions (buy adds, sell subtracts).
+function computeNetQty(transactions) {
+  const net = {};
+  for (const tx of transactions) {
+    const t = (tx.ticker || '').toUpperCase();
+    if (!t) continue;
+    const qty = Number(tx.qty) || 0;
+    if (tx.side === 'buy') net[t] = (net[t] || 0) + qty;
+    else if (tx.side === 'sell') net[t] = (net[t] || 0) - qty;
+  }
+  return net;
+}
+
+// Derive unique US tickers from transactions (only those with net qty > 0).
 function extractEligibleTickers(transactions) {
+  const netQty = computeNetQty(transactions);
   const seen = new Set();
   for (const tx of transactions) {
     const t = (tx.ticker || '').toUpperCase();
@@ -87,6 +101,7 @@ function extractEligibleTickers(transactions) {
     if (isBrazilianTicker(t)) continue;
     if (isCUSIP(t)) continue;
     if (isTesouro(t)) continue;
+    if ((netQty[t] || 0) <= 0) continue;
     seen.add(t);
   }
   return [...seen].sort();

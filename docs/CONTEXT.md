@@ -389,6 +389,17 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Group by Asset Class colapsavel (item 43):** state `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class" — todos os grupos fechados, mostrando so a linha de subtotal do grupo. `useEffect` com `[groupMode]` dep re-colapsa grupos ao trocar para "By Class" (PR #93). Ao expandir, exibe tickers individuais da classe. Toggle "By Ticker" retorna para view flat. Toggle posicionado no header do card, alinhado a direita (PR #93). Mesmo padrao visual do Position Performance.
 - Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
 
+### Card Bond Projections (5º card — commit d6dc43b)
+
+Card colapsável adicionado como 5º card na tab. Função pura `buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, nMonths=12)`:
+
+- **Forward-only:** a partir do último pagamento real (de `bondIncome`), avança pelo intervalo de frequência até `min(maturityISO, today+12m)`.
+- **Frequência calibrada:** usa `freqByCusip[cusip]` (calibrado pelos pagamentos reais do Fidelity); fallback: `tx.couponFreq` → `"monthly"`.
+- **intervalDays fixo por frequência:** `monthly=30`, `quarterly=91`, `semi-annual=182`, `annual=365` — aproximação ACT, não dia exato do calendário.
+- **Valor estimado:** `principal × couponPct/100 × intervalDays/365`.
+- **CUSIPs excluídos:** `principal=0` ou `maturity` já passada.
+- **UI:** sub-header por bond, tabela Date | Est. Amount, total por bond, badge "EST". Valores mascarados por `valuesHidden`.
+
 -----
 
 ## 📅 Feature: Events (commit aecef28 — jun/2026)
@@ -431,6 +442,7 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 - **Yahoo `events=earn`** pode retornar apenas earnings passados dependendo do ticker/janela — se confirmado, earnings futuros dependem exclusivamente de `FINNHUB_API_KEY`. Comportamento nao validado em producao (hosts bloqueados no sandbox de implementacao).
 - **Splits sem Polygon:** se `POLYGON_API_KEY` estiver ausente, o fallback de splits nao funciona — apenas o Yahoo e suficiente para a maioria dos casos.
 - **BRA Stocks fora do escopo:** sem API gratuita de earnings/splits para tickers B3.
+- **Filtro net qty > 0:** `extractEligibleTickers` exclui tickers com posição líquida ≤ 0 — sells totais ou posições zeradas não geram chamadas à API. (commit d6dc43b)
 
 -----
 
@@ -514,6 +526,8 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 |**Cache de eventos GLOBAL por hash de tickers, sem storageKey (commit aecef28, Tab Events)**|Eventos de calendario corporativo (ex-div, earnings, splits) sao fatos publicos — nao dependem do portfolio individual do usuario. Cache `events:v1:{hash(tickers_ordenados)}` e compartilhado entre qualquer usuario que tenha os mesmos tickers. Mesmo racional do cache de pay dates Polygon (`dividends:paydates:v1:{ticker}`): dado imutavel/publico nao deve ser recomputado por usuario.|
 |**Reutilizacao do cache Polygon de pay dates entre Tab Dividends e Tab Events (commit aecef28)**|`api/events.js` busca pay dates usando a chave `dividends:paydates:v1:{ticker}` — a mesma chave gerada por `api/dividends.js`. Se a Tab Dividends ja esquentou o cache para um ticker, Tab Events aproveita sem custo adicional de API. Rate limit de 5/min do Polygon free tier nao e problema quando os caches ja estao warm.|
 |**Payout como evento separado do ex_dividend quando as datas diferem (commit aecef28)**|Yahoo retorna apenas ex-date; Polygon fornece pay date. Quando payDate != exDate, `api/events.js` gera dois eventos distintos: `ex_dividend` na ex-date (entitlement) e `payout` na pay date (cash landing). O usuario ve os dois momentos distintos no calendario — mais util do que colapsar em um unico evento com data ambigua.|
+|**Audit trail em splits (commit d6dc43b)**|`splitAdjusted: true` + `originalQty` + `originalPrice` preservados na transaction mutada — permite implementar "Undo Split" no futuro sem re-importar o CSV.|
+|**`buildBondProjections` usa intervalDays fixo por frequência (commit d6dc43b)**|30/91/182/365 dias por pagamento — aproximação suficiente para estimativa; dia exato do calendário (ex: todo dia 15) adicionaria complexidade sem ganho para uso pessoal.|
 
 -----
 

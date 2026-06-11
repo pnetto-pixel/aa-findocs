@@ -883,6 +883,141 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   );
 }
 
+// ── Bond Projections (future coupon payments) ─────────────────────────────────
+// Projects upcoming coupon payment dates for open bank bond positions.
+// Uses the same byCusip shape as buildBondEvents to extract per-CUSIP metadata.
+// Returns an array of projection objects (only CUSIPs with nextPayments > 0).
+function buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, nMonths) {
+  if (nMonths == null) nMonths = 12;
+  const today = todayISO || new Date().toISOString().slice(0, 10);
+  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+
+  // Compute end-of-projection window (today + nMonths months)
+  function addMonths(isoDate, n) {
+    const [y, m] = isoDate.split("-");
+    const yi = parseInt(y, 10);
+    const mi = parseInt(m, 10);
+    const totalMonths = (yi * 12 + mi - 1) + n;
+    const ny = Math.floor(totalMonths / 12);
+    const nm = (totalMonths % 12) + 1;
+    return `${ny}-${String(nm).padStart(2, "0")}-01`;
+  }
+
+  const windowEnd = addMonths(today, nMonths);
+
+  // Map frequency label to interval in days
+  const FREQ_DAYS = {
+    "monthly": 30,
+    "quarterly": 91,
+    "semi-annual": 182,
+    "annual": 365,
+  };
+
+  // Collect per-CUSIP metadata from transactions
+  const byCusip = {};
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const meta = parseBondNotes(tx);
+    if (!meta) continue;
+    const t = (tx.ticker || "").toUpperCase();
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!t || !isFinite(qty) || !isFinite(price)) continue;
+    if (!byCusip[t]) {
+      byCusip[t] = {
+        txns: [],
+        coupon: meta.couponPct,
+        maturityISO: meta.maturityISO,
+        shortName: null,
+        couponFreq: null,
+      };
+    }
+    byCusip[t].coupon = meta.couponPct;
+    byCusip[t].maturityISO = meta.maturityISO;
+    if (!byCusip[t].shortName && tx.shortName) {
+      byCusip[t].shortName = tx.shortName;
+    }
+    if (!byCusip[t].couponFreq && tx.couponFreq) {
+      byCusip[t].couponFreq = tx.couponFreq;
+    }
+    byCusip[t].txns.push({
+      date: tx.date,
+      side: tx.side,
+      qty,
+      price,
+    });
+  }
+
+  const projections = [];
+
+  for (const [cusip, info] of Object.entries(byCusip)) {
+    const { txns, coupon, maturityISO, shortName } = info;
+    if (!maturityISO || today >= maturityISO) continue; // already matured
+
+    // Compute principal: sum(buy qty*price) - sum(sell qty*price), floored at 0
+    let principal = 0;
+    for (const t of txns) {
+      const delta = t.qty * t.price;
+      if (t.side === "buy") principal += delta;
+      else principal -= delta;
+    }
+    if (principal < 0) principal = 0;
+    if (principal <= 0) continue; // no open position
+
+    // Determine frequency (prefer calibrated > tx field > default monthly)
+    const freqLabel = (freqByCusip && freqByCusip[cusip]) || info.couponFreq || "monthly";
+    const intervalDays = FREQ_DAYS[freqLabel] || 30;
+
+    // Find the last real payment date for this CUSIP
+    const realPayments = (bondIncome || [])
+      .filter((ev) => ev && (ev.kind === "interest" || !ev.kind) && (ev.ticker || "").toUpperCase() === cusip)
+      .sort(byDate);
+
+    const txnsSorted = txns.slice().sort(byDate);
+    const firstBuyDate = txnsSorted.length ? txnsSorted[0].date : today;
+
+    const lastRealDate = realPayments.length
+      ? realPayments[realPayments.length - 1].date
+      : null;
+
+    // Project from: last real payment + interval (or firstBuyDate + interval)
+    const baseDate = lastRealDate || firstBuyDate;
+
+    // Generate next payment dates starting from baseDate + intervalDays
+    const nextPayments = [];
+    const cutoff = maturityISO < windowEnd ? maturityISO : windowEnd;
+
+    // Compute first projected date: baseDate + intervalDays
+    let cursor = new Date(baseDate + "T00:00:00Z").getTime() + intervalDays * 86400000;
+
+    while (cursor <= new Date(cutoff + "T00:00:00Z").getTime()) {
+      const d = new Date(cursor);
+      const dateISO = d.toISOString().slice(0, 10);
+      if (dateISO > today) {
+        const estimatedAmount = principal * (coupon / 100) * (intervalDays / 365);
+        nextPayments.push({ date: dateISO, estimatedAmount });
+      }
+      cursor += intervalDays * 86400000;
+    }
+
+    if (!nextPayments.length) continue;
+
+    const totalProjected = nextPayments.reduce((s, p) => s + p.estimatedAmount, 0);
+    projections.push({
+      cusip,
+      shortName: shortName || null,
+      couponPct: coupon,
+      maturityISO,
+      principal,
+      freq: freqLabel,
+      nextPayments,
+      totalProjected,
+    });
+  }
+
+  return projections;
+}
+
 // ── Year vs Year comparator ───────────────────────────────────────────────────
 
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -1530,6 +1665,9 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [posOpen, setPosOpen] = useState(false);
   const [histOpen, setHistOpen] = useState(false);
   const [yoyOpen, setYoyOpen] = useState(false);
+  const [bondProjOpen, setBondProjOpen] = useState(true);
+
+  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const headers = authHeaders(auth);
 
@@ -1578,9 +1716,9 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   // Bond interest events (real + estimated) in the same shape as stock dividend events.
   // Merged into allEvents so every card — chart, Position Dividends, Dividend History,
   // Y/Y, KPIs — sees bond income alongside stock dividends without separate logic.
-  const { events: bondEvents } = useMemo(
-    () => buildBondEvents(transactions, bondIncome),
-    [transactions, bondIncome]
+  const { events: bondEvents, freqByCusip } = useMemo(
+    () => buildBondEvents(transactions, bondIncome, todayISO),
+    [transactions, bondIncome, todayISO]
   );
   const allEvents = useMemo(
     () => [...events, ...bondEvents],
@@ -1667,6 +1805,11 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const positionRows = useMemo(
     () => buildPositionRows(allEvents, costBasis),
     [allEvents, costBasis]
+  );
+
+  const bondProjections = useMemo(
+    () => buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, 12),
+    [transactions, bondIncome, freqByCusip, todayISO]
   );
 
   return (
@@ -2044,6 +2187,174 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
         />
+      )}
+
+      {/* ── Bond Projections ── */}
+      {state === "done" && (
+        <div style={{ marginTop: 16 }}>
+          <button
+            onClick={() => setBondProjOpen((v) => !v)}
+            style={cardHeaderStyle(bondProjOpen)}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <CardTitle icon={<Receipt size={14} strokeWidth={2} />}>Bond Projections</CardTitle>
+              <span style={{
+                fontFamily: FONT_MONO,
+                fontSize: 9,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: T.gold,
+                border: `1px solid ${T.gold}55`,
+                borderRadius: 3,
+                padding: "2px 6px",
+                marginLeft: 4,
+                whiteSpace: "nowrap",
+              }}>EST</span>
+            </span>
+            <ChevronDown
+              size={16}
+              style={{
+                color: T.textDim,
+                transform: bondProjOpen ? "rotate(180deg)" : "none",
+                transition: "transform 0.2s",
+              }}
+            />
+          </button>
+
+          {bondProjOpen && (
+            <div style={{ ...cardBodyStyle }}>
+              {bondProjections.length === 0 ? (
+                <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                  No open bond positions with projection data.
+                </div>
+              ) : (
+                bondProjections.map((proj) => {
+                  const matLabel = (() => {
+                    const [y, m] = proj.maturityISO.split("-");
+                    const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
+                    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+                  })();
+                  const tdH = {
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    fontWeight: 500,
+                    padding: "7px 10px",
+                    borderBottom: `1px solid ${T.border}`,
+                    color: T.textFaint,
+                    textAlign: "right",
+                    whiteSpace: "nowrap",
+                  };
+                  const tdB = {
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    padding: "8px 10px",
+                    textAlign: "right",
+                    borderBottom: `1px solid ${T.borderSoft}`,
+                    color: T.text,
+                    whiteSpace: "nowrap",
+                  };
+                  const tdBLeft = { ...tdB, textAlign: "left", color: T.textDim };
+                  return (
+                    <div
+                      key={proj.cusip}
+                      style={{
+                        background: T.cardElev,
+                        border: `1px solid ${T.borderSoft}`,
+                        borderRadius: 4,
+                        marginBottom: 14,
+                        overflow: "hidden",
+                      }}
+                    >
+                      {/* Sub-header */}
+                      <div style={{
+                        padding: "10px 14px",
+                        borderBottom: `1px solid ${T.border}`,
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        alignItems: "center",
+                      }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, color: T.gold, letterSpacing: "0.06em" }}>
+                          {proj.shortName || proj.cusip}
+                        </span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                          {proj.couponPct}%
+                        </span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>
+                          matures {matLabel}
+                        </span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>
+                          {proj.freq}
+                        </span>
+                      </div>
+
+                      {/* Principal */}
+                      <div style={{ padding: "8px 14px", borderBottom: `1px solid ${T.borderSoft}` }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                          Principal:{" "}
+                        </span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
+                          {fmtUSD(proj.principal, valuesHidden)}
+                        </span>
+                      </div>
+
+                      {/* Payments table */}
+                      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                        <table style={{ width: "100%", minWidth: 300, borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr>
+                              <th style={{ ...tdH, textAlign: "left" }}>Date</th>
+                              <th style={tdH}>Est. Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {proj.nextPayments.map((pmt, pi) => (
+                              <tr key={pi}>
+                                <td style={tdBLeft}>{pmt.date}</td>
+                                <td style={{ ...tdB, color: T.green, fontWeight: 600 }}>
+                                  {fmtUSD(pmt.estimatedAmount, valuesHidden)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{ background: "rgba(201,169,97,0.06)" }}>
+                              <td style={{
+                                ...tdBLeft,
+                                fontWeight: 700,
+                                color: T.gold,
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                letterSpacing: "0.12em",
+                                textTransform: "uppercase",
+                                borderTop: `1px solid ${T.border}`,
+                              }}>
+                                Total projected
+                              </td>
+                              <td style={{
+                                ...tdB,
+                                fontWeight: 700,
+                                color: T.green,
+                                borderTop: `1px solid ${T.border}`,
+                              }}>
+                                {fmtUSD(proj.totalProjected, valuesHidden)}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 8, letterSpacing: "0.04em" }}>
+                Projected payments are estimates based on coupon rate and principal. Actual payments may differ.
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
