@@ -57,7 +57,10 @@ async function loadTransactions(auth) {
     throw new Error(msg);
   }
   const data = await res.json();
-  return Array.isArray(data.transactions) ? data.transactions : [];
+  return {
+    transactions: Array.isArray(data.transactions) ? data.transactions : [],
+    bondIncome: Array.isArray(data.bondIncome) ? data.bondIncome : [],
+  };
 }
 
 async function postPerfHistory(auth, body) {
@@ -172,6 +175,149 @@ function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
 }
 
+// ── Bank Bonds helpers (copied from Dividends.jsx) ────────────────────────────
+function parseBondNotes(tx) {
+  if (tx.couponRate != null && tx.maturityDate) {
+    const couponPct = Number(tx.couponRate);
+    if (isFinite(couponPct) && couponPct > 0 && /^\d{4}-\d{2}-\d{2}$/.test(tx.maturityDate)) {
+      return { couponPct, maturityISO: tx.maturityDate };
+    }
+  }
+  const notes = tx.notes || "";
+  if (!notes) return null;
+  const m = String(notes).match(/(\d+(?:\.\d+)?)\s*%\s*\|\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return null;
+  const couponPct = parseFloat(m[1]);
+  if (!isFinite(couponPct) || couponPct <= 0) return null;
+  const maturityISO = `${m[4]}-${m[2]}-${m[3]}`;
+  return { couponPct, maturityISO };
+}
+
+function daysBetweenISO(a, b) {
+  const da = new Date(a + "T00:00:00Z").getTime();
+  const db = new Date(b + "T00:00:00Z").getTime();
+  if (isNaN(da) || isNaN(db)) return 0;
+  return Math.max(0, (db - da) / 86400000);
+}
+
+function minISO(a, b) {
+  return a < b ? a : b;
+}
+
+function freqFromDays(d) {
+  if (!isFinite(d) || d <= 0) return null;
+  if (d <= 45) return "monthly";
+  if (d <= 135) return "quarterly";
+  if (d <= 270) return "semi-annual";
+  return "annual";
+}
+
+function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate, today) {
+  let cursor = startISO;
+  while (cursor < endISO) {
+    const [y, m] = cursor.split("-");
+    const yi = parseInt(y, 10);
+    const mi = parseInt(m, 10);
+    const nextMonth = mi === 12 ? `${yi + 1}-01-01` : `${yi}-${String(mi + 1).padStart(2, "0")}-01`;
+    const chunkEnd = minISO(nextMonth, endISO);
+    const days = daysBetweenISO(cursor, chunkEnd);
+    if (days > 0) {
+      const amt = principal * rate * (days / 365);
+      const d = new Date(chunkEnd + "T00:00:00Z");
+      d.setUTCDate(d.getUTCDate() - 1);
+      const eventDate = minISO(d.toISOString().slice(0, 10), today);
+      events.push({
+        id: `bond-est-${ticker}-${cursor.slice(0, 7)}`,
+        date: eventDate,
+        ticker,
+        assetClass: "Bank Bonds",
+        incomeType: "interest",
+        totalReceived: amt,
+        currency: "USD",
+        source: "estimated",
+        amountPerShare: null,
+        qtyHeld: null,
+      });
+    }
+    cursor = chunkEnd;
+  }
+}
+
+function buildBondEvents(transactions, bondIncome, todayISO) {
+  const today = todayISO || new Date().toISOString().slice(0, 10);
+  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  const events = [];
+
+  const realByCusip = {};
+  for (const ev of bondIncome || []) {
+    if (!ev || (ev.kind && ev.kind !== "interest")) continue;
+    const t = (ev.ticker || "").toUpperCase();
+    const amt = Number(ev.amount);
+    if (!t || !ev.date || !isFinite(amt) || amt <= 0) continue;
+    events.push({
+      id: ev.id || `bond-real-${t}-${ev.date}`,
+      date: ev.date,
+      ticker: t,
+      assetClass: "Bank Bonds",
+      incomeType: "interest",
+      totalReceived: amt,
+      currency: "USD",
+      source: "fidelity",
+      amountPerShare: null,
+      qtyHeld: null,
+    });
+    if (!realByCusip[t]) realByCusip[t] = [];
+    realByCusip[t].push({ date: ev.date, amount: amt });
+  }
+
+  const freqByCusip = {};
+  for (const [t, real] of Object.entries(realByCusip)) {
+    if (real.length < 2) continue;
+    const diffs = [];
+    const sorted = real.slice().sort(byDate);
+    for (let i = 1; i < sorted.length; i++) diffs.push(daysBetweenISO(sorted[i - 1].date, sorted[i].date));
+    diffs.sort((a, b) => a - b);
+    freqByCusip[t] = freqFromDays(diffs[Math.floor(diffs.length / 2)]);
+  }
+
+  const byCusip = {};
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const meta = parseBondNotes(tx);
+    if (!meta) continue;
+    const t = (tx.ticker || "").toUpperCase();
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!t || !isFinite(qty) || !isFinite(price)) continue;
+    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO };
+    byCusip[t].coupon = meta.couponPct;
+    byCusip[t].maturityISO = meta.maturityISO;
+    byCusip[t].txns.push({ date: tx.date, delta: (tx.side === "sell" ? -1 : 1) * qty * price });
+  }
+
+  for (const [t, { txns, coupon, maturityISO }] of Object.entries(byCusip)) {
+    txns.sort(byDate);
+    const endISO = minISO(maturityISO, today);
+    const rate = coupon / 100;
+    const realDates = (realByCusip[t] || []).slice().sort(byDate);
+    const accrueFrom = realDates.length ? realDates[realDates.length - 1].date : null;
+
+    let principal = 0;
+    for (let i = 0; i < txns.length; i++) {
+      principal += txns[i].delta;
+      if (principal < 0) principal = 0;
+      let segStart = txns[i].date;
+      const segEnd = i + 1 < txns.length ? txns[i + 1].date : endISO;
+      if (accrueFrom && segStart < accrueFrom) segStart = accrueFrom;
+      const clampedEnd = minISO(segEnd, endISO);
+      if (clampedEnd <= segStart || principal <= 0) continue;
+      accrueSegmentAsEvents(events, t, segStart, clampedEnd, principal, rate, today);
+    }
+  }
+
+  return { events, freqByCusip };
+}
+
 function fmtPrice(n) {
   if (n == null || isNaN(n)) return "—";
   return new Intl.NumberFormat("en-US", {
@@ -205,8 +351,8 @@ const PERIODS = [
   { label: "MAX", days: Infinity },
 ];
 
-function getWindowData(rawData, period) {
-  if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
+function getWindowData(rawData, period, divEvents) {
+  if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null, lastTotalReturn: null };
 
   const p = PERIODS.find((x) => x.label === period) || PERIODS.find((x) => x.label === "1Y");
   let cutoff = null;
@@ -224,19 +370,37 @@ function getWindowData(rawData, period) {
   }
 
   const slice = rawData.slice(startIdx);
-  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null };
+  if (!slice.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null, lastTotalReturn: null };
 
   const baseP = slice[0].portfolio;
   const baseS = slice[0].spy;
   const toWin = (v, base) => +((((1 + v / 100) / (1 + base / 100) - 1) * 100).toFixed(2));
 
-  const data = slice.map((d) => ({
-    date: d.date,
-    dateTs: new Date(d.date + "T00:00:00Z").getTime(),
-    portfolio: toWin(d.portfolio, baseP),
-    spy: toWin(d.spy, baseS),
-    usd: d.usd,
-  }));
+  const startDate = slice[0].date;
+  const initialPortfolioUSD = rawData[startIdx].usd;
+  const safeEvents = Array.isArray(divEvents) ? divEvents : [];
+
+  let lastTotalReturn = null;
+  const data = slice.map((d) => {
+    const portfolio = toWin(d.portfolio, baseP);
+    const spy = toWin(d.spy, baseS);
+    let totalReturn;
+    if (initialPortfolioUSD) {
+      const cumulativeDivsUSD = safeEvents
+        .filter((e) => e.date >= startDate && e.date <= d.date)
+        .reduce((s, e) => s + (e.totalReceived || 0), 0);
+      totalReturn = +(portfolio + (cumulativeDivsUSD / initialPortfolioUSD) * 100).toFixed(2);
+      lastTotalReturn = totalReturn;
+    }
+    return {
+      date: d.date,
+      dateTs: new Date(d.date + "T00:00:00Z").getTime(),
+      portfolio,
+      spy,
+      usd: d.usd,
+      totalReturn,
+    };
+  });
 
   const last = data[data.length - 1];
   return {
@@ -244,6 +408,7 @@ function getWindowData(rawData, period) {
     lastPortfolio: last.portfolio,
     lastSpy: last.spy,
     lastUSD: last.usd,
+    lastTotalReturn,
   };
 }
 
@@ -325,14 +490,31 @@ function aggFromRows(rows) {
   const totalValue = rows.reduce((s, r) => s + r.totalValue, 0);
   const totalGainLoss = totalValue - totalCost;
   const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
-  return { totalCost, totalValue, totalGainLoss, gainLossPct };
+  const hasDivData = rows.some((r) => r.divTtm != null);
+  const divTtmSum = hasDivData ? rows.reduce((s, r) => s + (r.divTtm ?? 0), 0) : null;
+  const totalDiv = hasDivData ? rows.reduce((s, r) => s + (r.totalDiv ?? 0), 0) : null;
+  const yoc = hasDivData && totalCost > 0 ? (divTtmSum / totalCost) * 100 : null;
+  return { totalCost, totalValue, totalGainLoss, gainLossPct, divTtmSum, totalDiv, yoc };
 }
 
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
-  const [sortCol, setSortCol] = useState("totalValue");
-  const [sortDir, setSortDir] = useState("desc");
-  const [grouped, setGrouped] = useState(false);
+  const [sortCol, setSortCol] = useState("ticker");
+  const [sortDir, setSortDir] = useState("asc");
+  const [grouped, setGrouped] = useState(true);
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+
+  // Auto-collapse all groups when switching to grouped mode or on mount (default grouped=true).
+  useEffect(() => {
+    if (grouped && rows.length > 0) {
+      const map = {};
+      for (const row of rows) {
+        const cls = row.assetClass || "Uncategorized";
+        if (!map[cls]) map[cls] = [];
+        map[cls].push(row);
+      }
+      setCollapsedClasses(new Set(Object.keys(map)));
+    }
+  }, [grouped]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleClass(cls) {
     setCollapsedClasses((prev) => {
@@ -384,6 +566,8 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     { key: "totalValue",   label: "Current Value",   align: "right" },
     { key: "gainLossPct",  label: "Gain/Loss %",     align: "right" },
     { key: "totalGainLoss",label: "Total Gain/Loss", align: "right" },
+    { key: "divTtm",       label: "Div TTM",         align: "right" },
+    { key: "yoc",          label: "YoC %",           align: "right" },
   ];
 
   const thBase = {
@@ -444,6 +628,12 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
         return <td key={col.key} style={{ ...tdBase, color: pctColor, fontWeight: 600 }}>{row.gainLossPct != null ? `${row.gainLossPct > 0 ? "+" : ""}${row.gainLossPct.toFixed(2)}%` : "—"}</td>;
       case "totalGainLoss":
         return <td key={col.key} style={{ ...tdBase, color: gainColor }}>{valuesHidden ? "$ ••••" : `${row.totalGainLoss > 0 ? "+" : ""}${fmtUSD(row.totalGainLoss)}`}</td>;
+      case "divTtm":
+        if (row.divTtm == null) return <td key={col.key} style={{ ...tdBase, color: T.textFaint }}>{"—"}</td>;
+        return <td key={col.key} style={tdBase}>{valuesHidden ? "$ ••••" : fmtPrice(row.divTtm)}</td>;
+      case "yoc":
+        if (row.yoc == null) return <td key={col.key} style={{ ...tdBase, color: T.textFaint }}>{"—"}</td>;
+        return <td key={col.key} style={{ ...tdBase, color: T.textDim }}>{`${row.yoc.toFixed(2)}%`}</td>;
       default: return <td key={col.key} style={tdBase}>—</td>;
     }
   }
@@ -479,6 +669,12 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           return <td key={col.key} style={{ ...summaryTd, color: pctColor }}>{agg.gainLossPct != null ? `${agg.gainLossPct > 0 ? "+" : ""}${agg.gainLossPct.toFixed(2)}%` : "—"}</td>;
         case "totalGainLoss":
           return <td key={col.key} style={{ ...summaryTd, color: gainColor }}>{valuesHidden ? "$ ••••" : `${agg.totalGainLoss > 0 ? "+" : ""}${fmtUSD(agg.totalGainLoss)}`}</td>;
+        case "divTtm":
+          if (agg.divTtmSum == null) return <td key={col.key} style={{ ...summaryTd, color: T.textFaint }}>{"—"}</td>;
+          return <td key={col.key} style={summaryTd}>{valuesHidden ? "$ ••••" : fmtPrice(agg.divTtmSum)}</td>;
+        case "yoc":
+          if (agg.yoc == null) return <td key={col.key} style={{ ...summaryTd, color: T.textFaint }}>{"—"}</td>;
+          return <td key={col.key} style={{ ...summaryTd, color: T.textDim }}>{`${agg.yoc.toFixed(2)}%`}</td>;
         default: return <td key={col.key} style={summaryTd} />;
       }
     });
@@ -517,14 +713,42 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
           <BarChart2 size={14} strokeWidth={2} />
           Position Performance
         </span>
-        <ChevronDown
-          size={16}
-          style={{
-            color: T.textDim,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.2s",
-          }}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {open && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6 }}>
+              {[["class", "By Class"], ["ticker", "By Ticker"]].map(([mode, label]) => {
+                const active = (mode === "class") === grouped;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setGrouped(mode === "class")}
+                    style={{
+                      background: active ? T.gold : T.cardElev,
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: active ? T.bg : T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <ChevronDown
+            size={16}
+            style={{
+              color: T.textDim,
+              transform: open ? "rotate(180deg)" : "none",
+              transition: "transform 0.2s",
+            }}
+          />
+        </div>
       </button>
 
       {open && (
@@ -538,30 +762,8 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
             overflow: "hidden",
           }}
         >
-          {/* Group by toggle */}
-          <div style={{ padding: "12px 16px 0", display: "flex", justifyContent: "flex-end" }}>
-            <button
-              onClick={() => setGrouped((g) => !g)}
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 10,
-                letterSpacing: "0.1em",
-                padding: "4px 10px",
-                border: `1px solid ${grouped ? T.gold + "66" : T.border}`,
-                borderRadius: 3,
-                background: grouped ? T.gold + "14" : "transparent",
-                color: grouped ? T.gold : T.textFaint,
-                cursor: "pointer",
-                transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {grouped ? "Flat view" : "Group by class"}
-            </button>
-          </div>
-
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", minWidth: 900, borderCollapse: "collapse" }}>
+            <table style={{ width: "100%", minWidth: 1060, borderCollapse: "collapse" }}>
               <thead>
                 <tr>
                   {COLS.map((col) => (
@@ -621,8 +823,10 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
   const [transactions, setTransactions] = useState([]);
+  const [divByTicker, setDivByTicker] = useState({});
+  const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
-  const [posTableOpen, setPosTableOpen] = useState(true);
+  const [posTableOpen, setPosTableOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -631,12 +835,49 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
     (async () => {
       try {
-        const txs = await loadTransactions(auth);
+        const { transactions: txs, bondIncome } = await loadTransactions(auth);
         if (!cancelled) setTransactions(txs);
-        const result = await loadPerfHistory(auth, txs);
-        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = result;
+
+        const [perfResult, divResult] = await Promise.allSettled([
+          loadPerfHistory(auth, txs),
+          fetch("/api/dividends", {
+            method: "POST",
+            headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+            body: JSON.stringify({ transactions: txs, bondIncome }),
+          }).then((r) => (r.ok ? r.json() : Promise.reject())),
+        ]);
 
         if (cancelled) return;
+
+        {
+          const stockEvents = (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events))
+            ? divResult.value.events
+            : [];
+          const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
+          const allEvents = [...stockEvents, ...bondEventsArr];
+          setDivEvents(allEvents);
+          const todayMs = Date.now();
+          const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
+          const map = {};
+          for (const e of allEvents) {
+            if (!e.ticker || !e.date) continue;
+            const t = e.ticker;
+            if (!map[t]) map[t] = { ttm: 0, total: 0 };
+            map[t].total += e.totalReceived;
+            if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
+          }
+          setDivByTicker(map);
+        }
+
+        if (perfResult.status === "rejected") {
+          const err = perfResult.reason;
+          if (err?.code === 401 && onAuthFail) { onAuthFail(); return; }
+          setError(err?.message || "Failed to load performance data");
+          setState("error");
+          return;
+        }
+
+        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = perfResult.value;
 
         setMeta(respMeta || null);
 
@@ -671,9 +912,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
-  const { data: chartData, lastPortfolio, lastSpy, lastUSD } = useMemo(
-    () => getWindowData(rawData, period),
-    [rawData, period]
+  const { data: chartData, lastPortfolio, lastSpy, lastUSD, lastTotalReturn } = useMemo(
+    () => getWindowData(rawData, period, divEvents),
+    [rawData, period, divEvents]
   );
 
   // If API response has no USD values (old cache), force comparison mode.
@@ -712,8 +953,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (!ticker) continue;
       if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, noFx: false, assetClass: null, lastBuyDate: null, lastBuyNotes: null };
       const pos = positions[ticker];
-      // Asset class comes from the transactions themselves (last non-empty wins),
-      // not from the current holding.
       if (tx.assetClass) pos.assetClass = tx.assetClass;
       const qty = Number(tx.qty) || 0;
       let price = Number(tx.price) || 0;
@@ -742,11 +981,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (pos.noFx) continue;
       const assetClass = pos.assetClass || "Uncategorized";
 
-      // Bank Bonds: calculate accrued value locally; no live price fetch.
+      const divData = divByTicker[ticker] ?? null;
+      const divTtm = divData ? divData.ttm : null;
+      const totalDiv = divData ? divData.total : null;
+
       if (assetClass === "Bank Bonds") {
         const avgCost = pos.totalCost / pos.totalQty;
         const totalCost = avgCost * pos.totalQty;
-        let totalValue = totalCost; // fallback: face value
+        let totalValue = totalCost;
         if (pos.lastBuyNotes && pos.lastBuyDate) {
           const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
           const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
@@ -760,7 +1002,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         }
         const totalGainLoss = totalValue - totalCost;
         const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
-        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct });
+        const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
+        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
         continue;
       }
 
@@ -772,10 +1015,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const totalValue = currentPrice * pos.totalQty;
       const totalGainLoss = totalValue - totalCost;
       const gainLossPct = avgCost > 0 ? (currentPrice / avgCost - 1) * 100 : null;
-      rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct });
+      const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
+      rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
     }
     return rows;
-  }, [transactions, priceMap]);
+  }, [transactions, priceMap, divByTicker]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
@@ -903,7 +1147,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 }}
               >
                 {meta?.reason === "no-eligible-transactions"
-                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income)."
+                  ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income, Unallocated USD)."
                   : meta?.reason === "no-priced-days"
                   ? "Could not fetch enough historical price data to build a chart."
                   : "No performance data available."}
@@ -989,6 +1233,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   />
                   {effectiveComparing && (
                     <>
+                      <KpiCard
+                        label={`Total Return ${period}`}
+                        value={fmt(lastTotalReturn)}
+                        color={kpiColor(lastTotalReturn)}
+                      />
                       <KpiCard
                         label={`S&P 500 ${period}`}
                         value={fmt(lastSpy)}
@@ -1083,6 +1332,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                           />
                           <Line
                             type="monotone"
+                            dataKey="totalReturn"
+                            name="Total Return"
+                            stroke={T.green}
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 4, fill: T.green }}
+                          />
+                          <Line
+                            type="monotone"
                             dataKey="spy"
                             name="S&P 500"
                             stroke={T.orange}
@@ -1115,7 +1373,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     letterSpacing: "0.04em",
                   }}
                 >
-                  Excludes Cash and Unallocated assets. Updated daily after US market close.
+                  Excludes Cash and Unallocated BRL assets. Updated daily after US market close.
+                  {" "}Total Return includes US dividends only (BRA and fixed income excluded).
                 </div>
               </>
             )}

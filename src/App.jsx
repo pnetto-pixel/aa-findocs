@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
-import Papa from "papaparse";
 import TransactionsView from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
+const DividendsView = lazy(() => import("./Dividends.jsx"));
+const EventsView = lazy(() => import("./Events.jsx"));
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');`;
 
@@ -207,6 +208,117 @@ async function fetchHoldingsFromServer(auth) {
   return await res.json();
 }
 
+async function fetchTransactionsForSync(auth) {
+  try {
+    const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.exists && Array.isArray(d.transactions) ? d.transactions : [];
+  } catch {
+    return null;
+  }
+}
+
+function computeNetQty(transactions) {
+  const net = {};
+  for (const tx of transactions) {
+    if (!tx.ticker || tx.qty == null) continue;
+    const t = tx.ticker.toUpperCase();
+    if (net[t] == null) net[t] = 0;
+    if (tx.side === "buy") net[t] += Number(tx.qty);
+    else if (tx.side === "sell") net[t] -= Number(tx.qty);
+  }
+  return net;
+}
+
+// Returns patched holdings array if any qty changed, null otherwise.
+// Updates ticker-backed (non-manual) holdings that have at least one transaction.
+// Uses type !== "manual" — the app-wide convention — so legacy holdings
+// that predate the type field (type === undefined) are correctly included.
+function applyTxQty(holdings, netQty) {
+  let changed = false;
+  const updated = holdings.map((h) => {
+    if (h.type === "manual" || !(h.ticker in netQty)) return h;
+    const computed = Math.max(0, netQty[h.ticker]);
+    if (h.qty === computed) return h;
+    changed = true;
+    return { ...h, qty: computed };
+  });
+  return changed ? updated : null;
+}
+
+// Permanent aggregated "US Bank Bonds" holding (item 37). One manual holding
+// whose value is the net principal invested across all Bank Bonds CUSIPs.
+const BANK_BONDS_ID = "bank-bonds-aggregate";
+
+// Net principal invested in Bank Bonds, derived from transactions:
+//   per CUSIP: Σ(buy qty × price) − Σ(sell qty × price)
+// Prices already in real USD per unit (Fidelity x10 correction is applied at
+// import time, item 40). Returns the total in USD (floored at 0 — fully
+// matured/sold positions read as zero, never negative).
+function computeBankBondsPrincipal(transactions) {
+  let total = 0;
+  for (const tx of transactions || []) {
+    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
+    const qty = Number(tx.qty);
+    const price = Number(tx.price);
+    if (!isFinite(qty) || !isFinite(price)) continue;
+    const amt = qty * price;
+    if (tx.side === "buy") total += amt;
+    else if (tx.side === "sell") total -= amt;
+  }
+  return Math.max(0, total);
+}
+
+// Ensures a single manual "US Bank Bonds" holding reflects `principal`.
+// - Mirrors only the aggregated holding; Cash and other manual holdings (e.g.
+//   BRA Fixed Income) are never touched.
+// - When there are Bank Bonds transactions, the holding is created if missing
+//   and its manualValue kept in sync.
+// - When principal is 0 AND no holding exists yet, nothing is added (avoids an
+//   empty placeholder for users with no bonds).
+// Returns a patched holdings array if anything changed, null otherwise.
+function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
+  const arr = Array.isArray(holdings) ? holdings : [];
+  const existing = arr.find((h) => h && h.id === BANK_BONDS_ID);
+
+  if (!existing) {
+    if (!hasBankBondTx) return null; // nothing to track yet
+    return [
+      ...arr,
+      {
+        id: BANK_BONDS_ID,
+        type: "manual",
+        manualMode: "value",
+        ticker: "US BANK BONDS",
+        name: "US Bank Bonds",
+        assetClass: "Bank Bonds",
+        assetClassOverride: "Bank Bonds",
+        manualCurrency: "USD",
+        qty: null,
+        manualPrice: null,
+        manualValue: principal,
+        price: null,
+        target: existingTargetFallback(arr),
+        derivedFromTransactions: true,
+        lastUpdated: new Date().toISOString(),
+      },
+    ];
+  }
+
+  if (existing.manualValue === principal) return null;
+  return arr.map((h) =>
+    h.id === BANK_BONDS_ID
+      ? { ...h, manualValue: principal, lastUpdated: new Date().toISOString() }
+      : h
+  );
+}
+
+// Keep a 0 target by default (consistent with new manual holdings).
+function existingTargetFallback() {
+  return 0;
+}
+
 async function saveHoldingsToServer(auth, holdings) {
   const res = await fetch("/api/holdings", {
     method: "PUT",
@@ -319,25 +431,6 @@ function isUserAdmin(auth) {
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
 const PROFILE_REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-// Flexible CSV field lookup — accepts variations in column naming
-function normalizeCSVRow(row) {
-  const find = (...keys) => {
-    for (const k of keys) {
-      for (const rk of Object.keys(row)) {
-        if (rk.toLowerCase().trim().replace(/[%_\s]/g, "") === k.replace(/[%_\s]/g, "")) {
-          return row[rk];
-        }
-      }
-    }
-    return null;
-  };
-  const ticker = String(find("ticker", "symbol", "stock") || "").trim().toUpperCase();
-  const qty = parseFloat(find("qty", "quantity", "shares", "amount", "units"));
-  const targetRaw = find("target", "targetpct", "allocation", "%", "percent", "target%", "alloc");
-  const target = targetRaw != null ? parseFloat(String(targetRaw).replace("%", "")) : 0;
-  return { ticker, qty, target: isNaN(target) ? 0 : target };
-}
-
 export default function App() {
   // Auth state can be either Google or password.
   //   { kind: 'google', googleToken, email, name, picture }
@@ -403,9 +496,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   const [holdings, setHoldings] = useState(() => ensureCashAccount([]));
   const [loaded, setLoaded] = useState(false);
-  const [ticker, setTicker] = useState("");
-  const [qty, setQty] = useState("");
-  const [target, setTarget] = useState("");
   const [busyIds, setBusyIds] = useState({});
   const [refreshing, setRefreshing] = useState(false);
   // Live USD/BRL rate (BRL per 1 USD), cached locally for offline/first paint.
@@ -413,15 +503,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     const v = parseFloat(localStorage.getItem("usdBrlRate"));
     return isFinite(v) && v > 0 ? v : null;
   });
-  const [formError, setFormError] = useState("");
-  const [csvStatus, setCsvStatus] = useState(null);
   const [showRebalance, setShowRebalance] = useState(false);
   const [newCash, setNewCash] = useState("");
-  const fileInputRef = useRef(null);
   const importJsonRef = useRef(null);
 
   // Manual asset form state
-  const [showAddForm, setShowAddForm] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
   const [manualName, setManualName] = useState("");
   const [manualMode, setManualMode] = useState("value"); // "value" | "qty_price"
@@ -444,6 +530,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   // Allocation chart grouping mode
   const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
+
+  // Responsive window width for scaling donuts
+  const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
+  useEffect(() => {
+    function handleResize() {
+      setWindowWidth(window.innerWidth);
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Collapsed states for tracked and manual sub-sections (default to collapsed for cleaner first view)
   // Collapsed states for the unified holdings section and the separate cash section.
@@ -588,20 +684,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const result = await fetchHoldingsFromServer(auth);
         if (cancelled) return;
 
+        let loadedHoldings;
         if (result.exists && Array.isArray(result.holdings)) {
           // Server has data → use it
-          const withCash = ensureCashAccount(result.holdings);
-          setHoldings(withCash);
-          try {
-            localStorage.setItem("holdings", JSON.stringify(withCash));
-          } catch (e) {}
+          loadedHoldings = ensureCashAccount(result.holdings);
           setSyncState("synced");
         } else if (localData && Array.isArray(localData) && localData.length > 0) {
           // Server empty but local has data → migrate up
-          const withCash = ensureCashAccount(localData);
-          setHoldings(withCash);
+          loadedHoldings = ensureCashAccount(localData);
           try {
-            const saveResult = await saveHoldingsToServer(auth, withCash);
+            const saveResult = await saveHoldingsToServer(auth, loadedHoldings);
             if (!cancelled) {
               setLastSavedAt(saveResult.savedAt);
               setSyncState("synced");
@@ -611,8 +703,41 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           }
         } else {
           // Both empty → fresh start, but cash always present
-          setHoldings(ensureCashAccount([]));
+          loadedHoldings = ensureCashAccount([]);
           setSyncState("synced");
+        }
+
+        // Sync qty of auto holdings from the transactions log
+        const txs = await fetchTransactionsForSync(auth);
+        if (!cancelled && txs) {
+          let didChange = false;
+          const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
+          if (patched) {
+            loadedHoldings = patched;
+            didChange = true;
+          }
+          // Item 37: sync the aggregated "US Bank Bonds" manual holding value
+          // from the net principal invested across Bank Bonds transactions.
+          const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+          const bbPatched = applyBankBondsHolding(
+            loadedHoldings,
+            computeBankBondsPrincipal(txs),
+            hasBankBondTx
+          );
+          if (bbPatched) {
+            loadedHoldings = bbPatched;
+            didChange = true;
+          }
+          if (didChange) {
+            saveHoldingsToServer(auth, loadedHoldings).catch(() => {});
+          }
+        }
+
+        if (!cancelled) {
+          setHoldings(loadedHoldings);
+          try {
+            localStorage.setItem("holdings", JSON.stringify(loadedHoldings));
+          } catch (e) {}
         }
       } catch (e) {
         if (cancelled) return;
@@ -818,8 +943,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     setRefreshing(true);
     setToast({ kind: "info", message: `Refreshing ${autoHoldings.length} positions…` });
 
-    // Kick off S&P 500 refresh in parallel (silent)
+    // Kick off S&P 500 refresh and transactions fetch in parallel (silent)
     refreshSp500();
+    const txsPromise = fetchTransactionsForSync(auth);
 
     const results = new Map(); // id -> { ok: true, patch } | { ok: false, error }
     const batchSize = 3;
@@ -846,15 +972,32 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       }
     }
 
-    // Apply everything atomically
-    setHoldings((prev) =>
-      prev.map((h) => {
+    // Apply price patches + qty sync atomically
+    const txs = await txsPromise;
+    const netQty = txs ? computeNetQty(txs) : null;
+    setHoldings((prev) => {
+      let updated = prev.map((h) => {
         const r = results.get(h.id);
         if (!r) return h;
         if (r.ok) return buildHoldingPatch(h, r.data, h.ticker);
         return { ...h, error: r.error };
-      })
-    );
+      });
+      if (netQty) {
+        const patched = applyTxQty(updated, netQty);
+        if (patched) updated = patched;
+      }
+      // Item 37: sync the aggregated "US Bank Bonds" manual holding value.
+      if (txs) {
+        const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+        const bbPatched = applyBankBondsHolding(
+          updated,
+          computeBankBondsPrincipal(txs),
+          hasBankBondTx
+        );
+        if (bbPatched) updated = bbPatched;
+      }
+      return updated;
+    });
 
     const successes = Array.from(results.values()).filter((r) => r.ok).length;
     const failures = autoHoldings.length - successes;
@@ -888,34 +1031,17 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
   }
 
-  async function addHolding() {
-    setFormError("");
-    const t = ticker.trim().toUpperCase();
-    const q = parseFloat(qty);
-    const tgt = target === "" ? 0 : parseFloat(target);
-    if (!t) return setFormError("Ticker required");
-    if (!q || q <= 0) return setFormError("Quantity must be > 0");
-    if (tgt < 0 || tgt > 100) return setFormError("Target % must be 0–100");
-
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const newH = {
-      id,
-      type: "auto",
-      ticker: t,
-      qty: q,
-      target: tgt,
-      price: null,
-      name: null,
-      assetClass: null,
-      assetClassOverride: null,
-      error: null,
-      lastUpdated: null,
-    };
-    setHoldings((prev) => [...prev, newH]);
-    setTicker("");
-    setQty("");
-    setTarget("");
-    refreshOne(id, t);
+  function handleTransactionsChange(txs) {
+    const netQty = computeNetQty(txs);
+    const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
+    const principal = computeBankBondsPrincipal(txs);
+    setHoldings((prev) => {
+      let next = applyTxQty(prev, netQty) ?? prev;
+      // Item 37: keep the aggregated "US Bank Bonds" holding in sync.
+      const bbPatched = applyBankBondsHolding(next, principal, hasBankBondTx);
+      if (bbPatched) next = bbPatched;
+      return next;
+    });
   }
 
   function removeHolding(id) {
@@ -1046,76 +1172,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       }
     };
     reader.readAsText(file);
-  }
-
-  function handleCSVFile(file) {
-    if (!file) return;
-    setCsvStatus({ kind: "parsing", message: "Reading file…" });
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const rows = (results.data || []).map(normalizeCSVRow);
-        const valid = rows.filter((r) => r.ticker && r.qty > 0);
-        const invalid = rows.length - valid.length;
-
-        if (valid.length === 0) {
-          setCsvStatus({
-            kind: "error",
-            message: "No valid rows found. Need columns: ticker, qty, target (optional).",
-          });
-          return;
-        }
-
-        // Merge: if ticker already exists, update qty/target; otherwise add
-        const newPositions = [];
-        setHoldings((prev) => {
-          const existing = new Map(prev.map((h) => [h.ticker, h]));
-          const merged = [...prev];
-          for (const r of valid) {
-            if (existing.has(r.ticker)) {
-              const idx = merged.findIndex((h) => h.ticker === r.ticker);
-              merged[idx] = { ...merged[idx], qty: r.qty, target: r.target };
-            } else {
-              const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-              const pos = {
-                id,
-                type: "auto",
-                ticker: r.ticker,
-                qty: r.qty,
-                target: r.target,
-                price: null,
-                name: null,
-                assetClass: null,
-                assetClassOverride: null,
-                error: null,
-                lastUpdated: null,
-              };
-              merged.push(pos);
-              newPositions.push(pos);
-            }
-          }
-          return merged;
-        });
-
-        setCsvStatus({
-          kind: "success",
-          message: `Imported ${valid.length} ${valid.length === 1 ? "position" : "positions"}${invalid > 0 ? ` (${invalid} skipped)` : ""}. Fetching prices…`,
-        });
-
-        // Fetch prices for new positions
-        Promise.all(newPositions.map((p) => refreshOne(p.id, p.ticker))).then(() => {
-          setCsvStatus({
-            kind: "success",
-            message: `Imported ${valid.length} ${valid.length === 1 ? "position" : "positions"}.`,
-          });
-          setTimeout(() => setCsvStatus(null), 4000);
-        });
-      },
-      error: (err) => {
-        setCsvStatus({ kind: "error", message: `Parse failed: ${err.message}` });
-      },
-    });
   }
 
   // Rebalance: BUYS ONLY, integer shares, capped at $1000 per asset.
@@ -1377,7 +1433,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             "max(50px, calc(20px + env(safe-area-inset-top, 0px))) calc(16px + env(safe-area-inset-right, 0px)) calc(60px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))",
         }}
       >
-        <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           {/* Modal alert (blocks until OK is tapped) */}
           {alertModal && (
             <div
@@ -1647,6 +1703,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 ? "Transactions"
                 : activeView === "performance"
                 ? "Performance"
+                : activeView === "dividends"
+                ? "Dividends"
+                : activeView === "events"
+                ? "Events"
                 : activeView === "aporte"
                 ? "Contributions"
                 : "Holdings"}
@@ -1668,8 +1728,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             >
               {[
                 { id: "dashboard", label: "Holdings" },
-                { id: "transactions", label: "Transactions" },
                 { id: "performance", label: "Performance" },
+                { id: "dividends", label: "Dividends" },
+                { id: "events", label: "Events" },
+                { id: "transactions", label: "Transactions" },
                 { id: "aporte", label: "Contributions" },
               ].map((tab) => {
                 const active = activeView === tab.id;
@@ -1715,6 +1777,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     .map((t) => String(t).toUpperCase())
                 )
               ).sort()}
+              onTransactionsChange={handleTransactionsChange}
             />
           )}
 
@@ -1735,6 +1798,46 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               }
             >
               <PerformanceView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} holdings={holdings} />
+            </Suspense>
+          )}
+
+          {activeView === "dividends" && (
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13,
+                    color: "#8a8f99",
+                    padding: "40px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  Loading…
+                </div>
+              }
+            >
+              <DividendsView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
+            </Suspense>
+          )}
+
+          {activeView === "events" && (
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13,
+                    color: "#8a8f99",
+                    padding: "40px 0",
+                    textAlign: "center",
+                  }}
+                >
+                  Loading...
+                </div>
+              }
+            >
+              <EventsView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
             </Suspense>
           )}
 
@@ -1949,31 +2052,43 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
-                  marginBottom: 14,
-                }}
-              >
-                <DonutChart
-                  slices={chartData.targetSlices}
-                  centerLabel="Target"
-                  centerValue={
-                    chartData.totalTarget < 99.5
-                      ? fmtPct(chartData.totalTarget)
-                      : "100%"
-                  }
-                  valuesHidden={valuesHidden}
-                />
-                <DonutChart
-                  slices={chartData.actualSlices}
-                  centerLabel="Actual"
-                  centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
-                  valuesHidden={valuesHidden}
-                />
-              </div>
+              {(() => {
+                // Responsive donut size: clamp [140, 220] based on available column width.
+                // Column width = (min(viewport, 1200) - 32 outer padding - 32 section padding - 12 gap) / 2
+                // Below 640px (mobile) the clamp floor of 140 ensures no regression.
+                const w = Math.min(windowWidth, 1200);
+                const colW = (w - 32 - 32 - 12) / 2;
+                const donutSize = Math.round(Math.min(Math.max(colW * 0.75, 140), 220));
+                return (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 12,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <DonutChart
+                      size={donutSize}
+                      slices={chartData.targetSlices}
+                      centerLabel="Target"
+                      centerValue={
+                        chartData.totalTarget < 99.5
+                          ? fmtPct(chartData.totalTarget)
+                          : "100%"
+                      }
+                      valuesHidden={valuesHidden}
+                    />
+                    <DonutChart
+                      size={donutSize}
+                      slices={chartData.actualSlices}
+                      centerLabel="Actual"
+                      centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
+                      valuesHidden={valuesHidden}
+                    />
+                  </div>
+                );
+              })()}
 
               {/* Shared legend */}
               <ChartLegend
@@ -2394,231 +2509,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </>
           )}
 
-          {/* Add form */}
-          <section
-            style={{
-              marginTop: 18,
-              background: T.card,
-              border: `1px solid ${T.borderSoft}`,
-              borderRadius: 4,
-              padding: 14,
-            }}
-          >
-            <button
-              onClick={() => setShowAddForm(!showAddForm)}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: T.text,
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: 0,
-              }}
-            >
-              <span
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                  color: T.gold,
-                }}
-              >
-                <Plus size={12} />
-                Add Live Asset
-              </span>
-              <ChevronDown
-                size={14}
-                style={{
-                  color: T.textDim,
-                  transform: showAddForm ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                }}
-              />
-            </button>
-
-            {showAddForm && (
-              <div style={{ marginTop: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-              <Input
-                placeholder="Ticker"
-                value={ticker}
-                onChange={(e) => setTicker(e.target.value.toUpperCase())}
-                onEnter={addHolding}
-                style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}
-              />
-              <Input
-                placeholder="Quantity"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                onEnter={addHolding}
-                inputMode="decimal"
-              />
-              <Input
-                placeholder="Target %"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                onEnter={addHolding}
-                inputMode="decimal"
-              />
-            </div>
-            {/^[A-Z]{4}\d{1,2}$/.test(ticker.trim()) && (
-              <div
-                style={{
-                  fontSize: 10,
-                  color: "#7898a9",
-                  fontFamily: FONT_MONO,
-                  letterSpacing: "0.06em",
-                  marginBottom: 8,
-                  marginTop: -4,
-                }}
-              >
-                B3 ticker detected — price will be fetched in BRL and converted to USD.
-              </div>
-            )}
-            <button
-              onClick={addHolding}
-              style={{
-                width: "100%",
-                background: T.gold,
-                color: T.bg,
-                border: "none",
-                padding: "11px 16px",
-                fontWeight: 600,
-                fontSize: 12,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                borderRadius: 2,
-              }}
-            >
-              <Plus size={14} strokeWidth={2.5} />
-              Add to portfolio
-            </button>
-            {formError && (
-              <div
-                style={{
-                  marginTop: 10,
-                  fontSize: 12,
-                  color: T.red,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <AlertCircle size={12} />
-                {formError}
-              </div>
-            )}
-
-            {/* Divider + CSV upload */}
-            <div
-              style={{
-                marginTop: 14,
-                paddingTop: 14,
-                borderTop: `1px dashed ${T.border}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-                flexWrap: "wrap",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: T.textDim,
-                  fontFamily: FONT_MONO,
-                  letterSpacing: "0.05em",
-                }}
-              >
-                Or import from CSV
-                <span style={{ color: T.textFaint, marginLeft: 6 }}>
-                  (ticker, qty, target)
-                </span>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  handleCSVFile(f);
-                  e.target.value = ""; // allow re-uploading same file
-                }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${T.gold}`,
-                  color: T.gold,
-                  padding: "7px 12px",
-                  fontSize: 11,
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  fontWeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  borderRadius: 2,
-                }}
-              >
-                <Upload size={12} strokeWidth={2.5} />
-                Upload CSV
-              </button>
-            </div>
-
-            {csvStatus && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: "8px 10px",
-                  background:
-                    csvStatus.kind === "error"
-                      ? T.redBg
-                      : csvStatus.kind === "success"
-                      ? T.greenBg
-                      : T.cardElev,
-                  border: `1px solid ${
-                    csvStatus.kind === "error"
-                      ? T.red
-                      : csvStatus.kind === "success"
-                      ? T.green
-                      : T.border
-                  }33`,
-                  borderRadius: 2,
-                  fontSize: 12,
-                  color:
-                    csvStatus.kind === "error"
-                      ? T.red
-                      : csvStatus.kind === "success"
-                      ? T.green
-                      : T.textDim,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontFamily: FONT_MONO,
-                }}
-              >
-                {csvStatus.kind === "error" && <AlertCircle size={12} />}
-                {csvStatus.kind === "success" && <CheckCircle2 size={12} />}
-                {csvStatus.kind === "parsing" && <RefreshCw size={12} className="spin" />}
-                {csvStatus.message}
-              </div>
-            )}
-              </div>
-            )}
-          </section>
           {/* Add manual asset section */}
           <section
             style={{
@@ -3182,20 +3072,16 @@ function HoldingRow({
   onChangeEditClassValue,
 }) {
   const [editing, setEditing] = useState(false);
-  const [draftQty, setDraftQty] = useState("");
   const [draftTarget, setDraftTarget] = useState("");
 
   function startEdit() {
-    setDraftQty(holding.qty != null ? String(holding.qty) : "");
     setDraftTarget(holding.target != null ? String(holding.target) : "");
     setEditing(true);
   }
 
   function saveEdit() {
-    const q = parseFloat(draftQty);
     const t = draftTarget === "" ? 0 : parseFloat(draftTarget);
     const patch = {};
-    if (!isNaN(q) && q >= 0) patch.qty = q;
     if (!isNaN(t) && t >= 0 && t <= 100) patch.target = t;
     onUpdate(patch);
     setEditing(false);
@@ -3416,23 +3302,7 @@ function HoldingRow({
             marginTop: 8,
           }}
         >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 9,
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                  color: T.textFaint,
-                  fontFamily: FONT_MONO,
-                  marginBottom: 4,
-                }}
-              >
-                Quantity
-              </label>
-              <Input value={draftQty} onChange={(e) => setDraftQty(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
-            </div>
+          <div style={{ marginBottom: 8 }}>
             <div>
               <label
                 style={{
@@ -3447,7 +3317,7 @@ function HoldingRow({
               >
                 Target %
               </label>
-              <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" />
+              <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -4063,6 +3933,7 @@ function ModeButton({ active, onClick, label }) {
 }
 
 function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+  const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftQty, setDraftQty] = useState("");
@@ -4110,19 +3981,21 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
     const patch = {
       target: draftTarget === "" ? 0 : parseFloat(draftTarget) || 0,
     };
-    if (!locked) {
+    if (!locked && !isBankBonds) {
       patch.assetClass = draftClass.trim() || "Manual";
       patch.assetClassOverride = draftClass.trim() || null;
     }
-    if (holding.manualMode === "value") {
-      const v = parseFloat(draftValue);
-      patch.manualValue = isNaN(v) ? 0 : v;
-      patch.manualCurrency = allowBrl && draftCurrency === "BRL" ? "BRL" : "USD";
-    } else {
-      const q = parseFloat(draftQty);
-      const p = parseFloat(draftPrice);
-      patch.qty = isNaN(q) ? 0 : q;
-      patch.manualPrice = isNaN(p) ? 0 : p;
+    if (!isBankBonds) {
+      if (holding.manualMode === "value") {
+        const v = parseFloat(draftValue);
+        patch.manualValue = isNaN(v) ? 0 : v;
+        patch.manualCurrency = allowBrl && draftCurrency === "BRL" ? "BRL" : "USD";
+      } else {
+        const q = parseFloat(draftQty);
+        const p = parseFloat(draftPrice);
+        patch.qty = isNaN(q) ? 0 : q;
+        patch.manualPrice = isNaN(p) ? 0 : p;
+      }
     }
     onUpdate(patch);
     setEditing(false);
@@ -4207,7 +4080,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
-          {!locked && (
+          {!locked && !isBankBonds && (
             <IconButton onClick={onRemove} label="Remove" danger>
               <Trash2 size={12} />
             </IconButton>
@@ -4271,7 +4144,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             ) : (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-                {!locked ? (
+                {!locked && !isBankBonds ? (
                   <button
                     type="button"
                     onClick={() => { setDraftPopupClass(holding.assetClass || ""); setEditingPopupClass(true); }}
@@ -4299,7 +4172,11 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             marginTop: 8,
           }}
         >
-          {holding.manualMode === "value" ? (
+          {isBankBonds ? (
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Auto-calculated from transactions</span>
+            </div>
+          ) : holding.manualMode === "value" ? (
             <div style={{ marginBottom: 8 }}>
               <Input
                 placeholder={allowBrl && draftCurrency === "BRL" ? "Value in BRL (e.g. Nubank)" : "Current value"}
@@ -4343,9 +4220,9 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               <Input placeholder="Price" value={draftPrice} onChange={(e) => setDraftPrice(e.target.value)} inputMode="decimal" />
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: locked ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: (locked || isBankBonds) ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <Input placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
-            {!locked && (
+            {!locked && !isBankBonds && (
               <Input placeholder="Class" value={draftClass} onChange={(e) => setDraftClass(e.target.value)} />
             )}
           </div>
@@ -4413,12 +4290,11 @@ function ToggleButton({ active, onClick, label }) {
   );
 }
 
-function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
-  const size = 140;
+function DonutChart({ slices, centerLabel, centerValue, valuesHidden, size = 140 }) {
   const cx = size / 2;
   const cy = size / 2;
-  const rOuter = 60;
-  const rInner = 38;
+  const rOuter = Math.round(size * 0.4286);
+  const rInner = Math.round(size * 0.2714);
 
   const [hoveredKey, setHoveredKey] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -4557,7 +4433,7 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
           <div
             style={{
               fontFamily: FONT_MONO,
-              fontSize: 8,
+              fontSize: Math.round(size * 0.057),
               letterSpacing: "0.18em",
               color: T.textDim,
               textTransform: "uppercase",
@@ -4569,7 +4445,7 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden }) {
           <div
             style={{
               fontFamily: FONT_DISPLAY,
-              fontSize: 15,
+              fontSize: Math.round(size * 0.107),
               fontWeight: 500,
               color: T.text,
               letterSpacing: "-0.01em",

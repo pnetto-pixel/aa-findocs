@@ -98,14 +98,18 @@ async function fetchTransactionsFromServer(auth) {
   return await res.json();
 }
 
-async function saveTransactionsToServer(auth, transactions) {
+async function saveTransactionsToServer(auth, transactions, bondIncome) {
+  // bondIncome is optional; when omitted the server preserves the existing
+  // value (read-modify-write), so non-import saves never wipe it.
+  const body = { transactions };
+  if (Array.isArray(bondIncome)) body.bondIncome = bondIncome;
   const res = await fetch("/api/transactions", {
     method: "PUT",
     headers: {
       ...authHeaders(auth),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ transactions }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     let msg = `Save ${res.status}`;
@@ -1716,6 +1720,52 @@ function TransactionTable({
             })
           )}
         </tbody>
+        {(() => {
+          if (visible.length === 0) return null;
+          let netQty = 0;
+          for (const tx of visible) {
+            const q = Number(tx.qty) || 0;
+            netQty += tx.side === "sell" ? -q : q;
+          }
+          const netColor = netQty < 0 ? T.red : T.green;
+          const netStr = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(netQty);
+          return (
+            <tfoot>
+              <tr style={{ borderTop: `1px solid ${T.border}` }}>
+                <td />
+                <td />
+                <td />
+                <td />
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 9,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    color: T.textFaint,
+                  }}
+                >
+                  NET QTY
+                </td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: netColor,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {netStr}
+                </td>
+                <td colSpan={4} />
+              </tr>
+            </tfoot>
+          );
+        })()}
       </table>
 
       {openCol && (() => {
@@ -1787,10 +1837,32 @@ function isValidYMD(y, m, d) {
   );
 }
 
-function parseDate(raw) {
+// Scan raw date strings to infer DMY vs MDY without user input.
+// Logic: in A/B/YYYY — if any A > 12 it must be a day → DMY;
+// if any B > 12 it must be a day → MDY. Falls back to "dmy" when ambiguous.
+function detectDateFormat(dateStrings) {
+  let mdyEvidence = 0;
+  let dmyEvidence = 0;
+  for (const raw of dateStrings) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (/^\d{4}[\-\/]/.test(s)) continue; // ISO YYYY-… — skip, unambiguous
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-]\d{2,4}$/);
+    if (!m) continue;
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (a > 12 && b <= 12) dmyEvidence++;
+    else if (a <= 12 && b > 12) mdyEvidence++;
+  }
+  if (dmyEvidence > 0 && mdyEvidence === 0) return "dmy";
+  return "mdy"; // default: MDY (US/Excel)
+}
+
+// fmt: "mdy" (default, US/Excel) | "dmy" (BR DD/MM/YYYY)
+function parseDate(raw, fmt = "mdy") {
   if (!raw) return { value: null, error: "missing" };
   const s = String(raw).trim();
-  // ISO YYYY-MM-DD or YYYY/MM/DD
+  // ISO YYYY-MM-DD or YYYY/MM/DD — unambiguous, ignore fmt
   let m = s.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
   if (m) {
     const [, y, mo, d] = m;
@@ -1799,17 +1871,23 @@ function parseDate(raw) {
     if (!isValidYMD(y, mm, dd)) return { value: null, error: "bad date" };
     return { value: `${y}-${mm}-${dd}`, error: null };
   }
-  // DD/MM/YYYY or DD-MM-YYYY (BR default for ambiguous)
+  // Two-digit / slash date: DD/MM/YYYY (dmy) or MM/DD/YYYY (mdy)
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (m) {
-    let [, d, mo, y] = m;
+    let [, a, b, y] = m;
     if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    let d, mo;
+    if (fmt === "mdy") {
+      mo = a; d = b;
+    } else {
+      d = a; mo = b;
+      // Auto-swap when month part > 12 but day part ≤ 12 (unambiguous MDY).
+      if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
+        [d, mo] = [mo, d];
+      }
+    }
     d = d.padStart(2, "0");
     mo = mo.padStart(2, "0");
-    // If month > 12 but day <= 12, swap (it was MDY).
-    if (parseInt(mo, 10) > 12 && parseInt(d, 10) <= 12) {
-      [d, mo] = [mo, d];
-    }
     if (!isValidYMD(y, mo, d)) return { value: null, error: "bad date" };
     return { value: `${y}-${mo}-${d}`, error: null };
   }
@@ -1887,7 +1965,15 @@ function parseNumberCommaDecimal(raw) {
 
 // Parse a single row (object from PapaParse OR from paste-detected schema).
 // Returns { ok, tx, errors, ambiguous, rawNumbers }
-function parseRow(row, defaultCurrency = "USD") {
+// Canonical key for duplicate detection: same ticker + side + qty + date.
+function dupKey(tx) {
+  const tk = String(tx.ticker || "").trim().toUpperCase();
+  return `${tk}|${tx.side}|${Number(tx.qty)}|${tx.date}`;
+}
+
+// knownClassByTicker (optional Map ticker→assetClass): when a ticker already
+// exists in saved transactions, reuse its asset class instead of inferring one.
+function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   const errors = [];
   const rawNumbers = {
     qty: row.qty,
@@ -1895,7 +1981,7 @@ function parseRow(row, defaultCurrency = "USD") {
     fee: row.fee,
   };
 
-  const d = parseDate(row.date);
+  const d = parseDate(row.date, opts.dateFormat || "dmy");
   if (d.error) errors.push(`date: ${d.error}`);
 
   const sd = parseSide(row.side);
@@ -1920,12 +2006,21 @@ function parseRow(row, defaultCurrency = "USD") {
 
   // Asset class: explicit field wins; else infer from ticker.
   // If neither resolves, mark needsAssetClass so user picks in preview.
+  // Priority: explicit assetClass column → known class from saved transactions
+  // for this ticker → inferAssetClass() heuristic → ask the user.
   let assetClass = normalizeAssetClass(row.assetClass);
   let needsAssetClass = false;
+  let classFromHistory = false;
   if (!assetClass && ticker) {
-    const inferred = inferAssetClass(ticker);
-    if (inferred) assetClass = inferred;
-    else needsAssetClass = true;
+    const known = knownClassByTicker && knownClassByTicker.get(ticker);
+    if (known) {
+      assetClass = known;
+      classFromHistory = true;
+    } else {
+      const inferred = inferAssetClass(ticker);
+      if (inferred) assetClass = inferred;
+      else needsAssetClass = true;
+    }
   } else if (!assetClass) {
     needsAssetClass = true;
   }
@@ -1938,7 +2033,7 @@ function parseRow(row, defaultCurrency = "USD") {
   const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
 
   if (errors.length > 0) {
-    return { ok: false, tx: null, errors, ambiguous, needsAssetClass, rawNumbers };
+    return { ok: false, tx: null, errors, ambiguous, needsAssetClass, classFromHistory, rawNumbers };
   }
 
   return {
@@ -1946,6 +2041,7 @@ function parseRow(row, defaultCurrency = "USD") {
     errors: needsAssetClass ? ["assetClass: pick one"] : [],
     ambiguous,
     needsAssetClass,
+    classFromHistory,
     rawNumbers,
     tx: {
       id: newId(),
@@ -1964,7 +2060,7 @@ function parseRow(row, defaultCurrency = "USD") {
 }
 
 // Re-parse rows treating comma as decimal in numeric fields.
-function reparseWithCommaDecimal(rows, defaultCurrency = "USD") {
+function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTicker = null, opts = {}) {
   return rows.map((row) => {
     const patched = {
       ...row,
@@ -1975,7 +2071,7 @@ function reparseWithCommaDecimal(rows, defaultCurrency = "USD") {
           ? row.fee
           : parseNumberCommaDecimal(row.fee),
     };
-    return parseRow(patched, defaultCurrency);
+    return parseRow(patched, defaultCurrency, knownClassByTicker, opts);
   });
 }
 
@@ -2602,7 +2698,7 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 // - Date format MM/DD/YYYY → ISO
 // - All Fidelity transactions are USD; assetClass defaults to "Stocks"
 //   (user can edit later)
-function parseFidelityCSV(text) {
+function parseFidelityCSV(text, knownClassByTicker = null) {
   console.log("Fidelity parser: processing rows");
   const result = Papa.parse(text, {
     skipEmptyLines: true,
@@ -2635,54 +2731,127 @@ function parseFidelityCSV(text) {
   const idxPrice = colOf("Price ($)");
   const idxQty = colOf("Quantity");
   const idxFees = colOf("Fees ($)");
+  const idxAmount = colOf("Amount ($)");
 
   if (idxDate < 0 || idxAction < 0 || idxSymbol < 0 || idxPrice < 0 || idxQty < 0) {
     return { results: [], hadHeader: true, rawRows: [], sourceText: text, error: "Required Fidelity columns missing" };
   }
 
+  // Parse a Fidelity MM/DD/YYYY (or MM/DD/YY) date string to ISO, or null.
+  const toISO = (rawDate) => {
+    const mdy = String(rawDate || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (!mdy) return null;
+    let [, mo, d, y] = mdy;
+    if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+    mo = mo.padStart(2, "0");
+    d = d.padStart(2, "0");
+    const yi = parseInt(y, 10), mi = parseInt(mo, 10), di = parseInt(d, 10);
+    if (mi < 1 || mi > 12 || di < 1 || di > 31 || yi < 1900 || yi > 2100) return null;
+    const dt = new Date(yi, mi - 1, di);
+    if (dt.getFullYear() !== yi || dt.getMonth() !== mi - 1 || dt.getDate() !== di) return null;
+    return `${y}-${mo}-${d}`;
+  };
+
   const results = [];
   const rawRows = [];
+  // Real interest/coupon payments detected from the Account History (item 36
+  // follow-up). Stored separately from buy/sell transactions; never enter the
+  // position-math path (computeNetQty/dupKey).
+  const incomeEvents = [];
   for (let i = headerIdx + 1; i < result.data.length; i++) {
     const arr = result.data[i];
     if (!arr || arr.length === 0) continue;
     const action = String(arr[idxAction] || "").trim();
     const upper = action.toUpperCase();
+
+    // Interest/coupon payment rows: capture as real income events, not txns.
+    // Fidelity labels these "INTEREST" / "INTEREST EARNED" with the amount in
+    // the Amount ($) column. Only keep CUSIP-symboled (bond/CD) payments.
+    if (upper.includes("INTEREST") && idxAmount >= 0) {
+      const isoDateI = toISO(arr[idxDate]);
+      const symbolI = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountI = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      if (isoDateI && symbolI && CUSIP_RX.test(symbolI) && isFinite(amountI) && amountI > 0) {
+        incomeEvents.push({
+          id: newId(),
+          date: isoDateI,
+          ticker: symbolI,
+          amount: amountI,
+          kind: "interest",
+          source: "fidelity",
+        });
+      }
+      continue;
+    }
+
+    // Stock dividend payment rows: capture for non-CUSIP tickers (e.g. VALE, AAPL).
+    // Fidelity labels these "DIVIDEND RECEIVED", "CASH DIV", "ORDINARY DIVIDEND", etc.
+    // Amount ($) is the total cash received (not per-share). Skip REINVESTMENT rows.
+    if ((upper.includes("DIVIDEND") || upper === "CASH DIV") &&
+        !upper.includes("REINVEST") && idxAmount >= 0) {
+      const isoDateD = toISO(arr[idxDate]);
+      const symbolD = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountD = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      if (isoDateD && symbolD && !CUSIP_RX.test(symbolD) && isFinite(amountD) && amountD > 0) {
+        incomeEvents.push({
+          id: newId(),
+          date: isoDateD,
+          ticker: symbolD,
+          amount: amountD,
+          kind: "dividend",
+          source: "fidelity",
+        });
+      }
+      continue;
+    }
+
     let side = null;
+    let isRedemption = false;
     if (upper.startsWith("YOU BOUGHT")) side = "buy";
     else if (upper.startsWith("YOU SOLD")) side = "sell";
-    else continue; // skip dividends, contributions, interest, redemptions, etc.
+    else if (upper.includes("REDEMPTION") || upper.startsWith("REDEEMED")) {
+      // Bond/CD maturity: Fidelity returns the principal as a REDEMPTION row.
+      // Record it as a sell of the CUSIP so the position math removes the
+      // matching qty/price bought earlier (zeroes the holding's principal).
+      side = "sell";
+      isRedemption = true;
+    } else continue; // skip dividends, contributions, etc.
 
-    const rawDate = String(arr[idxDate] || "").trim();
     // Fidelity dates are always MM/DD/YYYY (US format). Override the
     // BR-default parseDate which would interpret 05/08/2026 as DMY.
-    const mdy = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-    let isoDate = null;
-    if (mdy) {
-      let [, mo, d, y] = mdy;
-      if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
-      mo = mo.padStart(2, "0");
-      d = d.padStart(2, "0");
-      const yi = parseInt(y, 10);
-      const mi = parseInt(mo, 10);
-      const di = parseInt(d, 10);
-      if (mi >= 1 && mi <= 12 && di >= 1 && di <= 31 && yi >= 1900 && yi <= 2100) {
-        const dt = new Date(yi, mi - 1, di);
-        if (dt.getFullYear() === yi && dt.getMonth() === mi - 1 && dt.getDate() === di) {
-          isoDate = `${y}-${mo}-${d}`;
-        }
-      }
-    }
+    const isoDate = toISO(arr[idxDate]);
     if (!isoDate) continue; // skip malformed rows silently
 
     const symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
     if (!symbol) continue;
+    // Redemptions only make sense for CUSIP-symboled bonds/CDs.
+    if (isRedemption && !CUSIP_RX.test(symbol)) continue;
 
-    const priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
-    if (!isFinite(priceN) || priceN < 0) continue;
+    const amountAbs = idxAmount >= 0
+      ? Math.abs(parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, "")))
+      : NaN;
 
-    const qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
+    let qtyRaw = parseFloat(String(arr[idxQty] || "").replace(/[,\s]/g, ""));
+    // Redemption rows sometimes omit Quantity; the Amount ($) equals the face
+    // value returned, which is the same unit Fidelity uses for bond Quantity.
+    if (isRedemption && (!isFinite(qtyRaw) || qtyRaw === 0) && isFinite(amountAbs) && amountAbs > 0) {
+      qtyRaw = amountAbs;
+    }
     if (!isFinite(qtyRaw) || qtyRaw === 0) continue;
-    const qty = Math.abs(qtyRaw);
+    const qtyAbs = Math.abs(qtyRaw);
+
+    let priceN = parseFloat(String(arr[idxPrice] || "").replace(/[$,\s]/g, ""));
+    // Redemption rows usually have a blank Price ($): the bond is paid back at
+    // face. For redemptions Fidelity uses decimal-fraction space (1.0 = par),
+    // not percent-of-face (100.0 = par) — so derive in the same decimal space
+    // and apply the ×1000 correction below uniformly.
+    if (isRedemption && (!isFinite(priceN) || priceN <= 0)) {
+      const units = qtyAbs / 1000;
+      priceN = isFinite(amountAbs) && amountAbs > 0 && units > 0
+        ? amountAbs / units / 1000
+        : 1;
+    }
+    if (!isFinite(priceN) || priceN < 0) continue;
 
     let fee = 0;
     if (idxFees >= 0) {
@@ -2690,29 +2859,89 @@ function parseFidelityCSV(text) {
       if (isFinite(fn) && fn > 0) fee = fn;
     }
 
-    // Extract coupon rate and maturity date from the Symbol Description field.
+    // Reuse a saved asset class for this ticker if known; else infer from the
+    // symbol, falling back to "Stocks" for plain US tickers.
+    const known = knownClassByTicker && knownClassByTicker.get(symbol);
+    const assetClass = known || inferAssetClass(symbol) || "Stocks";
+
+    // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
+    // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face for
+    // buys/sells (100.00 → ×10 = $1,000/unit), but as decimal-fraction for
+    // redemptions (1.00 → ×1000 = $1,000/unit). Plain tickers untouched.
+    const qty = assetClass === "Bank Bonds" ? qtyAbs / 1000 : qtyAbs;
+    const price = assetClass === "Bank Bonds"
+      ? (isRedemption ? priceN * 1000 : priceN * 10)
+      : priceN;
+
+    // Extract bond metadata from the Symbol Description field.
     let notes = "";
-    if (idxDesc >= 0) {
+    let couponRate = null;    // numeric %, e.g. 5.45
+    let maturityDate = null;  // ISO date string, e.g. "2027-03-15"
+    let bondType = null;      // "Treasury" | "Agency" | "CD" | "Corporate"
+    let shortName = null;     // issuer name extracted from description
+    let couponFreq = null;    // "monthly" | "quarterly" | "semi-annual" | "at-maturity"
+    if (idxDesc >= 0 && assetClass === "Bank Bonds") {
       const desc = String(arr[idxDesc] || "");
-      const couponM = desc.match(/(\d+\.\d+)%/);
-      const maturityM = desc.match(/(\d{2}\/\d{2}\/\d{4})$/);
-      if (couponM && maturityM) {
-        notes = `${couponM[1]}% | ${maturityM[1]}`;
+      const couponM = desc.match(/(\d+(?:\.\d+)?)%/);
+      const maturityM = desc.match(/(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (couponM) {
+        couponRate = parseFloat(couponM[1]);
+      }
+      if (maturityM) {
+        const [, mm, dd, yyyy] = maturityM;
+        maturityDate = `${yyyy}-${mm}-${dd}`;
+      }
+      // Short name: everything before the coupon rate pattern, trimmed.
+      const nameEnd = desc.search(/\d+(?:\.\d+)?%/);
+      if (nameEnd > 0) {
+        shortName = desc.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null;
+      }
+      // Bond type inferred by issuer keywords (display/metadata only).
+      const u = desc.toUpperCase();
+      if (u.includes("TREASURY") || u.includes("US TREAS")) {
+        bondType = "Treasury";
+      } else if (
+        u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
+        u.includes("FEDERAL FARM") || u.includes("FFCB") ||
+        u.includes("FNMA") || u.includes("FHLMC") ||
+        u.includes("FREDDIE") || u.includes("FANNIE")
+      ) {
+        bondType = "Agency";
+      } else if (
+        u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
+        u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
+      ) {
+        bondType = "Corporate";
+      } else {
+        bondType = "CD";
+      }
+      // Default coupon frequency is monthly; refined later when real interest
+      // payments are detected on Account History import.
+      couponFreq = "monthly";
+      if (couponRate !== null && maturityDate) {
+        notes = `${couponRate.toFixed(2)}% | ${maturityM[1]}/${maturityM[2]}/${maturityM[3]}`;
       }
     }
 
-    // Infer asset class from the symbol; fall back to "Stocks" for plain US tickers.
     const tx = {
       id: newId(),
       date: isoDate,
       side,
       ticker: symbol,
-      assetClass: inferAssetClass(symbol) || "Stocks",
+      assetClass,
       qty,
-      price: priceN,
+      price,
       currency: "USD",
       fee,
       notes,
+      ...(assetClass === "Bank Bonds" && {
+        couponRate,
+        maturityDate,
+        bondType,
+        shortName,
+        couponFreq,
+      }),
+      ...(isRedemption && { redemption: true }),
       createdAt: new Date().toISOString(),
     };
 
@@ -2721,19 +2950,20 @@ function parseFidelityCSV(text) {
       errors: [],
       ambiguous: false,
       needsAssetClass: false,
+      classFromHistory: !!known,
       rawNumbers: { qty: qtyRaw, price: priceN, fee },
       tx,
     });
     rawRows.push(arr);
   }
 
-  return { results, hadHeader: true, rawRows, sourceText: text };
+  return { results, incomeEvents, hadHeader: true, rawRows, sourceText: text };
 }
 
-function ImportModal({ open, onClose, onConfirm, existingCount }) {
-  const [tab, setTab] = useState("upload"); // upload | fidelity
+function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
+  const [tab, setTab] = useState("fidelity"); // upload | fidelity
   const [text, setText] = useState("");
-  const [parsed, setParsed] = useState(null); // { results, hadHeader }
+  const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
   const [structuralPrompt, setStructuralPrompt] = useState(false); // BR-decimal-in-CSV suspected
   const [mode, setMode] = useState("append"); // append | replace
@@ -2743,8 +2973,39 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   const [editDraft, setEditDraft] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Ticker → asset class from saved transactions (last occurrence wins). Used to
+  // reuse a known class instead of inferring one for the same ticker.
+  const knownClassByTicker = useMemo(() => {
+    const m = new Map();
+    for (const t of existingTransactions || []) {
+      const tk = String(t.ticker || "").trim().toUpperCase();
+      if (tk && t.assetClass) m.set(tk, t.assetClass);
+    }
+    return m;
+  }, [existingTransactions]);
+
+  // Set of dup keys for saved transactions, to flag re-imports of the same row.
+  const dupKeySet = useMemo(() => {
+    const s = new Set();
+    for (const t of existingTransactions || []) s.add(dupKey(t));
+    return s;
+  }, [existingTransactions]);
+
+  // Flag rows that match an already-saved transaction (same ticker/side/qty/date).
+  function annotateDuplicates(results) {
+    if (dupKeySet.size === 0) return results;
+    return results.map((r) =>
+      r.tx && dupKeySet.has(dupKey(r.tx)) ? { ...r, duplicate: true } : r
+    );
+  }
+
+  // Default check state: all rows except detected duplicates.
   function initAllChecked(results) {
-    setCheckedRows(new Set(results.map((_, i) => i)));
+    const s = new Set();
+    results.forEach((r, i) => {
+      if (!r.duplicate) s.add(i);
+    });
+    setCheckedRows(s);
   }
 
   useEffect(() => {
@@ -2755,7 +3016,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setStructuralPrompt(false);
       setMode("append");
       setFileError("");
-      setTab("upload");
+      setTab("fidelity");
       setCheckedRows(new Set());
       setEditingIdx(null);
       setEditDraft(null);
@@ -2769,11 +3030,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setParsed(null);
       return;
     }
+    const fmt = detectDateFormat(out.rows.map((r) => r.date));
+    const opts = { dateFormat: fmt };
     // If columns mismatch AND delimiter is comma, suspected BR decimal in CSV.
     if (out.structuralBreak && out.delimiter === ",") {
-      // Hold the parse result; show prompt offering BR auto-fix.
-      const results = out.rows.map((r) => parseRow(r));
-      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+      const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
+      setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
       initAllChecked(results);
       setEditingIdx(null);
       setEditDraft(null);
@@ -2782,9 +3044,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
       setFileError("");
       return;
     }
-    const results = out.rows.map((r) => parseRow(r));
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
-    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText });
+    setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
     initAllChecked(results);
     setEditingIdx(null);
     setEditDraft(null);
@@ -2797,20 +3059,22 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     if (!parsed) return;
     setStructuralPrompt(false);
     if (!yes) return;
-    // Re-run parse with positional auto-fix enabled.
     const out = parseCSVOrPaste(parsed.sourceText, { autoFixBR: true });
     if (out.rows.length === 0) {
       setFileError("Reparse produced no rows");
       setParsed(null);
       return;
     }
-    const results = out.rows.map((r) => parseRow(r));
+    const fmt = parsed.dateFormat || "dmy";
+    const opts = { dateFormat: fmt };
+    const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({
       results,
       hadHeader: out.hadHeader,
       rawRows: out.rows,
       sourceText: parsed.sourceText,
+      dateFormat: fmt,
       reparseNote:
         out.unfixableRows > 0
           ? `${out.fixedRows} row(s) fixed, ${out.unfixableRows} could not be auto-fixed.`
@@ -2825,7 +3089,10 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   function applyCommaDecimal(useComma) {
     if (!parsed) return;
     if (useComma) {
-      const next = reparseWithCommaDecimal(parsed.rawRows);
+      const opts = { dateFormat: parsed.dateFormat || "dmy" };
+      const next = annotateDuplicates(
+        reparseWithCommaDecimal(parsed.rawRows, "USD", knownClassByTicker, opts)
+      );
       setParsed({ ...parsed, results: next });
     }
     setDecimalPrompt(false);
@@ -2862,36 +3129,86 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   }
 
   function handleFidelityFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      // Strip BOM if present.
-      let content = String(ev.target?.result || "");
-      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
-      setText(content);
-      const out = parseFidelityCSV(content);
-      if (out.error || out.results.length === 0) {
-        setFileError(out.error || "No BUY/SELL transactions found in this Fidelity file");
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const fileContents = [];
+    let loaded = 0;
+    let readError = false;
+
+    function onAllLoaded() {
+      let mergedResults = [];
+      let mergedIncome = [];
+      let mergedRawRows = [];
+      const crossFileKeys = new Set();
+
+      for (const content of fileContents) {
+        const out = parseFidelityCSV(content, knownClassByTicker);
+        if (out.error && mergedResults.length === 0 && mergedIncome.length === 0) {
+          setFileError(out.error);
+          setParsed(null);
+          return;
+        }
+        const fileResults = out.results || [];
+        const deduped = fileResults.map((r) => {
+          if (!r.tx) return r;
+          const k = dupKey(r.tx);
+          if (crossFileKeys.has(k)) return { ...r, duplicate: true };
+          crossFileKeys.add(k);
+          return r;
+        });
+        mergedResults = mergedResults.concat(deduped);
+        mergedIncome = mergedIncome.concat(out.incomeEvents || []);
+        mergedRawRows = mergedRawRows.concat(out.rawRows || []);
+      }
+
+      if (mergedResults.length === 0 && mergedIncome.length === 0) {
+        setFileError("No BUY/SELL or interest rows found in this Fidelity file");
         setParsed(null);
         return;
       }
+
+      mergedResults.sort((a, b) => {
+        const da = a.tx?.date || "";
+        const db = b.tx?.date || "";
+        return da < db ? -1 : da > db ? 1 : 0;
+      });
+
+      const annotated = annotateDuplicates(mergedResults);
       setParsed({
-        results: out.results,
+        results: annotated,
+        incomeEvents: mergedIncome,
         hadHeader: true,
-        rawRows: out.rawRows,
-        sourceText: content,
+        rawRows: mergedRawRows,
+        sourceText: "",
         sourceLabel: "Fidelity",
       });
-      initAllChecked(out.results);
+      initAllChecked(annotated);
       setEditingIdx(null);
       setEditDraft(null);
       setDecimalPrompt(false);
       setStructuralPrompt(false);
       setFileError("");
-    };
-    reader.onerror = () => setFileError("Failed to read file");
-    reader.readAsText(file);
+    }
+
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (readError) return;
+        let content = String(ev.target?.result || "");
+        if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+        fileContents[idx] = content;
+        loaded += 1;
+        if (loaded === files.length) onAllLoaded();
+      };
+      reader.onerror = () => {
+        if (!readError) {
+          readError = true;
+          setFileError("Failed to read file");
+        }
+      };
+      reader.readAsText(file);
+    });
   }
 
   function handleConfirm() {
@@ -2899,8 +3216,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     const validTx = parsed.results
       .filter((r, i) => r.ok && checkedRows.has(i))
       .map((r) => r.tx);
-    if (validTx.length === 0) return;
-    onConfirm(validTx, mode);
+    const income = parsed.incomeEvents || [];
+    if (validTx.length === 0 && income.length === 0) return;
+    onConfirm(validTx, mode, income);
   }
 
   function startPreviewEdit(idx) {
@@ -2937,25 +3255,27 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
     if (!tkr) return;
     const existing = parsed.results[editingIdx];
     const cur = currencyForAssetClass(editDraft.assetClass) || "USD";
+    const editedTx = {
+      id: existing?.tx?.id || newId(),
+      date: editDraft.date,
+      side: editDraft.side,
+      ticker: tkr,
+      assetClass: editDraft.assetClass,
+      qty: qn,
+      price: pn,
+      currency: cur,
+      fee: feeN,
+      notes: editDraft.notes.trim(),
+      createdAt: existing?.tx?.createdAt || new Date().toISOString(),
+    };
     const updatedResult = {
       ok: true,
       needsAssetClass: false,
       errors: [],
       ambiguous: false,
+      duplicate: dupKeySet.has(dupKey(editedTx)),
       rawNumbers: existing?.rawNumbers,
-      tx: {
-        id: existing?.tx?.id || newId(),
-        date: editDraft.date,
-        side: editDraft.side,
-        ticker: tkr,
-        assetClass: editDraft.assetClass,
-        qty: qn,
-        price: pn,
-        currency: cur,
-        fee: feeN,
-        notes: editDraft.notes.trim(),
-        createdAt: existing?.tx?.createdAt || new Date().toISOString(),
-      },
+      tx: editedTx,
     };
     const newResults = parsed.results.map((r, i) => (i === editingIdx ? updatedResult : r));
     setParsed({ ...parsed, results: newResults });
@@ -2969,12 +3289,19 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
   const checkedValidCount = parsed
     ? parsed.results.filter((r, i) => r.ok && checkedRows.has(i)).length
     : 0;
+  const incomeCount = parsed?.incomeEvents?.length || 0;
   const totalCount = parsed ? parsed.results.length : 0;
   const errorCount = parsed
     ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass).length
     : 0;
   const needsAssetClassCount = parsed
     ? parsed.results.filter((r) => r.needsAssetClass).length
+    : 0;
+  const duplicateCount = parsed
+    ? parsed.results.filter((r) => r.duplicate).length
+    : 0;
+  const reusedClassCount = parsed
+    ? parsed.results.filter((r) => r.classFromHistory).length
     : 0;
   const allChecked = parsed ? parsed.results.every((_, i) => checkedRows.has(i)) : false;
 
@@ -3263,10 +3590,11 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
 
               {tab === "fidelity" && (
                 <div>
-                  <Label>Select your Fidelity "Accounts History" CSV</Label>
+                  <Label>Select one or more Fidelity "Accounts History" CSVs</Label>
                   <input
                     type="file"
                     accept=".csv,text/csv,text/plain"
+                    multiple
                     onChange={handleFidelityFile}
                     style={{
                       display: "block",
@@ -3288,11 +3616,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                       lineHeight: 1.6,
                     }}
                   >
-                    Imports only YOU BOUGHT / YOU SOLD rows. Dividends,
-                    contributions, interest, and redemptions are skipped.
-                    CUSIP symbols are classified as Bank Bonds with coupon and
-                    maturity extracted from the description. All other
-                    transactions default to "Stocks".
+                    Imports YOU BOUGHT / YOU SOLD rows as transactions, bond
+                    INTEREST payments as income, and bond REDEMPTIONS
+                    (maturity) as sells. Dividends and contributions are
+                    skipped. CUSIP symbols are classified as Bank Bonds with
+                    coupon and maturity extracted from the description. All
+                    other transactions default to "Stocks".
                   </div>
                   {fileError && (
                     <div
@@ -3359,6 +3688,32 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     {needsAssetClassCount} need class
                   </div>
                 )}
+                {duplicateCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.red,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {duplicateCount} duplicate
+                  </div>
+                )}
+                {reusedClassCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.textDim,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {reusedClassCount} class reused
+                  </div>
+                )}
                 <div
                   style={{
                     fontFamily: FONT_MONO,
@@ -3370,6 +3725,19 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                 >
                   {parsed.hadHeader ? "header detected" : "no header"}
                 </div>
+                {parsed.dateFormat === "dmy" && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.gold,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    dates: DD/MM/YYYY detected
+                  </div>
+                )}
               </div>
 
               {parsed.reparseNote && (
@@ -3387,6 +3755,30 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                   {parsed.reparseNote}
                 </div>
               )}
+
+              {parsed.incomeEvents && parsed.incomeEvents.length > 0 && (() => {
+                const bondCount = parsed.incomeEvents.filter(e => e.kind !== "dividend").length;
+                const divCount  = parsed.incomeEvents.filter(e => e.kind === "dividend").length;
+                const parts = [];
+                if (bondCount > 0) parts.push(`${bondCount} bond interest payment${bondCount === 1 ? "" : "s"}`);
+                if (divCount  > 0) parts.push(`${divCount} stock dividend payment${divCount  === 1 ? "" : "s"}`);
+                return (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.green,
+                      marginBottom: 14,
+                      padding: 10,
+                      border: `1px solid ${T.green}`,
+                      background: "rgba(125, 211, 164, 0.05)",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    {parts.join(" + ")} detected — added to income on import.
+                  </div>
+                );
+              })()}
 
               {/* Preview table */}
               <div
@@ -3607,6 +3999,8 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                           style={{
                             background: isEditingThis
                               ? "rgba(201, 169, 97, 0.04)"
+                              : r.duplicate
+                              ? "rgba(232, 140, 140, 0.09)"
                               : r.ok
                               ? "transparent"
                               : "rgba(232, 140, 140, 0.05)",
@@ -3693,6 +4087,14 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                             {r.needsAssetClass && (
                               <span style={{ color: T.gold }}>pick class</span>
                             )}
+                            {r.duplicate && (
+                              <span
+                                style={{ color: T.red, fontWeight: 600 }}
+                                title="A saved transaction already has this ticker, side, qty and date. Check the box to import anyway."
+                              >
+                                Duplicate
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -3767,7 +4169,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={handleConfirm}
-                  disabled={checkedValidCount === 0}
+                  disabled={checkedValidCount === 0 && incomeCount === 0}
                   style={{
                     background: T.gold,
                     border: "none",
@@ -3777,11 +4179,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
                     fontSize: 11,
                     letterSpacing: "0.15em",
                     textTransform: "uppercase",
-                    cursor: checkedValidCount > 0 ? "pointer" : "default",
-                    opacity: checkedValidCount > 0 ? 1 : 0.4,
+                    cursor: checkedValidCount > 0 || incomeCount > 0 ? "pointer" : "default",
+                    opacity: checkedValidCount > 0 || incomeCount > 0 ? 1 : 0.4,
                   }}
                 >
                   Import {checkedValidCount} of {totalCount} rows
+                  {incomeCount > 0 ? ` + ${incomeCount} interest` : ""}
                 </button>
                 <button
                   onClick={() => {
@@ -3815,10 +4218,14 @@ function ImportModal({ open, onClose, onConfirm, existingCount }) {
 
 // --- Main view -------------------------------------------------------------
 
-export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden }) {
+export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  // Bond interest payments (separate income store; not in the transactions
+  // array, so position math never sees them). Persisted alongside in the same
+  // /api/transactions blob under a `bondIncome` field.
+  const [bondIncome, setBondIncome] = useState([]);
   const [saving, setSaving] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
@@ -3920,6 +4327,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           return { ...t, assetClass: cls };
         });
         setTransactions(migrated);
+        setBondIncome(Array.isArray(data.bondIncome) ? data.bondIncome : []);
         setLoading(false);
         // Validate tickers against the price API in the background.
         verifyTickers(migrated);
@@ -3938,11 +4346,13 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     };
   }, [auth]);
 
-  async function persist(nextList) {
+  async function persist(nextList, nextIncome) {
     setSaving(true);
     try {
-      await saveTransactionsToServer(auth, nextList);
+      await saveTransactionsToServer(auth, nextList, nextIncome);
       setTransactions(nextList);
+      if (Array.isArray(nextIncome)) setBondIncome(nextIncome);
+      onTransactionsChange?.(nextList);
     } catch (err) {
       setError(err.message || "Save failed");
     } finally {
@@ -3983,9 +4393,20 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     await persist(next);
   }
 
-  async function handleImport(newTxs, mode) {
+  async function handleImport(newTxs, mode, newIncome = []) {
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
-    await persist(next);
+    // Merge detected interest payments into the income store, deduping by
+    // date+ticker+amount. On "replace" the income store is rebuilt from scratch.
+    const base = mode === "replace" ? [] : bondIncome;
+    const seen = new Set(base.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
+    const mergedIncome = [...base];
+    for (const e of newIncome) {
+      const k = `${e.date}|${e.ticker}|${e.amount}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      mergedIncome.push(e);
+    }
+    await persist(next, mergedIncome);
     setImportOpen(false);
     verifyTickers(newTxs);
   }
@@ -4203,6 +4624,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         onClose={() => setImportOpen(false)}
         onConfirm={handleImport}
         existingCount={transactions.length}
+        existingTransactions={transactions}
       />
 
       <SplitModal
