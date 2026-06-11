@@ -143,13 +143,8 @@ function groupLabel(iso, todayISO) {
 
   // Past
   if (diffDays < 0) {
-    const diffMonths = Math.round(-diffDays / 30.5);
     if (diffDays >= -7) return 'Last 7 Days';
-    if (diffMonths < 1) return 'Last Month';
-    // Group by month/year for older items
-    const [y, m] = iso.split('-');
-    const dt = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
-    return dt.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }).toUpperCase();
+    return 'Last 30 Days';
   }
 
   // Future / today
@@ -364,8 +359,8 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
   const [events, setEvents] = useState([]);
   const [meta, setMeta] = useState(null);
   const [filterType, setFilterType] = useState("All");
-  // "Last Month" starts collapsed by default; all other groups expanded.
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(["Last Month"]));
+  // Past buckets start collapsed by default; future groups are expanded.
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(["Last 30 Days", "Last 7 Days"]));
 
   const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
