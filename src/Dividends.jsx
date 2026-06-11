@@ -2280,13 +2280,11 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                           {proj.shortName || proj.cusip}
                         </span>
                         <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
-                          {proj.couponPct}%
-                        </span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>
-                          matures {matLabel}
-                        </span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>
-                          {proj.freq}
+                          {proj.freq
+                            ? proj.freq.charAt(0).toUpperCase() + proj.freq.slice(1)
+                            : "Monthly"}
+                          {proj.couponPct ? ` · ${proj.couponPct}%` : ""}
+                          {matLabel ? ` · Matures ${matLabel}` : ""}
                         </span>
                       </div>
 
