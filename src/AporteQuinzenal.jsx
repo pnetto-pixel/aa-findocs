@@ -84,6 +84,20 @@ function loadConfig() {
   return { ...DEFAULT_CONFIG };
 }
 
+// Sums DELL sell transactions for the given year+month.
+// Returns total USD sold.
+function computeDellSale(transactions, usdBrlRate, year, month) {
+  const prefix = `${year}-${String(month).padStart(2, "0")}-`;
+  let total = 0;
+  for (const tx of transactions) {
+    if (tx.side !== "sell") continue;
+    if ((tx.ticker || "").toUpperCase() !== "DELL") continue;
+    if (!tx.date || !tx.date.startsWith(prefix)) continue;
+    total += txToUSD(tx, usdBrlRate);
+  }
+  return total;
+}
+
 // Sums buy transactions for the given year+month, split by first and second
 // halves (days 1-15 vs 16-last). DELL vesting is excluded (same as chart).
 // Returns { half1: number, half2: number } in USD.
@@ -140,7 +154,10 @@ async function fetchTransactions(auth) {
     throw new Error(msg);
   }
   const data = await res.json();
-  return Array.isArray(data.transactions) ? data.transactions : [];
+  return {
+    transactions: Array.isArray(data.transactions) ? data.transactions : [],
+    bondIncome: Array.isArray(data.bondIncome) ? data.bondIncome : [],
+  };
 }
 
 function txToUSD(tx, usdBrlRate) {
@@ -340,8 +357,10 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [config, setConfig] = useState(loadConfig);
 
   const [transactions, setTransactions] = useState([]);
+  const [bondIncome, setBondIncome] = useState([]);
   const [txLoading, setTxLoading] = useState(true);
   const [txError, setTxError] = useState(null);
+  const [divLastMonth, setDivLastMonth] = useState(null); // null = loading
 
   const [groupBy, setGroupBy] = useState("Month");
   const [fromDate, setFromDate] = useState("");
@@ -362,9 +381,28 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   useEffect(() => {
     localStorage.removeItem(LS_REALIZADO);
     fetchTransactions(auth)
-      .then((txs) => {
+      .then(({ transactions: txs, bondIncome: bi }) => {
         setTransactions(txs);
+        setBondIncome(bi);
         setTxLoading(false);
+        // Fetch dividends last month - silent failure
+        fetch("/api/dividends", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders(auth) },
+          body: JSON.stringify({ transactions: txs, bondIncome: bi }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (!data) return;
+            const now = new Date();
+            const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+            const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
+            const total = (data.events || [])
+              .filter((e) => e.date && e.date.startsWith(prefix))
+              .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
+            setDivLastMonth(total);
+          })
+          .catch(() => { setDivLastMonth(0); });
       })
       .catch((e) => {
         if (e.code === 401) {
@@ -400,16 +438,20 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     updateConfig({ extras });
   }
 
+  const dellSaleAuto = useMemo(() => {
+    if (!transactions.length) return 0;
+    const now = new Date();
+    return computeDellSale(transactions, usdBrlRate, now.getFullYear(), now.getMonth() + 1);
+  }, [transactions, usdBrlRate]);
+
   const planTotal = useMemo(() => {
     const fixed = parseFloat(config.monthlyFixed) || 0;
-    const divs = parseFloat(config.dividendsLastMonth) || 0;
-    const dell = parseFloat(config.dellSale) || 0;
     const extrasSum = (config.extras || []).reduce(
       (s, e) => s + (parseFloat(e.value) || 0),
       0
     );
-    return fixed + divs + dell + extrasSum;
-  }, [config]);
+    return fixed + (divLastMonth ?? 0) + dellSaleAuto + extrasSum;
+  }, [config, divLastMonth, dellSaleAuto]);
 
   const halfPlanned = planTotal / 2;
   const days = daysInCurrentMonth();
@@ -418,7 +460,8 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     if (!transactions || transactions.length === 0)
       return { half1Auto: 0, half2Auto: 0 };
     const now = new Date();
-    return computeHalfInvested(transactions, usdBrlRate, now.getFullYear(), now.getMonth() + 1);
+    const { half1, half2 } = computeHalfInvested(transactions, usdBrlRate, now.getFullYear(), now.getMonth() + 1);
+    return { half1Auto: half1, half2Auto: half2 };
   }, [transactions, usdBrlRate]);
 
   const chartData = useMemo(
@@ -466,16 +509,32 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               value={config.monthlyFixed}
               onChange={(v) => updateConfig({ monthlyFixed: v })}
             />
-            <PlanRow
-              label="Dividends (last month)"
-              value={config.dividendsLastMonth}
-              onChange={(v) => updateConfig({ dividendsLastMonth: v })}
-            />
-            <PlanRow
-              label="DELL sale"
-              value={config.dellSale}
-              onChange={(v) => updateConfig({ dellSale: v })}
-            />
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
+              <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>Dividends (last month)</span>
+              {divLastMonth === null ? (
+                <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end" }}>
+                  <span style={{ fontFamily:FONT_MONO, fontSize:13, color: divLastMonth > 0 ? T.text : T.textFaint }}>
+                    {fmtUSD(divLastMonth, valuesHidden)}
+                  </span>
+                  <span style={{ fontFamily:FONT_BODY, fontSize:10, color:T.textFaint }}>from Dividends</span>
+                </div>
+              )}
+            </div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
+              <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>DELL sale (this month)</span>
+              {txLoading ? (
+                <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end" }}>
+                  <span style={{ fontFamily:FONT_MONO, fontSize:13, color: dellSaleAuto > 0 ? T.text : T.textFaint }}>
+                    {fmtUSD(dellSaleAuto, valuesHidden)}
+                  </span>
+                  <span style={{ fontFamily:FONT_BODY, fontSize:10, color:T.textFaint }}>from Transactions</span>
+                </div>
+              )}
+            </div>
 
             {/* Dynamic extras */}
             {(config.extras || []).map((extra, i) => (
