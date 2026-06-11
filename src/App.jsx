@@ -565,9 +565,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [transactions, setTransactions] = useState([]);
   const [splitEvents, setSplitEvents] = useState([]);
   const [pendingSplits, setPendingSplits] = useState([]);
-  const [splitReviewOpen, setSplitReviewOpen] = useState(false);
+  const [alertPanelOpen, setAlertPanelOpen] = useState(false);
   const [splitActionInFlight, setSplitActionInFlight] = useState(null); // key of split being processed
-  const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
+  const [todayAlerts, setTodayAlerts] = useState([]); // dividend/earnings/bond-maturity alerts for today
 
   // Manual asset form state
   const [showManualForm, setShowManualForm] = useState(false);
@@ -778,6 +778,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           setSplitEvents(loadedSplitEvents);
           // Non-blocking: surface any unreflected splits via the Bell badge.
           refreshPendingSplits(txs, loadedSplitEvents);
+          refreshTodayAlerts(txs);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
@@ -1135,6 +1136,84 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       setPendingSplits(detectPendingSplits(txs || [], splits, splitEventsArr || []));
     } catch {
       /* silent — split detection is best-effort */
+    }
+  }
+
+  // Fetch today's dividend payouts, earnings, and bond maturities for the alerts panel.
+  // Non-blocking; uses the same events Redis cache as the Events tab.
+  async function refreshTodayAlerts(txs) {
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const alerts = [];
+    // Bond maturity within 7 days — derived from transactions, no API needed.
+    const CUSIP_RX = /^[0-9A-Z]{9}$/;
+    const seen = new Set();
+    for (const tx of txs) {
+      if (tx.assetClass !== "Bank Bonds" || !tx.maturityDate) continue;
+      const cusip = (tx.ticker || "").toUpperCase();
+      if (!CUSIP_RX.test(cusip) || seen.has(cusip)) continue;
+      const daysLeft = Math.ceil(
+        (new Date(tx.maturityDate + "T00:00:00Z") - new Date(todayISO + "T00:00:00Z")) / 86400000
+      );
+      if (daysLeft >= 0 && daysLeft <= 7) {
+        seen.add(cusip);
+        alerts.push({
+          type: "bond_maturity",
+          ticker: cusip,
+          message: daysLeft === 0 ? "Bond matures today" : `Bond matures in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`,
+          detail: tx.maturityDate,
+        });
+      }
+    }
+    setTodayAlerts(alerts);
+    // Fetch today's dividend payouts and earnings from events API.
+    try {
+      const ELIGIBLE = new Set(["Stocks", "Real Estate", "Alternative", "Bonds", "BRA Stocks", "Unallocated USD"]);
+      const net = {};
+      for (const tx of txs) {
+        const t = (tx.ticker || "").toUpperCase();
+        if (!t) continue;
+        if (tx.side === "buy") net[t] = (net[t] || 0) + (Number(tx.qty) || 0);
+        else if (tx.side === "sell") net[t] = (net[t] || 0) - (Number(tx.qty) || 0);
+      }
+      const tickers = [
+        ...new Set(
+          txs
+            .filter((tx) => ELIGIBLE.has(tx.assetClass) && (net[(tx.ticker || "").toUpperCase()] || 0) > 0)
+            .map((tx) => (tx.ticker || "").toUpperCase())
+            .filter(
+              (t) =>
+                t &&
+                !/^[A-Z]{4}\d{1,2}$/i.test(t) &&
+                !/^[0-9A-Z]{9}$/.test(t) &&
+                !/^tesouro-/i.test(t)
+            )
+        ),
+      ];
+      if (!tickers.length) return;
+      const res = await fetch("/api/events", {
+        method: "POST",
+        headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+        body: JSON.stringify({ tickers }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const events = Array.isArray(data.events) ? data.events : [];
+      const seenPayout = new Set();
+      const seenEarnings = new Set();
+      const newAlerts = [...alerts];
+      for (const ev of events) {
+        if (ev.date !== todayISO) continue;
+        if (ev.type === "payout" && !seenPayout.has(ev.ticker)) {
+          seenPayout.add(ev.ticker);
+          newAlerts.push({ type: "dividend", ticker: ev.ticker, message: "Dividend paid today" });
+        } else if (ev.type === "earnings" && !seenEarnings.has(ev.ticker)) {
+          seenEarnings.add(ev.ticker);
+          newAlerts.push({ type: "earnings", ticker: ev.ticker, message: "Earnings today" });
+        }
+      }
+      setTodayAlerts(newAlerts);
+    } catch {
+      /* silent — today alerts are best-effort */
     }
   }
 
@@ -1690,8 +1769,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           )}
 
-          {/* Split / grouping review panel */}
-          {splitReviewOpen && (
+          {/* Alerts panel (Bell icon) */}
+          {alertPanelOpen && (
             <div
               style={{
                 position: "fixed",
@@ -1704,7 +1783,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 padding: "24px 16px",
                 overflowY: "auto",
               }}
-              onClick={() => setSplitReviewOpen(false)}
+              onClick={() => setAlertPanelOpen(false)}
             >
               <div
                 onClick={(e) => e.stopPropagation()}
@@ -1713,7 +1792,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   border: `1px solid ${T.border}`,
                   borderRadius: 4,
                   padding: 20,
-                  maxWidth: 560,
+                  maxWidth: 460,
                   width: "100%",
                 }}
               >
@@ -1734,10 +1813,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       textTransform: "uppercase",
                     }}
                   >
-                    Detected Splits / Groupings
+                    Alerts
                   </div>
                   <button
-                    onClick={() => setSplitReviewOpen(false)}
+                    onClick={() => setAlertPanelOpen(false)}
                     style={{
                       background: "transparent",
                       border: "none",
@@ -1750,7 +1829,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   </button>
                 </div>
 
-                {pendingSplits.length === 0 ? (
+                {pendingSplits.length === 0 && todayAlerts.length === 0 ? (
                   <div
                     style={{
                       fontFamily: FONT_MONO,
@@ -1761,301 +1840,108 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       lineHeight: 1.5,
                     }}
                   >
-                    No pending splits. The history is up to date with detected
-                    corporate actions.
+                    No alerts — all clear.
                   </div>
                 ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                    {pendingSplits.map((sp) => {
-                      const num = Number(sp.numerator);
-                      const den = Number(sp.denominator);
-                      const isReverse = den > num;
-                      const factorLabel = isReverse
-                        ? `${num}:${den} reverse`
-                        : `${num}:${den}`;
-                      const affected = transactions.filter(
-                        (tx) =>
-                          (tx.ticker || "").toUpperCase() === sp.ticker &&
-                          tx.date < sp.date &&
-                          !(tx.splitAdjusted && tx.splitDate === sp.date)
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {pendingSplits.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setActiveView("transactions");
+                          setAlertPanelOpen(false);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          padding: "12px 14px",
+                          background: "rgba(201,169,97,0.08)",
+                          border: `1px solid ${T.gold}44`,
+                          borderRadius: 4,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          width: "100%",
+                        }}
+                      >
+                        <AlertCircle size={14} style={{ color: T.gold, flexShrink: 0 }} />
+                        <div>
+                          <div
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontSize: 11,
+                              color: T.gold,
+                              letterSpacing: "0.08em",
+                            }}
+                          >
+                            {pendingSplits.length} split/grouping{pendingSplits.length !== 1 ? "s" : ""} pending review
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontSize: 9,
+                              color: T.textFaint,
+                              marginTop: 3,
+                              letterSpacing: "0.1em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Review in Transactions tab →
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                    {todayAlerts.map((a, alertIdx) => {
+                      const isDividend = a.type === "dividend";
+                      const isEarnings = a.type === "earnings";
+                      const isBond = a.type === "bond_maturity";
+                      const color = isDividend ? T.green : isEarnings ? "#a978a9" : T.red;
+                      const bgColor = isDividend
+                        ? "rgba(125,211,164,0.06)"
+                        : isEarnings
+                        ? "rgba(169,120,169,0.06)"
+                        : T.redBg;
+                      const bdColor = isDividend
+                        ? T.green + "33"
+                        : isEarnings
+                        ? "#a978a944"
+                        : T.red + "33";
+                      const icon = isDividend ? (
+                        <Wallet size={14} style={{ color, flexShrink: 0 }} />
+                      ) : isEarnings ? (
+                        <TrendingUp size={14} style={{ color, flexShrink: 0 }} />
+                      ) : (
+                        <AlertCircle size={14} style={{ color, flexShrink: 0 }} />
                       );
-                      const key = `${sp.ticker}|${sp.date}|${sp.numerator}|${sp.denominator}`;
-                      const thStyle = {
-                        fontFamily: FONT_MONO,
-                        fontSize: 9,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        color: T.textFaint,
-                        padding: "6px 8px",
-                        borderBottom: `1px solid ${T.border}`,
-                        whiteSpace: "nowrap",
-                      };
-                      const tdStyle = {
-                        fontFamily: FONT_MONO,
-                        fontSize: 11,
-                        padding: "6px 8px",
-                        borderBottom: `1px solid ${T.borderSoft}`,
-                        color: T.text,
-                        whiteSpace: "nowrap",
-                      };
-                      const isThisInFlight = splitActionInFlight === key;
-                      const anyInFlight = splitActionInFlight !== null;
                       return (
                         <div
-                          key={key}
+                          key={alertIdx}
                           style={{
-                            background: T.card,
-                            border: `1px solid ${T.borderSoft}`,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 12,
+                            padding: "12px 14px",
+                            background: bgColor,
+                            border: `1px solid ${bdColor}`,
                             borderRadius: 4,
-                            overflow: "hidden",
                           }}
                         >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "baseline",
-                              gap: 10,
-                              flexWrap: "wrap",
-                              padding: "10px 12px",
-                              borderBottom: `1px solid ${T.borderSoft}`,
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 14,
-                                fontWeight: 600,
-                                color: T.text,
-                              }}
-                            >
-                              {sp.ticker}
+                          {icon}
+                          <div>
+                            <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
+                              {a.ticker}
                             </span>
-                            <span
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 11,
-                                color: isReverse ? T.red : T.green,
-                                letterSpacing: "0.08em",
-                                textTransform: "uppercase",
-                              }}
-                            >
-                              {factorLabel}
+                            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color, marginLeft: 8 }}>
+                              {a.message}
                             </span>
-                            <span
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 11,
-                                color: T.textDim,
-                              }}
-                            >
-                              {sp.date}
-                            </span>
-                            <span
-                              style={{
-                                marginLeft: "auto",
-                                fontFamily: FONT_MONO,
-                                fontSize: 10,
-                                color: T.textFaint,
-                              }}
-                            >
-                              {affected.length} tx affected
-                            </span>
-                          </div>
-
-                          {affected.length > 0 && (
-                            <div style={{ overflowX: "auto" }}>
-                              <table
-                                style={{
-                                  width: "100%",
-                                  minWidth: 420,
-                                  borderCollapse: "collapse",
-                                }}
-                              >
-                                <thead>
-                                  <tr>
-                                    <th style={{ ...thStyle, textAlign: "left" }}>Date</th>
-                                    <th style={{ ...thStyle, textAlign: "right" }}>Qty {"->"} New</th>
-                                    <th style={{ ...thStyle, textAlign: "right" }}>Price {"->"} New</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {affected.map((tx) => {
-                                    const newQty = parseFloat((tx.qty * (num / den)).toFixed(6));
-                                    const newPrice = parseFloat((tx.price * (den / num)).toFixed(6));
-                                    return (
-                                      <tr key={tx.id}>
-                                        <td style={{ ...tdStyle, textAlign: "left" }}>{tx.date}</td>
-                                        <td style={{ ...tdStyle, textAlign: "right" }}>
-                                          {tx.qty} {"->"} <span style={{ color: T.gold }}>{newQty}</span>
-                                        </td>
-                                        <td style={{ ...tdStyle, textAlign: "right" }}>
-                                          ${tx.price} {"->"} <span style={{ color: T.gold }}>${newPrice}</span>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 8,
-                              padding: "10px 12px",
-                              borderTop: `1px solid ${T.borderSoft}`,
-                              alignItems: "center",
-                            }}
-                          >
-                            <button
-                              onClick={() => approveSplit(sp)}
-                              disabled={anyInFlight}
-                              style={{
-                                background: anyInFlight ? "rgba(201,169,97,0.4)" : T.gold,
-                                border: "none",
-                                color: "#0b0d10",
-                                padding: "8px 14px",
-                                fontFamily: FONT_MONO,
-                                fontSize: 10,
-                                letterSpacing: "0.15em",
-                                textTransform: "uppercase",
-                                cursor: anyInFlight ? "not-allowed" : "pointer",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 6,
-                              }}
-                            >
-                              {isThisInFlight ? (
-                                <>
-                                  <RefreshCw size={10} className="spin" />
-                                  Applying…
-                                </>
-                              ) : "Approve"}
-                            </button>
-                            <button
-                              onClick={() => dismissSplit(sp)}
-                              disabled={anyInFlight}
-                              style={{
-                                background: "transparent",
-                                border: `1px solid ${anyInFlight ? T.borderSoft : T.border}`,
-                                color: anyInFlight ? T.textFaint : T.textDim,
-                                padding: "8px 14px",
-                                fontFamily: FONT_MONO,
-                                fontSize: 10,
-                                letterSpacing: "0.15em",
-                                textTransform: "uppercase",
-                                cursor: anyInFlight ? "not-allowed" : "pointer",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 6,
-                              }}
-                            >
-                              {isThisInFlight ? (
-                                <>
-                                  <RefreshCw size={10} className="spin" />
-                                  Dismissing…
-                                </>
-                              ) : "Dismiss"}
-                            </button>
+                            {a.detail && (
+                              <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint, marginTop: 2 }}>
+                                {a.detail}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
                     })}
-                  </div>
-                )}
-
-                {/* History: decided splits */}
-                {splitEvents.length > 0 && (
-                  <div style={{ marginTop: 20 }}>
-                    <button
-                      onClick={() => setSplitHistoryOpen((v) => !v)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        width: "100%",
-                        background: "transparent",
-                        border: "none",
-                        borderTop: `1px solid ${T.borderSoft}`,
-                        padding: "12px 0 0",
-                        cursor: "pointer",
-                        color: T.textDim,
-                        fontFamily: FONT_MONO,
-                        fontSize: 10,
-                        letterSpacing: "0.15em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      <ChevronDown
-                        size={12}
-                        style={{
-                          transform: splitHistoryOpen ? "none" : "rotate(-90deg)",
-                          transition: "transform 0.2s",
-                        }}
-                      />
-                      History ({splitEvents.length})
-                    </button>
-                    {splitHistoryOpen && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
-                        {[...splitEvents].reverse().map((ev, i) => {
-                          const isApplied = ev.status === "applied";
-                          const num = Number(ev.numerator);
-                          const den = Number(ev.denominator);
-                          const isReverse = den > num;
-                          const factorLabel = isReverse ? `${num}:${den} reverse` : `${num}:${den}`;
-                          const appliedDate = ev.appliedAt
-                            ? new Date(ev.appliedAt).toLocaleString("en-US", {
-                                month: "short", day: "numeric", year: "numeric",
-                                hour: "numeric", minute: "2-digit",
-                              })
-                            : ev.date;
-                          return (
-                            <div
-                              key={i}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 10,
-                                flexWrap: "wrap",
-                                padding: "8px 10px",
-                                background: T.card,
-                                border: `1px solid ${T.borderSoft}`,
-                                borderRadius: 4,
-                              }}
-                            >
-                              <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
-                                {ev.ticker}
-                              </span>
-                              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: isReverse ? T.red : T.green, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                                {factorLabel}
-                              </span>
-                              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint }}>
-                                {ev.date}
-                              </span>
-                              <span
-                                style={{
-                                  fontFamily: FONT_MONO,
-                                  fontSize: 9,
-                                  letterSpacing: "0.1em",
-                                  textTransform: "uppercase",
-                                  color: isApplied ? T.green : T.textFaint,
-                                  background: isApplied ? "rgba(125,211,164,0.1)" : "transparent",
-                                  border: `1px solid ${isApplied ? T.green + "44" : T.borderSoft}`,
-                                  padding: "2px 6px",
-                                  borderRadius: 2,
-                                }}
-                              >
-                                {isApplied ? "Applied" : "Dismissed"}
-                              </span>
-                              <span style={{ marginLeft: "auto", fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
-                                {appliedDate}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -2170,24 +2056,24 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   {valuesHidden ? <EyeOff size={11} /> : <Eye size={11} />}
                 </button>
                 <button
-                  onClick={() => setSplitReviewOpen(true)}
+                  onClick={() => setAlertPanelOpen(true)}
                   title={
-                    pendingSplits.length > 0
-                      ? `${pendingSplits.length} split${pendingSplits.length === 1 ? "" : "s"} to review`
-                      : "Splits / groupings — none pending"
+                    pendingSplits.length + todayAlerts.length > 0
+                      ? `${pendingSplits.length + todayAlerts.length} alert${pendingSplits.length + todayAlerts.length === 1 ? "" : "s"}`
+                      : "Alerts — none"
                   }
                   style={{
                     position: "relative",
-                    background: pendingSplits.length > 0 ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                    border: `1px solid ${pendingSplits.length > 0 ? T.gold : T.border}`,
-                    color: pendingSplits.length > 0 ? T.gold : T.textDim,
+                    background: pendingSplits.length + todayAlerts.length > 0 ? "rgba(201, 169, 97, 0.12)" : "transparent",
+                    border: `1px solid ${pendingSplits.length + todayAlerts.length > 0 ? T.gold : T.border}`,
+                    color: pendingSplits.length + todayAlerts.length > 0 ? T.gold : T.textDim,
                     padding: "6px 8px",
                     display: "flex",
                     alignItems: "center",
                   }}
                 >
                   <Bell size={11} />
-                  {pendingSplits.length > 0 && (
+                  {pendingSplits.length + todayAlerts.length > 0 && (
                     <span
                       style={{
                         position: "absolute",
@@ -2207,7 +2093,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         textAlign: "center",
                       }}
                     >
-                      {pendingSplits.length}
+                      {pendingSplits.length + todayAlerts.length}
                     </span>
                   )}
                 </button>
@@ -2359,6 +2245,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 )
               ).sort()}
               onTransactionsChange={handleTransactionsChange}
+              pendingSplits={pendingSplits}
+              splitEvents={splitEvents}
+              splitActionInFlight={splitActionInFlight}
+              onApproveSplit={approveSplit}
+              onDismissSplit={dismissSplit}
             />
           )}
 
