@@ -48,6 +48,10 @@ const PER_ASSET_CAP = 1000;
 // Permanent Cash account — cannot be deleted, only value and target editable
 const CASH_ID = "cash-permanent";
 
+// Alert log: how many entries to keep in storage vs. show in the panel.
+const MAX_ALERT_LOG = 50;
+const ALERT_DISPLAY_COUNT = 10;
+
 function ensureCashAccount(list) {
   const arr = Array.isArray(list) ? list : [];
   const hasCash = arr.some((h) => h && h.id === CASH_ID);
@@ -236,6 +240,41 @@ function computeNetQty(transactions) {
     else if (tx.side === "sell") net[t] -= Number(tx.qty);
   }
   return net;
+}
+
+// --- Alert log helpers ----------------------------------------------------
+// Group a newest-first alert list into date buckets, preserving order.
+// Returns [{ date, items }] with the most recent date first.
+function groupAlertsByDate(alerts) {
+  const groups = [];
+  const byDate = new Map();
+  for (const a of alerts) {
+    const d = a.sentDate || "—";
+    if (!byDate.has(d)) {
+      const bucket = { date: d, items: [] };
+      byDate.set(d, bucket);
+      groups.push(bucket);
+    }
+    byDate.get(d).items.push(a);
+  }
+  return groups;
+}
+
+// Human-friendly date header: "Today", "Yesterday", else "Mon D, YYYY".
+function formatAlertDate(iso, todayISO) {
+  if (!iso || iso === "—") return "Earlier";
+  if (iso === todayISO) return "Today";
+  const yesterday = new Date(new Date(todayISO + "T00:00:00Z").getTime() - 86400000)
+    .toISOString()
+    .slice(0, 10);
+  if (iso === yesterday) return "Yesterday";
+  const d = new Date(iso + "T00:00:00Z");
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 // --- Split detection helpers ----------------------------------------------
@@ -567,7 +606,17 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [pendingSplits, setPendingSplits] = useState([]);
   const [alertPanelOpen, setAlertPanelOpen] = useState(false);
   const [splitActionInFlight, setSplitActionInFlight] = useState(null); // key of split being processed
-  const [todayAlerts, setTodayAlerts] = useState([]); // dividend/earnings/bond-maturity alerts for today
+  // Rolling log of dividend/earnings/bond-maturity alerts, bundled by the date
+  // each was first detected ("sentDate"). Persisted in localStorage; read state
+  // and last-10 display are derived from it.
+  const [alertLog, setAlertLog] = useState(() => {
+    try {
+      const raw = localStorage.getItem("alertLog");
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
 
   // Manual asset form state
   const [showManualForm, setShowManualForm] = useState(false);
@@ -723,6 +772,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       localStorage.setItem("values_hidden", valuesHidden ? "1" : "0");
     } catch (e) {}
   }, [valuesHidden]);
+  // Persist the alert log so read state and bundling survive reloads.
+  useEffect(() => {
+    try {
+      localStorage.setItem("alertLog", JSON.stringify(alertLog));
+    } catch (e) {}
+  }, [alertLog]);
 
   // Sync state: tracks server-side persistence health.
   // "loading" while initial load; "synced" when up-to-date; "saving" mid-write;
@@ -778,7 +833,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           setSplitEvents(loadedSplitEvents);
           // Non-blocking: surface any unreflected splits via the Bell badge.
           refreshPendingSplits(txs, loadedSplitEvents);
-          refreshTodayAlerts(txs);
+          refreshAlerts(txs);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
@@ -1139,24 +1194,50 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
   }
 
-  // Fetch today's dividend payouts, earnings, and bond maturities for the alerts panel.
-  // Non-blocking; uses the same events Redis cache as the Events tab.
-  async function refreshTodayAlerts(txs) {
+  // Merge freshly detected alerts into the rolling log. Each new alert (by stable
+  // `id`) is stamped with the detection date as `sentDate` and `read: false`.
+  // Newest first; the stored log is capped at MAX_ALERT_LOG entries.
+  function mergeAlerts(detected, todayISO) {
+    if (!detected || !detected.length) return;
+    setAlertLog((prev) => {
+      const known = new Set(prev.map((a) => a.id));
+      const additions = detected
+        .filter((a) => !known.has(a.id))
+        .map((a) => ({ ...a, sentDate: todayISO, read: false }));
+      if (!additions.length) return prev;
+      return [...additions, ...prev].slice(0, MAX_ALERT_LOG);
+    });
+  }
+
+  function markAlertRead(id) {
+    setAlertLog((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
+  }
+
+  function markAllAlertsRead() {
+    setAlertLog((prev) => prev.map((a) => (a.read ? a : { ...a, read: true })));
+  }
+
+  // Detect today's dividend payouts, earnings, and bond maturities and merge them
+  // into the alert log. Non-blocking; uses the same events Redis cache as the
+  // Events tab. Dividend alerts compute the amount paid (qty held × $/share).
+  async function refreshAlerts(txs) {
     const todayISO = new Date().toISOString().slice(0, 10);
-    const alerts = [];
+    const netQty = computeNetQty(txs);
     // Bond maturity within 7 days — derived from transactions, no API needed.
     const CUSIP_RX = /^[0-9A-Z]{9}$/;
-    const seen = new Set();
+    const seenBond = new Set();
+    const bondAlerts = [];
     for (const tx of txs) {
       if (tx.assetClass !== "Bank Bonds" || !tx.maturityDate) continue;
       const cusip = (tx.ticker || "").toUpperCase();
-      if (!CUSIP_RX.test(cusip) || seen.has(cusip)) continue;
+      if (!CUSIP_RX.test(cusip) || seenBond.has(cusip)) continue;
       const daysLeft = Math.ceil(
         (new Date(tx.maturityDate + "T00:00:00Z") - new Date(todayISO + "T00:00:00Z")) / 86400000
       );
       if (daysLeft >= 0 && daysLeft <= 7) {
-        seen.add(cusip);
-        alerts.push({
+        seenBond.add(cusip);
+        bondAlerts.push({
+          id: `bond_maturity|${cusip}|${tx.maturityDate}`,
           type: "bond_maturity",
           ticker: cusip,
           message: daysLeft === 0 ? "Bond matures today" : `Bond matures in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`,
@@ -1164,21 +1245,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         });
       }
     }
-    setTodayAlerts(alerts);
+    mergeAlerts(bondAlerts, todayISO);
     // Fetch today's dividend payouts and earnings from events API.
     try {
       const ELIGIBLE = new Set(["Stocks", "Real Estate", "Alternative", "Bonds", "BRA Stocks", "Unallocated USD"]);
-      const net = {};
-      for (const tx of txs) {
-        const t = (tx.ticker || "").toUpperCase();
-        if (!t) continue;
-        if (tx.side === "buy") net[t] = (net[t] || 0) + (Number(tx.qty) || 0);
-        else if (tx.side === "sell") net[t] = (net[t] || 0) - (Number(tx.qty) || 0);
-      }
       const tickers = [
         ...new Set(
           txs
-            .filter((tx) => ELIGIBLE.has(tx.assetClass) && (net[(tx.ticker || "").toUpperCase()] || 0) > 0)
+            .filter((tx) => ELIGIBLE.has(tx.assetClass) && (netQty[(tx.ticker || "").toUpperCase()] || 0) > 0)
             .map((tx) => (tx.ticker || "").toUpperCase())
             .filter(
               (t) =>
@@ -1200,20 +1274,38 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       const events = Array.isArray(data.events) ? data.events : [];
       const seenPayout = new Set();
       const seenEarnings = new Set();
-      const newAlerts = [...alerts];
+      const apiAlerts = [];
       for (const ev of events) {
         if (ev.date !== todayISO) continue;
-        if (ev.type === "payout" && !seenPayout.has(ev.ticker)) {
-          seenPayout.add(ev.ticker);
-          newAlerts.push({ type: "dividend", ticker: ev.ticker, message: "Dividend paid today" });
-        } else if (ev.type === "earnings" && !seenEarnings.has(ev.ticker)) {
-          seenEarnings.add(ev.ticker);
-          newAlerts.push({ type: "earnings", ticker: ev.ticker, message: "Earnings today" });
+        const tk = (ev.ticker || "").toUpperCase();
+        if (ev.type === "payout" && !seenPayout.has(tk)) {
+          seenPayout.add(tk);
+          const qty = netQty[tk] || 0;
+          const perShare = Number(ev.amount) || 0;
+          const total = qty > 0 && perShare > 0 ? qty * perShare : 0;
+          apiAlerts.push({
+            id: `dividend|${tk}|${ev.date}`,
+            type: "dividend",
+            ticker: ev.ticker,
+            amount: perShare,
+            qtyHeld: qty,
+            total,
+            message: total > 0 ? `Dividend paid: ${fmtMoney(total)}` : "Dividend paid today",
+            detail: total > 0 ? `${fmtNum(qty)} sh × ${fmtMoney(perShare)}/sh` : null,
+          });
+        } else if (ev.type === "earnings" && !seenEarnings.has(tk)) {
+          seenEarnings.add(tk);
+          apiAlerts.push({
+            id: `earnings|${tk}|${ev.date}`,
+            type: "earnings",
+            ticker: ev.ticker,
+            message: "Earnings released today",
+          });
         }
       }
-      setTodayAlerts(newAlerts);
+      mergeAlerts(apiAlerts, todayISO);
     } catch {
-      /* silent — today alerts are best-effort */
+      /* silent — alerts are best-effort */
     }
   }
 
@@ -1653,6 +1745,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     };
   }, [holdings, chartGrouping]);
 
+  // Bell badge: unreviewed splits + unread alerts.
+  const unreadAlertCount = alertLog.filter((a) => !a.read).length;
+  const alertBadgeCount = pendingSplits.length + unreadAlertCount;
+
   return (
     <>
       <style>{FONT_IMPORT}</style>
@@ -1796,154 +1892,244 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   width: "100%",
                 }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: 16,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      letterSpacing: "0.2em",
-                      color: T.gold,
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    Alerts
-                  </div>
-                  <button
-                    onClick={() => setAlertPanelOpen(false)}
-                    style={{
-                      background: "transparent",
-                      border: "none",
-                      color: T.textDim,
-                      cursor: "pointer",
-                      padding: 4,
-                    }}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-
-                {pendingSplits.length === 0 && todayAlerts.length === 0 ? (
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      color: T.textDim,
-                      padding: "24px 8px",
-                      textAlign: "center",
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    No alerts — all clear.
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {pendingSplits.length > 0 && (
-                      <button
-                        onClick={() => {
-                          setActiveView("transactions");
-                          setAlertPanelOpen(false);
-                        }}
+                {(() => {
+                  const todayISO = new Date().toISOString().slice(0, 10);
+                  const displayed = alertLog.slice(0, ALERT_DISPLAY_COUNT);
+                  const groups = groupAlertsByDate(displayed);
+                  const hasUnread = alertLog.some((a) => !a.read);
+                  return (
+                    <>
+                      <div
                         style={{
                           display: "flex",
+                          justifyContent: "space-between",
                           alignItems: "center",
-                          gap: 12,
-                          padding: "12px 14px",
-                          background: "rgba(201,169,97,0.08)",
-                          border: `1px solid ${T.gold}44`,
-                          borderRadius: 4,
-                          cursor: "pointer",
-                          textAlign: "left",
-                          width: "100%",
+                          marginBottom: 16,
+                          gap: 10,
                         }}
                       >
-                        <AlertCircle size={14} style={{ color: T.gold, flexShrink: 0 }} />
-                        <div>
-                          <div
-                            style={{
-                              fontFamily: FONT_MONO,
-                              fontSize: 11,
-                              color: T.gold,
-                              letterSpacing: "0.08em",
-                            }}
-                          >
-                            {pendingSplits.length} split/grouping{pendingSplits.length !== 1 ? "s" : ""} pending review
-                          </div>
-                          <div
-                            style={{
-                              fontFamily: FONT_MONO,
-                              fontSize: 9,
-                              color: T.textFaint,
-                              marginTop: 3,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                            }}
-                          >
-                            Review in Transactions tab →
-                          </div>
-                        </div>
-                      </button>
-                    )}
-                    {todayAlerts.map((a, alertIdx) => {
-                      const isDividend = a.type === "dividend";
-                      const isEarnings = a.type === "earnings";
-                      const isBond = a.type === "bond_maturity";
-                      const color = isDividend ? T.green : isEarnings ? "#a978a9" : T.red;
-                      const bgColor = isDividend
-                        ? "rgba(125,211,164,0.06)"
-                        : isEarnings
-                        ? "rgba(169,120,169,0.06)"
-                        : T.redBg;
-                      const bdColor = isDividend
-                        ? T.green + "33"
-                        : isEarnings
-                        ? "#a978a944"
-                        : T.red + "33";
-                      const icon = isDividend ? (
-                        <Wallet size={14} style={{ color, flexShrink: 0 }} />
-                      ) : isEarnings ? (
-                        <TrendingUp size={14} style={{ color, flexShrink: 0 }} />
-                      ) : (
-                        <AlertCircle size={14} style={{ color, flexShrink: 0 }} />
-                      );
-                      return (
                         <div
-                          key={alertIdx}
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 12,
-                            padding: "12px 14px",
-                            background: bgColor,
-                            border: `1px solid ${bdColor}`,
-                            borderRadius: 4,
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            letterSpacing: "0.2em",
+                            color: T.gold,
+                            textTransform: "uppercase",
                           }}
                         >
-                          {icon}
-                          <div>
-                            <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
-                              {a.ticker}
-                            </span>
-                            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color, marginLeft: 8 }}>
-                              {a.message}
-                            </span>
-                            {a.detail && (
-                              <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint, marginTop: 2 }}>
-                                {a.detail}
-                              </div>
-                            )}
-                          </div>
+                          Alerts
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {hasUnread && (
+                            <button
+                              onClick={markAllAlertsRead}
+                              style={{
+                                background: "transparent",
+                                border: `1px solid ${T.border}`,
+                                color: T.textDim,
+                                cursor: "pointer",
+                                padding: "4px 8px",
+                                borderRadius: 3,
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                letterSpacing: "0.1em",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              Mark all read
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setAlertPanelOpen(false)}
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: T.textDim,
+                              cursor: "pointer",
+                              padding: 4,
+                            }}
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {pendingSplits.length === 0 && alertLog.length === 0 ? (
+                        <div
+                          style={{
+                            fontFamily: FONT_MONO,
+                            fontSize: 12,
+                            color: T.textDim,
+                            padding: "24px 8px",
+                            textAlign: "center",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          No alerts — all clear.
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                          {pendingSplits.length > 0 && (
+                            <button
+                              onClick={() => {
+                                setActiveView("transactions");
+                                setAlertPanelOpen(false);
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 12,
+                                padding: "12px 14px",
+                                background: "rgba(201,169,97,0.08)",
+                                border: `1px solid ${T.gold}44`,
+                                borderRadius: 4,
+                                cursor: "pointer",
+                                textAlign: "left",
+                                width: "100%",
+                              }}
+                            >
+                              <AlertCircle size={14} style={{ color: T.gold, flexShrink: 0 }} />
+                              <div>
+                                <div
+                                  style={{
+                                    fontFamily: FONT_MONO,
+                                    fontSize: 11,
+                                    color: T.gold,
+                                    letterSpacing: "0.08em",
+                                  }}
+                                >
+                                  {pendingSplits.length} split/grouping{pendingSplits.length !== 1 ? "s" : ""} pending review
+                                </div>
+                                <div
+                                  style={{
+                                    fontFamily: FONT_MONO,
+                                    fontSize: 9,
+                                    color: T.textFaint,
+                                    marginTop: 3,
+                                    letterSpacing: "0.1em",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  Review in Transactions tab →
+                                </div>
+                              </div>
+                            </button>
+                          )}
+
+                          {groups.map((group) => (
+                            <div key={group.date}>
+                              <div
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 9,
+                                  letterSpacing: "0.15em",
+                                  textTransform: "uppercase",
+                                  color: T.textFaint,
+                                  marginBottom: 8,
+                                }}
+                              >
+                                {formatAlertDate(group.date, todayISO)}
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                {group.items.map((a) => {
+                                  const isDividend = a.type === "dividend";
+                                  const isEarnings = a.type === "earnings";
+                                  const color = isDividend ? T.green : isEarnings ? "#a978a9" : T.red;
+                                  const bgColor = a.read
+                                    ? "transparent"
+                                    : isDividend
+                                    ? "rgba(125,211,164,0.06)"
+                                    : isEarnings
+                                    ? "rgba(169,120,169,0.06)"
+                                    : T.redBg;
+                                  const bdColor = a.read
+                                    ? T.borderSoft
+                                    : isDividend
+                                    ? T.green + "33"
+                                    : isEarnings
+                                    ? "#a978a944"
+                                    : T.red + "33";
+                                  const icon = isDividend ? (
+                                    <Wallet size={14} style={{ color, flexShrink: 0, opacity: a.read ? 0.5 : 1 }} />
+                                  ) : isEarnings ? (
+                                    <TrendingUp size={14} style={{ color, flexShrink: 0, opacity: a.read ? 0.5 : 1 }} />
+                                  ) : (
+                                    <AlertCircle size={14} style={{ color, flexShrink: 0, opacity: a.read ? 0.5 : 1 }} />
+                                  );
+                                  return (
+                                    <div
+                                      key={a.id}
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 12,
+                                        padding: "12px 14px",
+                                        background: bgColor,
+                                        border: `1px solid ${bdColor}`,
+                                        borderRadius: 4,
+                                        opacity: a.read ? 0.6 : 1,
+                                      }}
+                                    >
+                                      {icon}
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
+                                          {a.ticker}
+                                        </span>
+                                        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color, marginLeft: 8 }}>
+                                          {isDividend && a.total > 0
+                                            ? `Dividend paid: ${maskMoney(a.total, valuesHidden)}`
+                                            : a.message}
+                                        </span>
+                                        {a.detail && (
+                                          <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint, marginTop: 2 }}>
+                                            {isDividend && a.total > 0 && valuesHidden
+                                              ? `${fmtNum(a.qtyHeld)} sh`
+                                              : a.detail}
+                                          </div>
+                                        )}
+                                      </div>
+                                      {a.read ? (
+                                        <span
+                                          style={{
+                                            fontFamily: FONT_MONO,
+                                            fontSize: 8,
+                                            letterSpacing: "0.12em",
+                                            textTransform: "uppercase",
+                                            color: T.textFaint,
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          Read
+                                        </span>
+                                      ) : (
+                                        <button
+                                          onClick={() => markAlertRead(a.id)}
+                                          title="Mark as read"
+                                          style={{
+                                            background: "transparent",
+                                            border: "none",
+                                            color: T.textDim,
+                                            cursor: "pointer",
+                                            padding: 2,
+                                            display: "flex",
+                                            alignItems: "center",
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          <CheckCircle2 size={15} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -2058,22 +2244,22 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 <button
                   onClick={() => setAlertPanelOpen(true)}
                   title={
-                    pendingSplits.length + todayAlerts.length > 0
-                      ? `${pendingSplits.length + todayAlerts.length} alert${pendingSplits.length + todayAlerts.length === 1 ? "" : "s"}`
+                    alertBadgeCount > 0
+                      ? `${alertBadgeCount} alert${alertBadgeCount === 1 ? "" : "s"}`
                       : "Alerts — none"
                   }
                   style={{
                     position: "relative",
-                    background: pendingSplits.length + todayAlerts.length > 0 ? "rgba(201, 169, 97, 0.12)" : "transparent",
-                    border: `1px solid ${pendingSplits.length + todayAlerts.length > 0 ? T.gold : T.border}`,
-                    color: pendingSplits.length + todayAlerts.length > 0 ? T.gold : T.textDim,
+                    background: alertBadgeCount > 0 ? "rgba(201, 169, 97, 0.12)" : "transparent",
+                    border: `1px solid ${alertBadgeCount > 0 ? T.gold : T.border}`,
+                    color: alertBadgeCount > 0 ? T.gold : T.textDim,
                     padding: "6px 8px",
                     display: "flex",
                     alignItems: "center",
                   }}
                 >
                   <Bell size={11} />
-                  {pendingSplits.length + todayAlerts.length > 0 && (
+                  {alertBadgeCount > 0 && (
                     <span
                       style={{
                         position: "absolute",
@@ -2093,7 +2279,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         textAlign: "center",
                       }}
                     >
-                      {pendingSplits.length + todayAlerts.length}
+                      {alertBadgeCount}
                     </span>
                   )}
                 </button>

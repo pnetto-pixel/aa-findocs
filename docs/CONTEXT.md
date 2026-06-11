@@ -66,7 +66,7 @@ Single page com view switcher no topo:
 
 O switcher fica logo abaixo do H1 dinâmico. State `activeView` em `PortfolioTracker`.
 
-No header do app há um **ícone de notificação global (Bell)** com badge de contagem para splits/groupings pendentes de revisão (ver "Feature: Split Detection & Approval"). Clicar abre o painel de revisão modal.
+No header do app há um **ícone de notificação global (Bell)** com badge de contagem (splits pendentes + alertas não lidos). Clicar abre o **painel de Alerts** (dividendos pagos hoje, earnings hoje, bond maturities ≤7d, splits pendentes). A revisão/aprovação de splits em si vive na Tab Transactions (card "Splits / Groupings"). Ver "Feature: Split Detection & Approval".
 
 -----
 
@@ -473,12 +473,22 @@ Array no blob de `/api/transactions` (espelha `bondIncome`):
 
 `applySplitToTransactions(transactions, { ticker, date, numerator, denominator })` — module-level, ajusta `qty × (num/den)`, `price × (den/num)`, grava audit trail (`splitAdjusted`, `originalQty`, `originalPrice`, `splitDate`), guard rigoroso `tx.date < splitDate`. `SplitModal.handleApply` foi refatorado para usa-lo (o caminho manual agora tambem grava `splitDate`). `saveTransactionsToServer` ganhou 4o arg opcional `splitEvents`.
 
-### UI e fluxo (`src/App.jsx`)
+### UI e fluxo (atualizado nos PRs #105/#106)
 
-- Icone Bell + badge no header. Funcao pura `detectPendingSplits(transactions, detectedSplits, splitEvents)` (idempotente via decided-set + guard `splitAdjusted && splitDate`). `refreshPendingSplits` (POST nao-bloqueante, failure-silent) dispara no load e apos `handleTransactionsChange`.
-- Painel modal de revisao com **preview por split** (qty→nova, preco→novo, total invariante) e botoes **Approve** / **Dismiss**.
-- **Approve:** aplica o ajuste via `applySplitToTransactions`, grava entry `status: "applied"` + data do split, persiste (omite `bondIncome` → servidor preserva), dispara cascade via `handleTransactionsChange` → `applyTxQty` → cache perf-history v12 invalidado.
-- **Dismiss:** grava `status: "dismissed"`, persiste, some da lista. Importante porque dados Fidelity geralmente ja vem split-adjusted — o usuario decide por split.
+- Funcao pura `detectPendingSplits(transactions, detectedSplits, splitEvents)` (idempotente via decided-set + guard `splitAdjusted && splitDate`). `refreshPendingSplits` (POST nao-bloqueante, failure-silent) dispara no load e apos `handleTransactionsChange`.
+- **Revisao de splits vive na Tab Transactions** (PR #105): card colapsavel "Splits / Groupings" (`src/Transactions.jsx`, abaixo da toolbar, acima do form de nova tx) com seção **Pending** (preview por split: qty→nova, preco→novo, total invariante; botoes Approve/Dismiss) e seção **History** colapsavel (`splitEvents` decididos). `TransactionsView` recebe `pendingSplits`, `splitEvents`, `splitActionInFlight`, `onApproveSplit`, `onDismissSplit` como props de `App.jsx`. O botão "Split" manual antigo foi removido da toolbar (`SplitModal` permanece no arquivo só para exportar `applySplitToTransactions`).
+- **Approve** (`approveSplit` em `App.jsx`): aplica o ajuste via `applySplitToTransactions`, grava entry `status: "applied"` + data do split, persiste (omite `bondIncome` → servidor preserva), dispara cascade via `handleTransactionsChange` → `applyTxQty` → cache perf-history v12 invalidado. `splitActionInFlight` (key do split) desabilita os botoes + mostra spinner enquanto in-flight.
+- **Dismiss** (`dismissSplit`): grava `status: "dismissed"`, persiste, some da lista. Importante porque dados Fidelity geralmente ja vem split-adjusted — o usuario decide por split.
+
+### Painel de Alerts (Bell no header — PRs #105/#106)
+
+O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** multi-propósito. Tipos de alerta:
+- **Split/Grouping pendente** → linha clicável que navega para a Tab Transactions (onde fica o card de revisão).
+- **Dividend paid today** → evento `payout` de `/api/events` do dia; calcula o valor pago `qtyHeld × $/share` (`computeNetQty` + `ev.amount`), exibe "Dividend paid: $X" + detalhe "N sh × $Y/sh", respeitando `valuesHidden`.
+- **Earnings released today** → evento `earnings` de `/api/events` do dia.
+- **Bond maturity em ≤7 dias** → derivado localmente das transactions (sem API).
+
+`refreshAlerts(txs)` faz merge dos alertas detectados num **log rolante persistido em `localStorage`** (`alertLog`, cap `MAX_ALERT_LOG=50`, exibe os últimos `ALERT_DISPLAY_COUNT=10`). Cada alerta tem `id` estável (`tipo|ticker|data`), `sentDate` (data de detecção) e `read`. O painel agrupa os 10 últimos por `sentDate` via `groupAlertsByDate()` + `formatAlertDate()` ("Today"/"Yesterday"/"Mon D, YYYY"). Read state: `markAlertRead(id)` (botão check por alerta) + `markAllAlertsRead()` (botão no header); lidos ficam dimmed. Badge do Bell = `pendingSplits + alertas não lidos`.
 
 ### Fora do escopo
 
