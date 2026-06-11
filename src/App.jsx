@@ -566,6 +566,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [splitEvents, setSplitEvents] = useState([]);
   const [pendingSplits, setPendingSplits] = useState([]);
   const [splitReviewOpen, setSplitReviewOpen] = useState(false);
+  const [splitActionInFlight, setSplitActionInFlight] = useState(null); // key of split being processed
+  const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
 
   // Manual asset form state
   const [showManualForm, setShowManualForm] = useState(false);
@@ -1139,6 +1141,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Approve a pending split: adjust history, record the decision, persist, and
   // cascade the holdings/qty + perf-cache invalidation via handleTransactionsChange.
   async function approveSplit(sp) {
+    const key = `${sp.ticker}|${sp.date}|${sp.numerator}|${sp.denominator}`;
+    setSplitActionInFlight(key);
     const next = applySplitToTransactions(transactions, sp);
     const nextSplitEvents = [
       ...splitEvents,
@@ -1156,8 +1160,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       await saveTransactionsToServer(auth, next, undefined, nextSplitEvents);
     } catch (e) {
       setToast({ kind: "error", message: `Split save failed: ${e.message || "error"}` });
+      setSplitActionInFlight(null);
       return;
     }
+    setSplitActionInFlight(null);
     setSplitEvents(nextSplitEvents);
     setTransactions(next);
     setPendingSplits((prev) =>
@@ -1173,6 +1179,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Dismiss a pending split: record the decision so it never re-surfaces.
   // Transactions are left unchanged.
   async function dismissSplit(sp) {
+    const key = `${sp.ticker}|${sp.date}|${sp.numerator}|${sp.denominator}`;
+    setSplitActionInFlight(key);
     const nextSplitEvents = [
       ...splitEvents,
       {
@@ -1188,8 +1196,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       await saveTransactionsToServer(auth, transactions, undefined, nextSplitEvents);
     } catch (e) {
       setToast({ kind: "error", message: `Dismiss failed: ${e.message || "error"}` });
+      setSplitActionInFlight(null);
       return;
     }
+    setSplitActionInFlight(null);
     setSplitEvents(nextSplitEvents);
     setPendingSplits((prev) =>
       prev.filter(
@@ -1788,6 +1798,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         color: T.text,
                         whiteSpace: "nowrap",
                       };
+                      const isThisInFlight = splitActionInFlight === key;
+                      const anyInFlight = splitActionInFlight !== null;
                       return (
                         <div
                           key={key}
@@ -1893,12 +1905,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               gap: 8,
                               padding: "10px 12px",
                               borderTop: `1px solid ${T.borderSoft}`,
+                              alignItems: "center",
                             }}
                           >
                             <button
                               onClick={() => approveSplit(sp)}
+                              disabled={anyInFlight}
                               style={{
-                                background: T.gold,
+                                background: anyInFlight ? "rgba(201,169,97,0.4)" : T.gold,
                                 border: "none",
                                 color: "#0b0d10",
                                 padding: "8px 14px",
@@ -1906,31 +1920,142 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                                 fontSize: 10,
                                 letterSpacing: "0.15em",
                                 textTransform: "uppercase",
-                                cursor: "pointer",
+                                cursor: anyInFlight ? "not-allowed" : "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
                               }}
                             >
-                              Approve
+                              {isThisInFlight ? (
+                                <>
+                                  <RefreshCw size={10} className="spin" />
+                                  Applying…
+                                </>
+                              ) : "Approve"}
                             </button>
                             <button
                               onClick={() => dismissSplit(sp)}
+                              disabled={anyInFlight}
                               style={{
                                 background: "transparent",
-                                border: `1px solid ${T.border}`,
-                                color: T.textDim,
+                                border: `1px solid ${anyInFlight ? T.borderSoft : T.border}`,
+                                color: anyInFlight ? T.textFaint : T.textDim,
                                 padding: "8px 14px",
                                 fontFamily: FONT_MONO,
                                 fontSize: 10,
                                 letterSpacing: "0.15em",
                                 textTransform: "uppercase",
-                                cursor: "pointer",
+                                cursor: anyInFlight ? "not-allowed" : "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
                               }}
                             >
-                              Dismiss
+                              {isThisInFlight ? (
+                                <>
+                                  <RefreshCw size={10} className="spin" />
+                                  Dismissing…
+                                </>
+                              ) : "Dismiss"}
                             </button>
                           </div>
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {/* History: decided splits */}
+                {splitEvents.length > 0 && (
+                  <div style={{ marginTop: 20 }}>
+                    <button
+                      onClick={() => setSplitHistoryOpen((v) => !v)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        width: "100%",
+                        background: "transparent",
+                        border: "none",
+                        borderTop: `1px solid ${T.borderSoft}`,
+                        padding: "12px 0 0",
+                        cursor: "pointer",
+                        color: T.textDim,
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        letterSpacing: "0.15em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      <ChevronDown
+                        size={12}
+                        style={{
+                          transform: splitHistoryOpen ? "none" : "rotate(-90deg)",
+                          transition: "transform 0.2s",
+                        }}
+                      />
+                      History ({splitEvents.length})
+                    </button>
+                    {splitHistoryOpen && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                        {[...splitEvents].reverse().map((ev, i) => {
+                          const isApplied = ev.status === "applied";
+                          const num = Number(ev.numerator);
+                          const den = Number(ev.denominator);
+                          const isReverse = den > num;
+                          const factorLabel = isReverse ? `${num}:${den} reverse` : `${num}:${den}`;
+                          const appliedDate = ev.appliedAt
+                            ? new Date(ev.appliedAt).toLocaleString("en-US", {
+                                month: "short", day: "numeric", year: "numeric",
+                                hour: "numeric", minute: "2-digit",
+                              })
+                            : ev.date;
+                          return (
+                            <div
+                              key={i}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                                flexWrap: "wrap",
+                                padding: "8px 10px",
+                                background: T.card,
+                                border: `1px solid ${T.borderSoft}`,
+                                borderRadius: 4,
+                              }}
+                            >
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
+                                {ev.ticker}
+                              </span>
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: isReverse ? T.red : T.green, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                                {factorLabel}
+                              </span>
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint }}>
+                                {ev.date}
+                              </span>
+                              <span
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 9,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  color: isApplied ? T.green : T.textFaint,
+                                  background: isApplied ? "rgba(125,211,164,0.1)" : "transparent",
+                                  border: `1px solid ${isApplied ? T.green + "44" : T.borderSoft}`,
+                                  padding: "2px 6px",
+                                  borderRadius: 2,
+                                }}
+                              >
+                                {isApplied ? "Applied" : "Dismissed"}
+                              </span>
+                              <span style={{ marginLeft: "auto", fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
+                                {appliedDate}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2006,37 +2131,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             <div
               style={{
                 display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
+                justifyContent: "flex-end",
                 marginBottom: 4,
               }}
             >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.2em",
-                  color: T.gold,
-                  textTransform: "uppercase",
-                }}
-              >
-                Last Refreshed · {(() => {
-                  const times = holdings
-                    .map((h) => h.lastUpdated)
-                    .filter(Boolean)
-                    .map((t) => new Date(t).getTime())
-                    .filter((n) => !isNaN(n));
-                  if (times.length === 0) return "—";
-                  const d = new Date(Math.max(...times));
-                  return d.toLocaleString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                    year: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  });
-                })()}
-              </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button
                   onClick={refreshAll}
@@ -2142,6 +2240,34 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   <LogOut size={11} />
                 </button>
               </div>
+            </div>
+            <div
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.2em",
+                color: T.gold,
+                textTransform: "uppercase",
+                marginTop: 6,
+                textAlign: "right",
+              }}
+            >
+              Last Refreshed · {(() => {
+                const times = holdings
+                  .map((h) => h.lastUpdated)
+                  .filter(Boolean)
+                  .map((t) => new Date(t).getTime())
+                  .filter((n) => !isNaN(n));
+                if (times.length === 0) return "—";
+                const d = new Date(Math.max(...times));
+                return d.toLocaleString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                });
+              })()}
             </div>
             <h1
               style={{

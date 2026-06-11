@@ -1665,7 +1665,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [posOpen, setPosOpen] = useState(false);
   const [histOpen, setHistOpen] = useState(false);
   const [yoyOpen, setYoyOpen] = useState(false);
-  const [bondProjOpen, setBondProjOpen] = useState(true);
+  const [bondProjOpen, setBondProjOpen] = useState(false);
 
   const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
