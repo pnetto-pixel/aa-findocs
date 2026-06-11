@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, Scissors } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -2152,6 +2152,442 @@ function downloadCSV(filename, content) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// --- Split Modal -----------------------------------------------------------
+// CUSIP pattern used to block non-stock tickers from splits.
+const CUSIP_RX_SPLIT = /^[0-9]{3}[A-Z0-9]{6}[0-9]$/;
+
+function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }) {
+  const [form, setForm] = useState({ ticker: "", date: "", type: "split", numerator: "", denominator: "" });
+  const [showTickerList, setShowTickerList] = useState(false);
+
+  const todayStr = todayISO();
+
+  function resetForm() {
+    setForm({ ticker: "", date: "", type: "split", numerator: "", denominator: "" });
+  }
+
+  function handleClose() {
+    resetForm();
+    onClose();
+  }
+
+  const tickerSuggestions = useMemo(() => {
+    const q = (form.ticker || "").trim().toUpperCase();
+    if (!q) return [];
+    return (knownTickers || [])
+      .filter((t) => t.toUpperCase().includes(q) && t.toUpperCase() !== q)
+      .slice(0, 6);
+  }, [form.ticker, knownTickers]);
+
+  // Validation
+  const num = parseFloat(form.numerator);
+  const den = parseFloat(form.denominator);
+  const ticker = (form.ticker || "").trim().toUpperCase();
+  const date = (form.date || "").trim();
+
+  const tickerErr = (() => {
+    if (!ticker) return null;
+    if (CUSIP_RX_SPLIT.test(ticker)) return "CUSIPs cannot be split-adjusted";
+    if (/^tesouro-/i.test(ticker)) return "Tesouro tickers cannot be split-adjusted";
+    return null;
+  })();
+
+  const dateErr = (() => {
+    if (!date) return null;
+    if (date > todayStr) return "Date cannot be in the future";
+    return null;
+  })();
+
+  const factorErr = (() => {
+    if (!form.numerator || !form.denominator) return null;
+    if (!isFinite(num) || num <= 0) return "Numerator must be > 0";
+    if (!isFinite(den) || den <= 0) return "Denominator must be > 0";
+    if (num === den) return "Factor 1:1 has no effect";
+    return null;
+  })();
+
+  const hasAllInputs = ticker && date && form.numerator && form.denominator;
+  const isValid = hasAllInputs && !tickerErr && !dateErr && !factorErr;
+
+  // Preview: affected transactions
+  const affected = useMemo(() => {
+    if (!isValid) return [];
+    return transactions.filter(
+      (tx) => (tx.ticker || "").toUpperCase() === ticker && tx.date < date
+    );
+  }, [transactions, ticker, date, isValid]);
+
+  const hasNonIntegerQty = affected.some((tx) => {
+    const newQty = tx.qty * (num / den);
+    return Math.abs(newQty - Math.round(newQty)) > 0.0001;
+  });
+
+  function handleApply() {
+    if (!isValid || affected.length === 0) return;
+    const next = transactions.map((tx) => {
+      if ((tx.ticker || "").toUpperCase() !== ticker || tx.date >= date) return tx;
+      const origQty = tx.qty;
+      const origPrice = tx.price;
+      const newQty = parseFloat((origQty * (num / den)).toFixed(6));
+      const newPrice = parseFloat((origPrice * (den / num)).toFixed(6));
+      return {
+        ...tx,
+        qty: newQty,
+        price: newPrice,
+        splitAdjusted: true,
+        originalQty: origQty,
+        originalPrice: origPrice,
+      };
+    });
+    onApply(next);
+    handleClose();
+  }
+
+  if (!open) return null;
+
+  const inputStyle = {
+    background: T.cardElev,
+    border: `1px solid ${T.border}`,
+    color: T.text,
+    padding: "9px 11px",
+    fontSize: 13,
+    fontFamily: FONT_MONO,
+    borderRadius: 2,
+    width: "100%",
+    boxSizing: "border-box",
+    outline: "none",
+  };
+  const labelStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.18em",
+    color: T.textDim,
+    textTransform: "uppercase",
+    marginBottom: 6,
+  };
+  const errStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 11,
+    color: T.red,
+    marginTop: 4,
+  };
+
+  const tdH = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.10em",
+    textTransform: "uppercase",
+    fontWeight: 500,
+    padding: "7px 10px",
+    borderBottom: `1px solid ${T.border}`,
+    color: T.textFaint,
+    whiteSpace: "nowrap",
+  };
+  const tdB = {
+    fontFamily: FONT_MONO,
+    fontSize: 12,
+    padding: "7px 10px",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    color: T.text,
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.75)",
+        zIndex: 300,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "24px 16px",
+        overflowY: "auto",
+      }}
+      onClick={handleClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: T.cardElev,
+          border: `1px solid ${T.border}`,
+          padding: 20,
+          maxWidth: 500,
+          width: "100%",
+          borderRadius: 4,
+        }}
+      >
+        {/* Modal header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <div style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.2em",
+            color: T.gold,
+            textTransform: "uppercase",
+          }}>
+            Split / Reverse Split
+          </div>
+          <button
+            onClick={handleClose}
+            style={{ background: "transparent", border: "none", color: T.textDim, cursor: "pointer", padding: 4 }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Inputs */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+          {/* Ticker */}
+          <div style={{ gridColumn: "1 / -1", position: "relative" }}>
+            <div style={labelStyle}>Ticker</div>
+            <input
+              type="text"
+              value={form.ticker}
+              onChange={(e) => setForm((f) => ({ ...f, ticker: e.target.value.toUpperCase() }))}
+              onFocus={() => setShowTickerList(true)}
+              onBlur={() => setTimeout(() => setShowTickerList(false), 150)}
+              placeholder="AAPL"
+              style={{ ...inputStyle, textTransform: "uppercase" }}
+            />
+            {tickerErr && <div style={errStyle}>{tickerErr}</div>}
+            {showTickerList && tickerSuggestions.length > 0 && (
+              <div style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                right: 0,
+                background: T.cardElev,
+                border: `1px solid ${T.border}`,
+                borderTop: "none",
+                zIndex: 10,
+                maxHeight: 160,
+                overflowY: "auto",
+              }}>
+                {tickerSuggestions.map((t) => (
+                  <button
+                    key={t}
+                    onMouseDown={() => setForm((f) => ({ ...f, ticker: t }))}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      color: T.gold,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      padding: "9px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Date */}
+          <div>
+            <div style={labelStyle}>Split Date</div>
+            <input
+              type="date"
+              value={form.date}
+              onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+              style={inputStyle}
+            />
+            {dateErr && <div style={errStyle}>{dateErr}</div>}
+          </div>
+
+          {/* Type */}
+          <div>
+            <div style={labelStyle}>Type</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {["split", "reverse"].map((t) => {
+                const active = form.type === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setForm((f) => ({ ...f, type: t }))}
+                    style={{
+                      flex: 1,
+                      background: active ? "rgba(201,169,97,0.12)" : "transparent",
+                      border: `1px solid ${active ? T.gold : T.border}`,
+                      color: active ? T.gold : T.textDim,
+                      padding: "9px 6px",
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.10em",
+                      textTransform: "uppercase",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {t === "split" ? "Split" : "Reverse"}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Factor */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={labelStyle}>Factor — New : Old</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number"
+                value={form.numerator}
+                onChange={(e) => setForm((f) => ({ ...f, numerator: e.target.value }))}
+                placeholder="10"
+                min="0.000001"
+                step="any"
+                style={{ ...inputStyle, width: "100%" }}
+              />
+              <span style={{ fontFamily: FONT_MONO, fontSize: 16, color: T.textDim, flexShrink: 0 }}>:</span>
+              <input
+                type="number"
+                value={form.denominator}
+                onChange={(e) => setForm((f) => ({ ...f, denominator: e.target.value }))}
+                placeholder="1"
+                min="0.000001"
+                step="any"
+                style={{ ...inputStyle, width: "100%" }}
+              />
+            </div>
+            {factorErr && <div style={errStyle}>{factorErr}</div>}
+            {isFinite(num) && isFinite(den) && den > 0 && !factorErr && (
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 4 }}>
+                Each share becomes {(num / den).toFixed(4).replace(/\.?0+$/, "")} shares. Price divided by same factor.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Preview */}
+        {isValid && (
+          <div style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderRadius: 4,
+            marginBottom: 16,
+            overflow: "hidden",
+          }}>
+            <div style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              color: T.textDim,
+              padding: "10px 12px",
+              borderBottom: `1px solid ${T.borderSoft}`,
+            }}>
+              Preview
+            </div>
+
+            {affected.length === 0 ? (
+              <div style={{ padding: "12px", fontFamily: FONT_MONO, fontSize: 12, color: T.textDim }}>
+                No transactions found for {ticker} before {date}.
+              </div>
+            ) : (
+              <>
+                {hasNonIntegerQty && (
+                  <div style={{
+                    padding: "8px 12px",
+                    background: "rgba(232,140,140,0.08)",
+                    borderBottom: `1px solid ${T.borderSoft}`,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.red,
+                  }}>
+                    Warning: some resulting quantities are fractional (e.g. 0.5 shares in reverse split).
+                  </div>
+                )}
+                <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                  <table style={{ width: "100%", minWidth: 460, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...tdH, textAlign: "left" }}>Date</th>
+                        <th style={{ ...tdH, textAlign: "left" }}>Side</th>
+                        <th style={{ ...tdH, textAlign: "right" }}>Qty</th>
+                        <th style={{ ...tdH, textAlign: "center", color: T.textFaint, fontSize: 12, padding: "7px 4px" }}>{"->"}</th>
+                        <th style={{ ...tdH, textAlign: "right" }}>New Qty</th>
+                        <th style={{ ...tdH, textAlign: "right" }}>Price</th>
+                        <th style={{ ...tdH, textAlign: "center", color: T.textFaint, fontSize: 12, padding: "7px 4px" }}>{"->"}</th>
+                        <th style={{ ...tdH, textAlign: "right" }}>New Price</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {affected.map((tx) => {
+                        const newQty = parseFloat((tx.qty * (num / den)).toFixed(6));
+                        const newPrice = parseFloat((tx.price * (den / num)).toFixed(6));
+                        const isNonInt = Math.abs(newQty - Math.round(newQty)) > 0.0001;
+                        return (
+                          <tr key={tx.id}>
+                            <td style={{ ...tdB, textAlign: "left" }}>{tx.date}</td>
+                            <td style={{ ...tdB, textAlign: "left", color: tx.side === "buy" ? T.green : T.red }}>{tx.side[0].toUpperCase()}</td>
+                            <td style={{ ...tdB, textAlign: "right" }}>{tx.qty}</td>
+                            <td style={{ ...tdB, textAlign: "center", color: T.textFaint }}>{">"}</td>
+                            <td style={{ ...tdB, textAlign: "right", color: isNonInt ? T.red : T.gold }}>{newQty}</td>
+                            <td style={{ ...tdB, textAlign: "right" }}>{"$"}{tx.price}</td>
+                            <td style={{ ...tdB, textAlign: "center", color: T.textFaint }}>{">"}</td>
+                            <td style={{ ...tdB, textAlign: "right", color: T.gold }}>{"$"}{newPrice}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.textDim, borderTop: `1px solid ${T.borderSoft}` }}>
+                  {affected.length} transaction{affected.length === 1 ? "" : "s"} will be adjusted
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            onClick={handleApply}
+            disabled={!isValid || affected.length === 0 || busy}
+            style={{
+              background: isValid && affected.length > 0 && !busy ? T.red : T.borderSoft,
+              border: "none",
+              color: isValid && affected.length > 0 && !busy ? "#0b0d10" : T.textFaint,
+              padding: "10px 16px",
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              cursor: isValid && affected.length > 0 && !busy ? "pointer" : "not-allowed",
+              opacity: isValid && affected.length > 0 && !busy ? 1 : 0.5,
+            }}
+          >
+            Apply Split
+          </button>
+          <button
+            onClick={handleClose}
+            style={{
+              background: "transparent",
+              border: `1px solid ${T.border}`,
+              color: T.textDim,
+              padding: "10px 16px",
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Import Modal ----------------------------------------------------------
 
 const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
@@ -3387,6 +3823,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
+  const [splitModalOpen, setSplitModalOpen] = useState(false);
   // Ticker resolution status: { [TICKER]: "ok" | "error" } — cached in localStorage
   // so we don't re-hit the price API for already-validated tickers every load.
   const [tickerStatus, setTickerStatus] = useState(() => {
@@ -3553,6 +3990,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     verifyTickers(newTxs);
   }
 
+  async function handleSplitApply(nextTransactions) {
+    // nextTransactions is the full array with split-adjusted entries already set.
+    // persist() saves to server, updates local state, and fires onTransactionsChange.
+    await persist(nextTransactions);
+  }
+
   function handleExport() {
     const csv = transactionsToCSV(transactions);
     const stamp = new Date().toISOString().slice(0, 10);
@@ -3677,6 +4120,29 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                 Export
               </button>
             )}
+            {transactions.length > 0 && (
+              <button
+                onClick={() => setSplitModalOpen(true)}
+                title="Apply stock split or reverse split to transaction history"
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.border}`,
+                  color: T.textDim,
+                  padding: "8px 12px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Scissors size={12} />
+                Split
+              </button>
+            )}
             <button
               onClick={() => setFormOpen(true)}
               style={{
@@ -3737,6 +4203,15 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         onClose={() => setImportOpen(false)}
         onConfirm={handleImport}
         existingCount={transactions.length}
+      />
+
+      <SplitModal
+        open={splitModalOpen}
+        onClose={() => setSplitModalOpen(false)}
+        onApply={handleSplitApply}
+        transactions={transactions}
+        knownTickers={knownTickers}
+        busy={saving}
       />
     </div>
   );
