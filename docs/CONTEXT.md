@@ -139,6 +139,8 @@ Transações antigas sem `assetClass` recebem classe via `inferAssetClass()` no 
 
 Add form com campos: date, side (buy/sell), ticker (com autocomplete de tickers conhecidos), qty, price, assetClass (select), fee, notes.
 
+**Validacao de ticker (PR #107):** no onBlur do campo Ticker, `validateTickerViaAPI(ticker, auth)` chama `GET /api/price?ticker=X` e exibe erro inline (`tickerError`) se a API retornar resposta negativa explicita. Falha de rede e silenciosa (nao bloqueia o submit). `shouldSkipValidation(ticker, assetClass)` pula a validacao para: tickers `tesouro-*`, classe `BRA Fixed Income`, classe `Bank Bonds`, e CUSIPs (9 chars alfanumericos). `handleSubmit` tambem guarda enquanto `tickerValidating` estiver true.
+
 ### Tabela (responsiva, cabe em iPhone ~380px)
 
 Layout fixo (`tableLayout: fixed`) com colgroup. Wrapper com `overflowX: auto` + `WebkitOverflowScrolling: touch` para scroll horizontal isolado. `minWidth: 760px` na tabela. Colunas:
@@ -376,7 +378,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
   - **Filtros de ticker e asset class no bar chart** (PR #89): dois dropdowns single-select acima do bar chart. Opcoes derivadas dos eventos carregados (tickers unicos + classes unicas, ordenados). Afetam apenas o grafico — KPIs, Position Dividends e Dividend History ficam inalterados. Indicador visual: borda dourada no `<select>` quando o filtro nao esta em "All". Sem novo fetch ou mudanca de API.
   - **Y/Y nos KPIs YTD e This Month** (PR #62): variacao percentual ano-a-ano exibida abaixo do valor principal. `priorYtd` e `priorMonth` calculados no useMemo `kpis`.
   - **Comparador Mes Anterior vs Mes Atual** (PR #64): bloco "Month vs Month" no topo do card. Dois cards lado a lado — "Prev Month" (mes anterior completo) e "This Month" (acumulado ate hoje) — com delta percentual MoM (verde/vermelho) e nomes dos meses por extenso. Campos adicionados ao useMemo `kpis`: `prevCalMonth`, `momDelta`, `thisMonthLabel`, `prevMonthLabel`. Bloco oculto quando filtro de ano e historico (diferente do ano corrente). Zero novo fetch.
-  - **Bank Bonds interest em todos os cards (PR #86 + #87 + #88, item 36):** `buildBondEvents(transactions, bondIncome)` no frontend gera eventos no **mesmo shape** dos dividendos de acoes — pagamentos reais (`source: "fidelity"`, do campo `bondIncome` importado do Fidelity "INTEREST") + accrual estimado mensal (`source: "estimated"`, datado no fim do mes, ACT/365, preenchendo so o gap apos o ultimo pagamento real, sem double-count). O array `allEvents` (acoes + bonds) alimenta **todos** os cards: KPIs (subtitulo adaptativo "est. bond interest" / "bond interest (real + est.)" / "bond interest"), bar chart, Position Dividends (YoC/Recovered de CUSIPs via cost basis), Dividend History (badge "EST" nas linhas estimadas, "—" em $/Share e Qty) e tabela Y/Y. Comparacoes Y/Y % excluem eventos estimados (sem contraparte no ano anterior). Calibra `couponFreq` pela cadencia (`freqByCusip`, ainda nao renderizado).
+  - **Bank Bonds interest em todos os cards (PR #86 + #87 + #88, item 36):** `buildBondEvents(transactions, bondIncome)` no frontend gera eventos no **mesmo shape** dos dividendos de acoes — pagamentos reais (`source: "fidelity"`, do campo `bondIncome` importado do Fidelity "INTEREST") + accrual estimado mensal (`source: "estimated"`, datado no fim do mes, ACT/365, preenchendo so o gap apos o ultimo pagamento real, sem double-count). O array `allEvents` (acoes + bonds) alimenta **todos** os cards: KPIs (subtitulo adaptativo "est. bond interest" / "bond interest (real + est.)" / "bond interest"), bar chart, Position Dividends (YoC/Recovered de CUSIPs via cost basis), Dividend History (badge "EST" nas linhas estimadas, "—" em $/Share e Qty) e tabela Y/Y. Comparacoes Y/Y % excluem eventos estimados (sem contraparte no ano anterior). Calibra `couponFreq` pela cadencia (`freqByCusip`); frequencia calibrada renderizada no sub-header do card Bond Projections (PR #107).
 - **Position Dividends** (card no padrao de "Position Performance"): colunas Ticker (sticky) · Total · YTD · Y/Y YTD · YoC · Recovered. Sortavel, linha TOTAL no topo. **YoC** = dividendos TTM / cost basis (yield on cost convencional). **Recovered** = dividendos acumulados / cost basis (quanto do custo ja voltou via proventos). Y/Y YTD = este ano vs mesmo periodo ano anterior.
   - **Toggle By Ticker / By Asset Class** (PR #62, movido para header PR #93): toggle posicionado no header do card, alinhado a direita; `e.stopPropagation()` impede colapso acidental. Quando "By Asset Class", agrega dividendos por classe derivando a classe das transactions. Header sticky muda de "Ticker" para "Class".
   - **By Class colapsavel com chevron (PR #92):** modo "By Asset Class" agora exibe grupos colapsaveis identico ao `YearVsYearTable`. `buildClassGroups()` computa subtotais; `collapsedClasses` state (Set) + `toggleClass()` handler; `renderGroupHeaderRow()` com ChevronDown rotacionado -90deg quando collapsed. Default: todos os grupos fechados ao montar com `groupMode === "class"` (via `useEffect`). Ao expandir, exibe tickers individuais ordenados por total desc. Funcao `buildAssetClassRows` (modo flat legado) foi removida.
@@ -391,7 +393,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - **Group by Asset Class colapsavel (item 43):** state `collapsedClasses` (Set), `toggleClass`, `classGroups` useMemo, `renderGroupHeaderRow` com ChevronDown rotacionado. Default collapsed ao ativar "By Class" — todos os grupos fechados, mostrando so a linha de subtotal do grupo. `useEffect` com `[groupMode]` dep re-colapsa grupos ao trocar para "By Class" (PR #93). Ao expandir, exibe tickers individuais da classe. Toggle "By Ticker" retorna para view flat. Toggle posicionado no header do card, alinhado a direita (PR #93). Mesmo padrao visual do Position Performance.
 - Nota de UX: quando um ticker pagou no ano anterior mas nao pagou no mes do ano atual, o indicador "tri 100%" nao e exibido — aceitavel para agora, pendente de polish futuro.
 
-### Card Bond Projections (5º card — commit d6dc43b)
+### Card Bond Projections (5º card — commit d6dc43b, estendido PR #107)
 
 Card colapsável adicionado como 5º card na tab. Função pura `buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, nMonths=12)`:
 
@@ -400,7 +402,7 @@ Card colapsável adicionado como 5º card na tab. Função pura `buildBondProjec
 - **intervalDays fixo por frequência:** `monthly=30`, `quarterly=91`, `semi-annual=182`, `annual=365` — aproximação ACT, não dia exato do calendário.
 - **Valor estimado:** `principal × couponPct/100 × intervalDays/365`.
 - **CUSIPs excluídos:** `principal=0` ou `maturity` já passada.
-- **UI:** sub-header por bond, tabela Date | Est. Amount, total por bond, badge "EST". Valores mascarados por `valuesHidden`.
+- **UI:** sub-header por bond exibe frequencia calibrada + coupon rate + maturity date (ex: "Monthly · 5.45% · Matures Mar 2027") — renderizacao adicionada no PR #107. Tabela Date | Est. Amount, total por bond, badge "EST". Valores mascarados por `valuesHidden`.
 
 -----
 
@@ -626,9 +628,6 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 -----
 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
-
-**Proximas sessions:**
-- Validacao de slug/ticker ao adicionar transacao (DESTRAVADA — Tab Events concluida em jun/2026)
 
 **Deferred indefinidamente:**
 - Auto-refresh silencioso de token Google
