@@ -59,6 +59,8 @@ Estas regras valem pra toda interação. Releia antes de propor mudanças.
 Single page com view switcher no topo:
 
 - Tab **HOLDINGS** (id interno `dashboard`): dashboard original (asset allocation, rebalance, Cash, Manage Users).
+- Tab **DIVIDENDS** (id interno `dividends`): income history, position dividends, Y/Y comparison, dividend history. Carregado lazy.
+- Tab **EVENTS** (id interno `events`): calendario de eventos corporativos — ex-div, payout, earnings, splits. Carregado lazy. Posicionado entre Dividends e Transactions.
 - Tab **TRANSACTIONS** (id interno `transactions`): log de transações (carregado lazy ao clicar).
 - Tab **PERFORMANCE (TEST ONLY)** (id interno `performance`): gráfico de performance (carregado lazy ao clicar). Marcado TEST ONLY pra sinalizar MVP a usuários compartilhados.
 
@@ -389,6 +391,49 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 -----
 
+## 📅 Feature: Events (commit aecef28 — jun/2026)
+
+Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Dividends. **US tickers only** — BRA Stocks excluidos (sem API gratuita de earnings/splits para B3). Apenas tickers US (non-B3, non-CUSIP, non-tesouro-*) extraidos das Transactions do usuario sao enviados ao endpoint.
+
+### Endpoint `api/events.js`
+
+- `POST { tickers }`, auth obrigatoria (mesmo padrao de `api/dividends.js`)
+- Janela server-side: `hoje-30d` a `hoje+90d`, resultados ordenados por data asc
+- Cache Redis **GLOBAL** (sem storageKey): chave `events:v1:{hash(tickers_ordenados)}`, TTL ate proximo fechamento do mercado US — eventos de calendario sao fatos publicos; usuarios com os mesmos tickers compartilham cache
+- Falhas por ticker/fonte sao silenciosas: campo `meta.tickersFailed` acumula erros; resposta nunca derruba por falha parcial
+
+### Tipos de evento
+
+| Tipo | Fonte primaria | Fallback |
+|---|---|---|
+| `ex_dividend` | Yahoo `chart?events=div` | Finnhub `/stock/dividend` (para ADRs) |
+| `payout` | Gerado quando payDate (Polygon cache) difere da ex-date | — |
+| `split` / `reverse_split` | Yahoo `chart?events=split` | Polygon `v3/reference/splits` |
+| `earnings` | Finnhub `/calendar/earnings` | Yahoo `chart?events=earn` |
+
+- `payout` reutiliza o cache Polygon de pay dates ja warm pela Tab Dividends (`dividends:paydates:v1:{ticker}`) — sem custo adicional de API
+- `meta.earningsSource` reporta de onde vieram os earnings (`finnhub` | `yahoo`)
+- Eventos `split` com `denominator > numerator` = reverse split
+
+### UI `src/Events.jsx`
+
+- Export default `EventsView({ auth, onAuthFail, valuesHidden })` — `valuesHidden` recebido mas nao mascara nada (dados publicos de calendario)
+- Busca `GET /api/transactions` ao montar, extrai tickers US elegiveis (exclui B3 via `isBrazilianTicker`, CUSIPs, `tesouro-*`), entao `POST /api/events`
+- Filtro client-side por tipo: pills All | Ex-Div | Payout | Earnings | Split — sem novo fetch ao mudar o filtro
+- Agrupamento cronologico: "Last 7 Days", "Last Month", "Today", "This Week", "Next Week", depois buckets mensais "Mon YYYY"
+- Eventos passados com `opacity: 0.55`; eventos futuros em destaque normal
+- Badges: ex_dividend/payout dourado, earnings `#60a5fa`, split `#a978a9`
+- Estados: loading / erro / vazio com mensagens especificas
+- Sem recharts; inline styles com tokens `T` e `FONT_*` (mesmo padrao das outras tabs)
+
+### Limitacoes conhecidas / pendencias de validacao em producao
+
+- **Yahoo `events=earn`** pode retornar apenas earnings passados dependendo do ticker/janela — se confirmado, earnings futuros dependem exclusivamente de `FINNHUB_API_KEY`. Comportamento nao validado em producao (hosts bloqueados no sandbox de implementacao).
+- **Splits sem Polygon:** se `POLYGON_API_KEY` estiver ausente, o fallback de splits nao funciona — apenas o Yahoo e suficiente para a maioria dos casos.
+- **BRA Stocks fora do escopo:** sem API gratuita de earnings/splits para tickers B3.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -466,6 +511,9 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 |**`CACHE_VERSION` v5→v6 em `api/dividends.js` (PR #95)**|Cache key inclui hash dos eventos Fidelity (`fd:${simpleHash(...)}`). Bump v5→v6 invalida caches anteriores que nao tinham Fidelity dividends — sem o bump, usuario veria cache vazio mesmo apos reimportar o CSV.|
 |**`computeHalfInvested` derivada ao vivo de Transactions, sem persistencia (PR #98)**|Valor realizado de aporte por quinzena nao e persistido em localStorage nem em Redis — calculado no `useMemo([transactions, usdBrlRate])` a cada render. Mesmo padrao de `buildChartData` e `buildPositionRows`: funcao pura fora do componente + useMemo por dentro. Elimina o vetor de divergencia entre o dado manual salvo e o log de Transactions, que e a fonte de verdade.|
 |**`POST /api/dividends` reutilizado em `AporteQuinzenal` para preencher "Dividends (last month)" automaticamente (PR #99)**|O endpoint ja era chamado por Performance e Dividends. Em `AporteQuinzenal`, apos o load das transactions, dispara o mesmo POST e filtra eventos cujo `date` cai no mes anterior, somando `totalReceived`. Falha silenciosa (catch retorna 0) — o Monthly Plan continua funcional mesmo sem dados de dividendos. O campo "DELL sale" e preenchido pela funcao pura `computeDellSale` (sells de DELL no mes corrente das transactions), seguindo o mesmo padrao de derivacao ao vivo.|
+|**Cache de eventos GLOBAL por hash de tickers, sem storageKey (commit aecef28, Tab Events)**|Eventos de calendario corporativo (ex-div, earnings, splits) sao fatos publicos — nao dependem do portfolio individual do usuario. Cache `events:v1:{hash(tickers_ordenados)}` e compartilhado entre qualquer usuario que tenha os mesmos tickers. Mesmo racional do cache de pay dates Polygon (`dividends:paydates:v1:{ticker}`): dado imutavel/publico nao deve ser recomputado por usuario.|
+|**Reutilizacao do cache Polygon de pay dates entre Tab Dividends e Tab Events (commit aecef28)**|`api/events.js` busca pay dates usando a chave `dividends:paydates:v1:{ticker}` — a mesma chave gerada por `api/dividends.js`. Se a Tab Dividends ja esquentou o cache para um ticker, Tab Events aproveita sem custo adicional de API. Rate limit de 5/min do Polygon free tier nao e problema quando os caches ja estao warm.|
+|**Payout como evento separado do ex_dividend quando as datas diferem (commit aecef28)**|Yahoo retorna apenas ex-date; Polygon fornece pay date. Quando payDate != exDate, `api/events.js` gera dois eventos distintos: `ex_dividend` na ex-date (entitlement) e `payout` na pay date (cash landing). O usuario ve os dois momentos distintos no calendario — mais util do que colapsar em um unico evento com data ambigua.|
 
 -----
 
@@ -473,6 +521,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 - **Google App:** ✅ **Publicado** (saiu do modo Testing — confirmado em 21/mai/2026)
 - **Env vars no Vercel:** ⚠️ **Verificação pendente.** Lista esperada: `APP_PASSWORD`, `FINNHUB_API_KEY`, `BRAPI_API_KEY`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `ADMIN_EMAILS`, `VITE_ADMIN_EMAILS`, `POLYGON_API_KEY`.
+- **Tab Events — Yahoo `events=earn` em producao:** ⚠️ **Nao validado.** Hosts externos estavam bloqueados no sandbox de implementacao. Comportamento esperado: Yahoo pode retornar apenas earnings passados dependendo do ticker/janela. Se confirmado, earnings futuros dependem exclusivamente de `FINNHUB_API_KEY`. Validar com um ticker de earnings proximo (ex: AAPL pre-earnings) apos o primeiro deploy.
 - **Admin atual:** `pnetto@gmail.com`
 - **Usuários ativos:** Pedro + 1 amigo
 
@@ -483,7 +532,8 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 - Frontend Holdings: `src/App.jsx`
 - Frontend Transactions: `src/Transactions.jsx`
 - Frontend Performance: `src/Performance.jsx`
-- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`
+- Frontend Events: `src/Events.jsx`
+- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`
 - Auth + Redis: `lib/auth.js`, `lib/redis.js`
 
 **Endpoints (resumo):**
@@ -498,14 +548,14 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 | `GET /api/index-quote` | Quote do SPY |
 | `POST /api/perf-history` | Recebe `{ transactions }`, retorna série TWR + portfolioUSD (cache Redis v11) |
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
+| `POST /api/events` | Recebe `{ tickers }`, retorna eventos corporativos (ex_dividend, payout, earnings, split) janela -30d/+90d; cache Redis GLOBAL por hash de tickers, TTL ate proximo fechamento de mercado |
 
 -----
 
 ## 🚀 Próximas Features (ver [`docs/Features_Roadmap.md`](./Features_Roadmap.md) para lista completa)
 
 **Proximas sessions:**
-- Tab Events (itens 20–22)
-- Validacao de slug/ticker ao adicionar transacao (deferred)
+- Validacao de slug/ticker ao adicionar transacao (DESTRAVADA — Tab Events concluida em jun/2026)
 
 **Deferred indefinidamente:**
 - Auto-refresh silencioso de token Google
