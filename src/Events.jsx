@@ -4,7 +4,7 @@
 // Lazy-loaded, same pattern as Dividends.jsx / Performance.jsx.
 
 import { useState, useEffect, useMemo } from "react";
-import { Calendar } from "lucide-react";
+import { Calendar, ChevronDown } from "lucide-react";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -294,10 +294,19 @@ function EventCard({ ev, todayISO }) {
   );
 }
 
-function GroupHeader({ label }) {
+function GroupHeader({ label, collapsed, onToggle }) {
   return (
-    <div
+    <button
+      onClick={onToggle}
       style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        textAlign: "left",
         fontFamily: FONT_MONO,
         fontSize: 10,
         letterSpacing: "0.18em",
@@ -308,8 +317,17 @@ function GroupHeader({ label }) {
         marginBottom: 8,
       }}
     >
+      <ChevronDown
+        size={12}
+        style={{
+          flexShrink: 0,
+          color: T.textFaint,
+          transform: collapsed ? "rotate(-90deg)" : "none",
+          transition: "transform 0.2s",
+        }}
+      />
       {label}
-    </div>
+    </button>
   );
 }
 
@@ -346,8 +364,19 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
   const [events, setEvents] = useState([]);
   const [meta, setMeta] = useState(null);
   const [filterType, setFilterType] = useState("All");
+  // "Last Month" starts collapsed by default; all other groups expanded.
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(["Last Month"]));
 
   const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  function toggleGroup(label) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }
 
   // Step 1: load transactions, extract tickers, fetch events
   useEffect(() => {
@@ -510,14 +539,22 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
       {/* Event groups */}
       {state === "done" && filteredEvents.length > 0 && (
         <>
-          {groups.map((group) => (
-            <div key={group.label}>
-              <GroupHeader label={group.label} />
-              {group.items.map((ev, i) => (
-                <EventCard key={`${ev.date}-${ev.ticker}-${ev.type}-${i}`} ev={ev} todayISO={todayISO} />
-              ))}
-            </div>
-          ))}
+          {groups.map((group) => {
+            const collapsed = collapsedGroups.has(group.label);
+            return (
+              <div key={group.label}>
+                <GroupHeader
+                  label={group.label}
+                  collapsed={collapsed}
+                  onToggle={() => toggleGroup(group.label)}
+                />
+                {!collapsed &&
+                  group.items.map((ev, i) => (
+                    <EventCard key={`${ev.date}-${ev.ticker}-${ev.type}-${i}`} ev={ev} todayISO={todayISO} />
+                  ))}
+              </div>
+            );
+          })}
 
           {/* Footer note */}
           {meta && (
