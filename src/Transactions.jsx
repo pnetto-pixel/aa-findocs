@@ -3,7 +3,7 @@
 // Bulk paste + CSV upload land in 1C.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, Scissors } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import Papa from "papaparse";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -4232,7 +4232,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
 // --- Main view -------------------------------------------------------------
 
-export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange }) {
+export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange, pendingSplits = [], splitEvents = [], splitActionInFlight = null, onApproveSplit, onDismissSplit }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
@@ -4244,7 +4244,8 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
-  const [splitModalOpen, setSplitModalOpen] = useState(false);
+  const [splitCardOpen, setSplitCardOpen] = useState(false);
+  const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
   // Ticker resolution status: { [TICKER]: "ok" | "error" } — cached in localStorage
   // so we don't re-hit the price API for already-validated tickers every load.
   const [tickerStatus, setTickerStatus] = useState(() => {
@@ -4425,12 +4426,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     verifyTickers(newTxs);
   }
 
-  async function handleSplitApply(nextTransactions) {
-    // nextTransactions is the full array with split-adjusted entries already set.
-    // persist() saves to server, updates local state, and fires onTransactionsChange.
-    await persist(nextTransactions);
-  }
-
   function handleExport() {
     const csv = transactionsToCSV(transactions);
     const stamp = new Date().toISOString().slice(0, 10);
@@ -4555,29 +4550,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                 Export
               </button>
             )}
-            {transactions.length > 0 && (
-              <button
-                onClick={() => setSplitModalOpen(true)}
-                title="Apply stock split or reverse split to transaction history"
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${T.border}`,
-                  color: T.textDim,
-                  padding: "8px 12px",
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  letterSpacing: "0.15em",
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Scissors size={12} />
-                Split
-              </button>
-            )}
             <button
               onClick={() => setFormOpen(true)}
               style={{
@@ -4601,6 +4573,390 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           </div>
         )}
       </div>
+
+      {/* Splits / Groupings inline card */}
+      {(pendingSplits.length > 0 || splitEvents.length > 0) && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setSplitCardOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              background: pendingSplits.length > 0 ? "rgba(201,169,97,0.06)" : T.card,
+              border: `1px solid ${pendingSplits.length > 0 ? T.gold + "55" : T.border}`,
+              borderRadius: splitCardOpen ? "4px 4px 0 0" : 4,
+              padding: "10px 14px",
+              cursor: "pointer",
+              color: pendingSplits.length > 0 ? T.gold : T.textDim,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+            }}
+          >
+            <ChevronDown
+              size={12}
+              style={{
+                transform: splitCardOpen ? "none" : "rotate(-90deg)",
+                transition: "transform 0.2s",
+              }}
+            />
+            Splits / Groupings
+            {pendingSplits.length > 0 && (
+              <span
+                style={{
+                  marginLeft: 8,
+                  background: T.gold,
+                  color: "#0b0d10",
+                  fontFamily: FONT_MONO,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                }}
+              >
+                {pendingSplits.length} pending
+              </span>
+            )}
+          </button>
+
+          {splitCardOpen && (
+            <div
+              style={{
+                background: T.card,
+                border: `1px solid ${T.border}`,
+                borderTop: "none",
+                borderRadius: "0 0 4px 4px",
+                padding: 14,
+              }}
+            >
+              {/* Pending section */}
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 9,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  color: T.textFaint,
+                  marginBottom: 10,
+                }}
+              >
+                Pending ({pendingSplits.length})
+              </div>
+
+              {pendingSplits.length === 0 ? (
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    color: T.textDim,
+                    padding: "8px 0 16px",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  No pending splits. History is up to date.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                    marginBottom: splitEvents.length > 0 ? 16 : 0,
+                  }}
+                >
+                  {pendingSplits.map((sp) => {
+                    const key = `${sp.ticker}|${sp.date}|${sp.numerator}|${sp.denominator}`;
+                    const num = Number(sp.numerator);
+                    const den = Number(sp.denominator);
+                    const isReverse = den > num;
+                    const factorLabel = isReverse ? `${num}:${den} reverse` : `${num}:${den}`;
+                    const isThisInFlight = splitActionInFlight === key;
+                    const anyInFlight = splitActionInFlight !== null;
+                    const affected = transactions.filter(
+                      (tx) =>
+                        (tx.ticker || "").toUpperCase() === sp.ticker &&
+                        tx.date < sp.date &&
+                        !(tx.splitAdjusted && tx.splitDate === sp.date)
+                    );
+                    const thStyle = {
+                      fontFamily: FONT_MONO,
+                      fontSize: 9,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                      color: T.textFaint,
+                      padding: "6px 8px",
+                      borderBottom: `1px solid ${T.border}`,
+                      whiteSpace: "nowrap",
+                    };
+                    const tdStyle = {
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      padding: "6px 8px",
+                      borderBottom: `1px solid ${T.borderSoft}`,
+                      color: T.text,
+                      whiteSpace: "nowrap",
+                    };
+                    return (
+                      <div
+                        key={key}
+                        style={{
+                          background: T.cardElev,
+                          border: `1px solid ${T.borderSoft}`,
+                          borderRadius: 4,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "baseline",
+                            gap: 10,
+                            flexWrap: "wrap",
+                            padding: "8px 12px",
+                            borderBottom: `1px solid ${T.borderSoft}`,
+                          }}
+                        >
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 14, fontWeight: 600, color: T.text }}>
+                            {sp.ticker}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: FONT_MONO,
+                              fontSize: 11,
+                              color: isReverse ? T.red : T.green,
+                              letterSpacing: "0.08em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {factorLabel}
+                          </span>
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                            {sp.date}
+                          </span>
+                          <span style={{ marginLeft: "auto", fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint }}>
+                            {affected.length} tx affected
+                          </span>
+                        </div>
+
+                        {affected.length > 0 && (
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", minWidth: 380, borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ ...thStyle, textAlign: "left" }}>Date</th>
+                                  <th style={{ ...thStyle, textAlign: "right" }}>Qty {"→"} New</th>
+                                  <th style={{ ...thStyle, textAlign: "right" }}>Price {"→"} New</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {affected.map((tx) => {
+                                  const newQty = parseFloat((tx.qty * (num / den)).toFixed(6));
+                                  const newPrice = parseFloat((tx.price * (den / num)).toFixed(6));
+                                  return (
+                                    <tr key={tx.id}>
+                                      <td style={{ ...tdStyle, textAlign: "left" }}>{tx.date}</td>
+                                      <td style={{ ...tdStyle, textAlign: "right" }}>
+                                        {tx.qty} {"→"} <span style={{ color: T.gold }}>{newQty}</span>
+                                      </td>
+                                      <td style={{ ...tdStyle, textAlign: "right" }}>
+                                        ${tx.price} {"→"} <span style={{ color: T.gold }}>${newPrice}</span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            padding: "8px 12px",
+                            borderTop: `1px solid ${T.borderSoft}`,
+                            alignItems: "center",
+                          }}
+                        >
+                          <button
+                            onClick={() => onApproveSplit?.(sp)}
+                            disabled={anyInFlight}
+                            style={{
+                              background: anyInFlight ? "rgba(201,169,97,0.4)" : T.gold,
+                              border: "none",
+                              color: "#0b0d10",
+                              padding: "7px 12px",
+                              fontFamily: FONT_MONO,
+                              fontSize: 10,
+                              letterSpacing: "0.15em",
+                              textTransform: "uppercase",
+                              cursor: anyInFlight ? "not-allowed" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
+                            {isThisInFlight ? (
+                              <>
+                                <RefreshCw size={10} className="spin" />
+                                Applying…
+                              </>
+                            ) : (
+                              "Approve"
+                            )}
+                          </button>
+                          <button
+                            onClick={() => onDismissSplit?.(sp)}
+                            disabled={anyInFlight}
+                            style={{
+                              background: "transparent",
+                              border: `1px solid ${anyInFlight ? T.borderSoft : T.border}`,
+                              color: anyInFlight ? T.textFaint : T.textDim,
+                              padding: "7px 12px",
+                              fontFamily: FONT_MONO,
+                              fontSize: 10,
+                              letterSpacing: "0.15em",
+                              textTransform: "uppercase",
+                              cursor: anyInFlight ? "not-allowed" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
+                            {isThisInFlight ? (
+                              <>
+                                <RefreshCw size={10} className="spin" />
+                                Dismissing…
+                              </>
+                            ) : (
+                              "Dismiss"
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* History section */}
+              {splitEvents.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setSplitHistoryOpen((v) => !v)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      width: "100%",
+                      background: "transparent",
+                      border: "none",
+                      borderTop: `1px solid ${T.borderSoft}`,
+                      padding: "10px 0 0",
+                      cursor: "pointer",
+                      color: T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 9,
+                      letterSpacing: "0.15em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    <ChevronDown
+                      size={11}
+                      style={{
+                        transform: splitHistoryOpen ? "none" : "rotate(-90deg)",
+                        transition: "transform 0.2s",
+                      }}
+                    />
+                    History ({splitEvents.length})
+                  </button>
+                  {splitHistoryOpen && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                      {[...splitEvents].reverse().map((ev, i) => {
+                        const isApplied = ev.status === "applied";
+                        const num = Number(ev.numerator);
+                        const den = Number(ev.denominator);
+                        const isReverse = den > num;
+                        const factorLabel = isReverse ? `${num}:${den} reverse` : `${num}:${den}`;
+                        const appliedDate = ev.appliedAt
+                          ? new Date(ev.appliedAt).toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })
+                          : ev.date;
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              flexWrap: "wrap",
+                              padding: "6px 10px",
+                              background: T.cardElev,
+                              border: `1px solid ${T.borderSoft}`,
+                              borderRadius: 4,
+                            }}
+                          >
+                            <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.text }}>
+                              {ev.ticker}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                color: isReverse ? T.red : T.green,
+                                letterSpacing: "0.08em",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              {factorLabel}
+                            </span>
+                            <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint }}>
+                              {ev.date}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                letterSpacing: "0.1em",
+                                textTransform: "uppercase",
+                                color: isApplied ? T.green : T.textFaint,
+                                background: isApplied ? "rgba(125,211,164,0.1)" : "transparent",
+                                border: `1px solid ${isApplied ? T.green + "44" : T.borderSoft}`,
+                                padding: "2px 5px",
+                                borderRadius: 2,
+                              }}
+                            >
+                              {isApplied ? "Applied" : "Dismissed"}
+                            </span>
+                            <span
+                              style={{
+                                marginLeft: "auto",
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                color: T.textFaint,
+                              }}
+                            >
+                              {appliedDate}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {formOpen && !editing && (
         <TransactionForm
@@ -4641,14 +4997,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         existingTransactions={transactions}
       />
 
-      <SplitModal
-        open={splitModalOpen}
-        onClose={() => setSplitModalOpen(false)}
-        onApply={handleSplitApply}
-        transactions={transactions}
-        knownTickers={knownTickers}
-        busy={saving}
-      />
     </div>
   );
 }
