@@ -239,7 +239,28 @@ function Label({ children }) {
 
 // --- Add/Edit Form ---------------------------------------------------------
 
-function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
+function shouldSkipValidation(ticker, assetClass) {
+  if (!ticker) return true;
+  if (/^tesouro-/i.test(ticker)) return true;
+  if (assetClass === "BRA Fixed Income") return true;
+  if (assetClass === "Bank Bonds") return true;
+  if (/^[0-9A-Z]{9}[0-9]$/.test(ticker)) return true;
+  return false;
+}
+
+async function validateTickerViaAPI(ticker, auth) {
+  try {
+    const res = await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`, {
+      headers: authHeaders(auth),
+    });
+    if (!res.ok) return { valid: false };
+    return { valid: true };
+  } catch {
+    return { valid: true };
+  }
+}
+
+function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth }) {
   const isEdit = !!initial;
   const [date, setDate] = useState(initial?.date || todayISO());
   const [side, setSide] = useState(initial?.side || "buy");
@@ -251,6 +272,8 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
   const [notes, setNotes] = useState(initial?.notes || "");
   const [error, setError] = useState("");
   const [showTickerList, setShowTickerList] = useState(false);
+  const [tickerValidating, setTickerValidating] = useState(false);
+  const [tickerError, setTickerError] = useState("");
 
   const currency = currencyForAssetClass(assetClass) || "USD";
 
@@ -272,6 +295,8 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
 
   function handleSubmit() {
     setError("");
+    if (tickerValidating) { setError("Validating ticker, please wait..."); return; }
+    if (tickerError) { setError(tickerError); return; }
     const tkr = ticker.trim().toUpperCase();
     if (!tkr) return setError("Ticker required");
     if (!assetClass) return setError("Asset class required");
@@ -376,11 +401,29 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy }) {
           <Input
             placeholder="AAPL, BBSE3, TESOURO-IPCA-2035..."
             value={ticker}
-            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            onChange={(e) => { setTicker(e.target.value.toUpperCase()); setTickerError(""); }}
             onFocus={() => setShowTickerList(true)}
-            onBlur={() => setTimeout(() => setShowTickerList(false), 150)}
+            onBlur={() => {
+              setTimeout(() => setShowTickerList(false), 150);
+              const tkr = ticker.trim().toUpperCase();
+              if (tkr && !shouldSkipValidation(tkr, assetClass)) {
+                setTickerValidating(true);
+                setTickerError("");
+                validateTickerViaAPI(tkr, auth)
+                  .then(({ valid }) => {
+                    if (!valid) setTickerError(`Ticker "${tkr}" not found. Check for typos.`);
+                  })
+                  .finally(() => setTickerValidating(false));
+              }
+            }}
             style={{ textTransform: "uppercase" }}
           />
+          {tickerValidating && (
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>Checking ticker...</span>
+          )}
+          {tickerError && !tickerValidating && (
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.red || "#f87171" }}>{tickerError}</span>
+          )}
           {showTickerList && tickerSuggestions.length > 0 && (
             <div
               style={{
@@ -4964,6 +5007,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           onSubmit={handleAdd}
           onCancel={() => setFormOpen(false)}
           busy={saving}
+          auth={auth}
         />
       )}
 
@@ -4974,6 +5018,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           onSubmit={handleUpdate}
           onCancel={() => setEditing(null)}
           busy={saving}
+          auth={auth}
         />
       )}
 

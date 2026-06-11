@@ -2926,7 +2926,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 fontSize: 16,
               }}
             >
-              No positions yet. Add your first ticker above.
+              No positions yet. Add transactions in the Transactions tab to get started.
             </div>
           ) : (
             <>
