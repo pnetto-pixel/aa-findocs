@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff } from "lucide-react";
-import TransactionsView from "./Transactions.jsx";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell } from "lucide-react";
+import TransactionsView, { applySplitToTransactions, saveTransactionsToServer } from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
 const DividendsView = lazy(() => import("./Dividends.jsx"));
@@ -208,12 +208,19 @@ async function fetchHoldingsFromServer(auth) {
   return await res.json();
 }
 
-async function fetchTransactionsForSync(auth) {
+// Returns the transactions array (or null on failure). When `withMeta` is true,
+// returns { transactions, splitEvents } instead so callers that need the split
+// decision log can capture it from the same request.
+async function fetchTransactionsForSync(auth, withMeta = false) {
   try {
     const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
     if (!res.ok) return null;
     const d = await res.json();
-    return d.exists && Array.isArray(d.transactions) ? d.transactions : [];
+    const transactions = d.exists && Array.isArray(d.transactions) ? d.transactions : [];
+    if (withMeta) {
+      return { transactions, splitEvents: Array.isArray(d.splitEvents) ? d.splitEvents : [] };
+    }
+    return transactions;
   } catch {
     return null;
   }
@@ -229,6 +236,50 @@ function computeNetQty(transactions) {
     else if (tx.side === "sell") net[t] -= Number(tx.qty);
   }
   return net;
+}
+
+// --- Split detection helpers ----------------------------------------------
+// US tickers eligible for split detection. Mirrors extractEligibleTickers in
+// Events.jsx (duplicated inline to avoid coupling — same project convention).
+const SPLIT_ELIGIBLE_CLASSES = new Set([
+  "Stocks", "Real Estate", "Alternative", "Bonds", "BRA Stocks", "Unallocated USD",
+]);
+
+function extractEligibleSplitTickers(transactions) {
+  const netQty = computeNetQty(transactions);
+  const seen = new Set();
+  for (const tx of transactions) {
+    const t = (tx.ticker || "").toUpperCase();
+    if (!t) continue;
+    if (!SPLIT_ELIGIBLE_CLASSES.has(tx.assetClass)) continue;
+    if (/^[A-Z]{4}\d{1,2}$/.test(t)) continue; // B3 / Brazilian
+    if (/^[0-9A-Z]{9}$/.test(t)) continue; // CUSIP
+    if (/^TESOURO-/i.test(t)) continue; // Tesouro
+    if ((netQty[t] || 0) <= 0) continue;
+    seen.add(t);
+  }
+  return [...seen].sort();
+}
+
+// Given the current transaction history, the splits detected by the API, and
+// the decision log (splitEvents), return the splits that still need a decision
+// and actually affect at least one un-adjusted transaction.
+function detectPendingSplits(transactions, detectedSplits, splitEvents) {
+  const decided = new Set(splitEvents.map((s) => `${s.ticker}|${s.date}|${s.numerator}|${s.denominator}`));
+  const pending = [];
+  for (const sp of detectedSplits) {
+    const tkr = (sp.ticker || "").toUpperCase();
+    const key = `${tkr}|${sp.date}|${sp.numerator}|${sp.denominator}`;
+    if (decided.has(key)) continue;
+    if (Number(sp.numerator) === Number(sp.denominator)) continue;
+    const affected = transactions.filter((tx) =>
+      (tx.ticker || "").toUpperCase() === tkr &&
+      tx.date < sp.date &&
+      !(tx.splitAdjusted && tx.splitDate === sp.date)
+    );
+    if (affected.length) pending.push({ ...sp, ticker: tkr, affectedCount: affected.length });
+  }
+  return pending;
 }
 
 // Returns patched holdings array if any qty changed, null otherwise.
@@ -507,6 +558,15 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [newCash, setNewCash] = useState("");
   const importJsonRef = useRef(null);
 
+  // Split detection/approval (Bell in header). `transactions` mirrors the log so
+  // the approve/dismiss handlers can adjust history; `splitEvents` is the
+  // persisted decision log (applied/dismissed); `pendingSplits` are detected
+  // splits not yet reflected in the history nor decided on.
+  const [transactions, setTransactions] = useState([]);
+  const [splitEvents, setSplitEvents] = useState([]);
+  const [pendingSplits, setPendingSplits] = useState([]);
+  const [splitReviewOpen, setSplitReviewOpen] = useState(false);
+
   // Manual asset form state
   const [showManualForm, setShowManualForm] = useState(false);
   const [manualName, setManualName] = useState("");
@@ -708,8 +768,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         }
 
         // Sync qty of auto holdings from the transactions log
-        const txs = await fetchTransactionsForSync(auth);
+        const txMeta = await fetchTransactionsForSync(auth, true);
+        const txs = txMeta ? txMeta.transactions : null;
+        const loadedSplitEvents = txMeta ? txMeta.splitEvents : [];
         if (!cancelled && txs) {
+          setTransactions(txs);
+          setSplitEvents(loadedSplitEvents);
+          // Non-blocking: surface any unreflected splits via the Bell badge.
+          refreshPendingSplits(txs, loadedSplitEvents);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
@@ -1042,6 +1108,96 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       if (bbPatched) next = bbPatched;
       return next;
     });
+    // Mirror the log for split detection and re-check pending splits.
+    setTransactions(txs);
+    refreshPendingSplits(txs, splitEvents);
+  }
+
+  // Detect splits/groupings present in market data but not yet reflected in the
+  // transaction history. Non-blocking and failure-silent — never disrupts the app.
+  async function refreshPendingSplits(txs, splitEventsArr) {
+    try {
+      const tickers = extractEligibleSplitTickers(txs || []);
+      if (!tickers.length) {
+        setPendingSplits([]);
+        return;
+      }
+      const res = await fetch("/api/split-detect", {
+        method: "POST",
+        headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+        body: JSON.stringify({ tickers }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const splits = Array.isArray(data.splits) ? data.splits : [];
+      setPendingSplits(detectPendingSplits(txs || [], splits, splitEventsArr || []));
+    } catch {
+      /* silent — split detection is best-effort */
+    }
+  }
+
+  // Approve a pending split: adjust history, record the decision, persist, and
+  // cascade the holdings/qty + perf-cache invalidation via handleTransactionsChange.
+  async function approveSplit(sp) {
+    const next = applySplitToTransactions(transactions, sp);
+    const nextSplitEvents = [
+      ...splitEvents,
+      {
+        ticker: sp.ticker,
+        date: sp.date,
+        numerator: sp.numerator,
+        denominator: sp.denominator,
+        status: "applied",
+        appliedAt: new Date().toISOString(),
+      },
+    ];
+    try {
+      // Omit bondIncome → server preserves the existing value.
+      await saveTransactionsToServer(auth, next, undefined, nextSplitEvents);
+    } catch (e) {
+      setToast({ kind: "error", message: `Split save failed: ${e.message || "error"}` });
+      return;
+    }
+    setSplitEvents(nextSplitEvents);
+    setTransactions(next);
+    setPendingSplits((prev) =>
+      prev.filter(
+        (p) =>
+          !(p.ticker === sp.ticker && p.date === sp.date &&
+            p.numerator === sp.numerator && p.denominator === sp.denominator)
+      )
+    );
+    handleTransactionsChange(next); // cascade: applyTxQty + perf cache invalidation
+  }
+
+  // Dismiss a pending split: record the decision so it never re-surfaces.
+  // Transactions are left unchanged.
+  async function dismissSplit(sp) {
+    const nextSplitEvents = [
+      ...splitEvents,
+      {
+        ticker: sp.ticker,
+        date: sp.date,
+        numerator: sp.numerator,
+        denominator: sp.denominator,
+        status: "dismissed",
+        appliedAt: new Date().toISOString(),
+      },
+    ];
+    try {
+      await saveTransactionsToServer(auth, transactions, undefined, nextSplitEvents);
+    } catch (e) {
+      setToast({ kind: "error", message: `Dismiss failed: ${e.message || "error"}` });
+      return;
+    }
+    setSplitEvents(nextSplitEvents);
+    setPendingSplits((prev) =>
+      prev.filter(
+        (p) =>
+          !(p.ticker === sp.ticker && p.date === sp.date &&
+            p.numerator === sp.numerator && p.denominator === sp.denominator)
+      )
+    );
   }
 
   function removeHolding(id) {
@@ -1524,6 +1680,263 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           )}
 
+          {/* Split / grouping review panel */}
+          {splitReviewOpen && (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.75)",
+                zIndex: 2100,
+                display: "flex",
+                alignItems: "flex-start",
+                justifyContent: "center",
+                padding: "24px 16px",
+                overflowY: "auto",
+              }}
+              onClick={() => setSplitReviewOpen(false)}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  background: T.cardElev,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 4,
+                  padding: 20,
+                  maxWidth: 560,
+                  width: "100%",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 16,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      letterSpacing: "0.2em",
+                      color: T.gold,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Detected Splits / Groupings
+                  </div>
+                  <button
+                    onClick={() => setSplitReviewOpen(false)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: T.textDim,
+                      cursor: "pointer",
+                      padding: 4,
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {pendingSplits.length === 0 ? (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      color: T.textDim,
+                      padding: "24px 8px",
+                      textAlign: "center",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    No pending splits. The history is up to date with detected
+                    corporate actions.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {pendingSplits.map((sp) => {
+                      const num = Number(sp.numerator);
+                      const den = Number(sp.denominator);
+                      const isReverse = den > num;
+                      const factorLabel = isReverse
+                        ? `${num}:${den} reverse`
+                        : `${num}:${den}`;
+                      const affected = transactions.filter(
+                        (tx) =>
+                          (tx.ticker || "").toUpperCase() === sp.ticker &&
+                          tx.date < sp.date &&
+                          !(tx.splitAdjusted && tx.splitDate === sp.date)
+                      );
+                      const key = `${sp.ticker}|${sp.date}|${sp.numerator}|${sp.denominator}`;
+                      const thStyle = {
+                        fontFamily: FONT_MONO,
+                        fontSize: 9,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                        color: T.textFaint,
+                        padding: "6px 8px",
+                        borderBottom: `1px solid ${T.border}`,
+                        whiteSpace: "nowrap",
+                      };
+                      const tdStyle = {
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        padding: "6px 8px",
+                        borderBottom: `1px solid ${T.borderSoft}`,
+                        color: T.text,
+                        whiteSpace: "nowrap",
+                      };
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            background: T.card,
+                            border: `1px solid ${T.borderSoft}`,
+                            borderRadius: 4,
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "baseline",
+                              gap: 10,
+                              flexWrap: "wrap",
+                              padding: "10px 12px",
+                              borderBottom: `1px solid ${T.borderSoft}`,
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 14,
+                                fontWeight: 600,
+                                color: T.text,
+                              }}
+                            >
+                              {sp.ticker}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 11,
+                                color: isReverse ? T.red : T.green,
+                                letterSpacing: "0.08em",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              {factorLabel}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 11,
+                                color: T.textDim,
+                              }}
+                            >
+                              {sp.date}
+                            </span>
+                            <span
+                              style={{
+                                marginLeft: "auto",
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                color: T.textFaint,
+                              }}
+                            >
+                              {affected.length} tx affected
+                            </span>
+                          </div>
+
+                          {affected.length > 0 && (
+                            <div style={{ overflowX: "auto" }}>
+                              <table
+                                style={{
+                                  width: "100%",
+                                  minWidth: 420,
+                                  borderCollapse: "collapse",
+                                }}
+                              >
+                                <thead>
+                                  <tr>
+                                    <th style={{ ...thStyle, textAlign: "left" }}>Date</th>
+                                    <th style={{ ...thStyle, textAlign: "right" }}>Qty {"->"} New</th>
+                                    <th style={{ ...thStyle, textAlign: "right" }}>Price {"->"} New</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {affected.map((tx) => {
+                                    const newQty = parseFloat((tx.qty * (num / den)).toFixed(6));
+                                    const newPrice = parseFloat((tx.price * (den / num)).toFixed(6));
+                                    return (
+                                      <tr key={tx.id}>
+                                        <td style={{ ...tdStyle, textAlign: "left" }}>{tx.date}</td>
+                                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                                          {tx.qty} {"->"} <span style={{ color: T.gold }}>{newQty}</span>
+                                        </td>
+                                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                                          ${tx.price} {"->"} <span style={{ color: T.gold }}>${newPrice}</span>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              padding: "10px 12px",
+                              borderTop: `1px solid ${T.borderSoft}`,
+                            }}
+                          >
+                            <button
+                              onClick={() => approveSplit(sp)}
+                              style={{
+                                background: T.gold,
+                                border: "none",
+                                color: "#0b0d10",
+                                padding: "8px 14px",
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                letterSpacing: "0.15em",
+                                textTransform: "uppercase",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => dismissSplit(sp)}
+                              style={{
+                                background: "transparent",
+                                border: `1px solid ${T.border}`,
+                                color: T.textDim,
+                                padding: "8px 14px",
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                letterSpacing: "0.15em",
+                                textTransform: "uppercase",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Toast notification (fixed at bottom) */}
           {toast && (
             <div
@@ -1657,6 +2070,48 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   }}
                 >
                   {valuesHidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                </button>
+                <button
+                  onClick={() => setSplitReviewOpen(true)}
+                  title={
+                    pendingSplits.length > 0
+                      ? `${pendingSplits.length} split${pendingSplits.length === 1 ? "" : "s"} to review`
+                      : "Splits / groupings — none pending"
+                  }
+                  style={{
+                    position: "relative",
+                    background: pendingSplits.length > 0 ? "rgba(201, 169, 97, 0.12)" : "transparent",
+                    border: `1px solid ${pendingSplits.length > 0 ? T.gold : T.border}`,
+                    color: pendingSplits.length > 0 ? T.gold : T.textDim,
+                    padding: "6px 8px",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                >
+                  <Bell size={11} />
+                  {pendingSplits.length > 0 && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: -6,
+                        right: -6,
+                        minWidth: 15,
+                        height: 15,
+                        padding: "0 3px",
+                        boxSizing: "border-box",
+                        borderRadius: 8,
+                        background: T.gold,
+                        color: "#0b0d10",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 9,
+                        fontWeight: 700,
+                        lineHeight: "15px",
+                        textAlign: "center",
+                      }}
+                    >
+                      {pendingSplits.length}
+                    </span>
+                  )}
                 </button>
                 <SyncIndicator state={syncState} lastSavedAt={lastSavedAt} />
                 {auth?.kind === "google" && auth?.picture && (
