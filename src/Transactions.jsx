@@ -123,6 +123,30 @@ export async function saveTransactionsToServer(auth, transactions, bondIncome, s
   return await res.json();
 }
 
+// Fidelity automation staging (item 38): read/clear the `:fidelity-pending` blob
+// written by the scraper via the service-token endpoint. Uses normal user auth.
+// Fail-silent: a user who never enabled the automation just gets an empty result.
+async function fetchPendingFidelity(auth) {
+  try {
+    const res = await fetch("/api/fidelity-pending", { headers: authHeaders(auth) });
+    if (!res.ok) return { transactions: [], bondIncome: [] };
+    const d = await res.json();
+    return {
+      transactions: Array.isArray(d.transactions) ? d.transactions : [],
+      bondIncome: Array.isArray(d.bondIncome) ? d.bondIncome : [],
+      updatedAt: d.updatedAt || null,
+    };
+  } catch {
+    return { transactions: [], bondIncome: [] };
+  }
+}
+
+async function clearPendingFidelity(auth) {
+  try {
+    await fetch("/api/fidelity-pending", { method: "DELETE", headers: authHeaders(auth) });
+  } catch {}
+}
+
 // UUID — falls back if crypto.randomUUID is unavailable.
 function newId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -4289,6 +4313,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [importOpen, setImportOpen] = useState(false);
   const [splitCardOpen, setSplitCardOpen] = useState(false);
   const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
+  // Fidelity automation (item 38): trades staged by the scraper, awaiting approval.
+  const [pendingFid, setPendingFid] = useState([]);
+  const [pendingFidBond, setPendingFidBond] = useState([]);
+  const [pendingFidOpen, setPendingFidOpen] = useState(true);
+  const [pendingFidChecked, setPendingFidChecked] = useState(() => new Set());
+  const [approvingFid, setApprovingFid] = useState(false);
   // Ticker resolution status: { [TICKER]: "ok" | "error" } — cached in localStorage
   // so we don't re-hit the price API for already-validated tickers every load.
   const [tickerStatus, setTickerStatus] = useState(() => {
@@ -4415,6 +4445,77 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setError(err.message || "Save failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Load Fidelity automation staging on mount. Filters out anything already live
+  // (defensive — the server staging endpoint already skips live dups). Fail-silent.
+  useEffect(() => {
+    let cancelled = false;
+    fetchPendingFidelity(auth).then((p) => {
+      if (cancelled) return;
+      const liveKeys = new Set(transactions.map(dupKey));
+      const fresh = (p.transactions || []).filter((t) => !liveKeys.has(dupKey(t)));
+      setPendingFid(fresh);
+      setPendingFidBond(p.bondIncome || []);
+      setPendingFidChecked(new Set(fresh.map((t) => t.id || dupKey(t))));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth, transactions]);
+
+  function togglePendingFid(key) {
+    setPendingFidChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function approvePendingFid() {
+    const keyOf = (t) => t.id || dupKey(t);
+    const selected = pendingFid.filter((t) => pendingFidChecked.has(keyOf(t)));
+    if (selected.length === 0) return;
+    setApprovingFid(true);
+    try {
+      // Merge selected staged trades into live, deduped by dupKey.
+      const liveKeys = new Set(transactions.map(dupKey));
+      const toAdd = selected.filter((t) => !liveKeys.has(dupKey(t)));
+      const nextTx = [...transactions, ...toAdd];
+      // Merge staged bond income, deduped by date|ticker|amount.
+      const seen = new Set(bondIncome.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
+      const nextIncome = [...bondIncome];
+      for (const e of pendingFidBond) {
+        const k = `${e.date}|${e.ticker}|${e.amount}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        nextIncome.push(e);
+      }
+      await persist(nextTx, nextIncome);
+      await clearPendingFidelity(auth);
+      setPendingFid([]);
+      setPendingFidBond([]);
+      setPendingFidChecked(new Set());
+      verifyTickers(toAdd);
+    } catch (err) {
+      setError(err.message || "Approve failed");
+    } finally {
+      setApprovingFid(false);
+    }
+  }
+
+  async function discardPendingFid() {
+    setApprovingFid(true);
+    try {
+      await clearPendingFidelity(auth);
+      setPendingFid([]);
+      setPendingFidBond([]);
+      setPendingFidChecked(new Set());
+    } finally {
+      setApprovingFid(false);
     }
   }
 
@@ -4616,6 +4717,190 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           </div>
         )}
       </div>
+
+      {/* Fidelity Import — staged by the automation, awaiting approval (item 38) */}
+      {pendingFid.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setPendingFidOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              background: "rgba(201,169,97,0.06)",
+              border: `1px solid ${T.gold}55`,
+              borderRadius: pendingFidOpen ? "4px 4px 0 0" : 4,
+              padding: "10px 14px",
+              cursor: "pointer",
+              color: T.gold,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+            }}
+          >
+            <ChevronDown
+              size={12}
+              style={{
+                transform: pendingFidOpen ? "none" : "rotate(-90deg)",
+                transition: "transform 0.2s",
+              }}
+            />
+            Fidelity Import
+            <span
+              style={{
+                marginLeft: 8,
+                background: T.gold,
+                color: "#0b0d10",
+                fontFamily: FONT_MONO,
+                fontSize: 9,
+                fontWeight: 700,
+                padding: "1px 6px",
+                borderRadius: 8,
+              }}
+            >
+              {pendingFid.length} new
+            </span>
+          </button>
+
+          {pendingFidOpen && (
+            <div
+              style={{
+                background: T.card,
+                border: `1px solid ${T.border}`,
+                borderTop: "none",
+                borderRadius: "0 0 4px 4px",
+                padding: 14,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 12,
+                  color: T.textDim,
+                  marginBottom: 12,
+                  lineHeight: 1.5,
+                }}
+              >
+                Staged by the automated import. Review and approve to add to your
+                transactions. Nothing is saved until you approve.
+              </div>
+
+              <div style={{ overflowX: "auto", marginBottom: 12 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 28 }}>
+                        <input
+                          type="checkbox"
+                          checked={pendingFidChecked.size === pendingFid.length}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setPendingFidChecked(new Set(pendingFid.map((t) => t.id || dupKey(t))));
+                            } else {
+                              setPendingFidChecked(new Set());
+                            }
+                          }}
+                        />
+                      </th>
+                      {["Date", "B/S", "Ticker", "Qty", "Price"].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            textAlign: h === "Qty" || h === "Price" ? "right" : "left",
+                            fontFamily: FONT_MONO,
+                            fontSize: 9,
+                            letterSpacing: "0.1em",
+                            textTransform: "uppercase",
+                            color: T.textFaint,
+                            padding: "4px 8px",
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingFid.map((t) => {
+                      const key = t.id || dupKey(t);
+                      const cur = t.currency || "USD";
+                      return (
+                        <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
+                          <td style={{ padding: "4px 0" }}>
+                            <input
+                              type="checkbox"
+                              checked={pendingFidChecked.has(key)}
+                              onChange={() => togglePendingFid(key)}
+                            />
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                            {t.date}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: t.side === "sell" ? T.red : T.green, padding: "4px 8px" }}>
+                            {t.side === "sell" ? "S" : "B"}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                            {t.ticker}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                            {fmtNum(t.qty)}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                            {valuesHidden ? "•••" : fmtMoney(t.price, cur)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={approvePendingFid}
+                  disabled={approvingFid || pendingFidChecked.size === 0}
+                  style={{
+                    background: T.gold,
+                    color: "#0b0d10",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "8px 14px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                    cursor: approvingFid || pendingFidChecked.size === 0 ? "default" : "pointer",
+                    opacity: approvingFid || pendingFidChecked.size === 0 ? 0.5 : 1,
+                  }}
+                >
+                  {approvingFid ? "Working…" : `Approve ${pendingFidChecked.size} of ${pendingFid.length}`}
+                </button>
+                <button
+                  onClick={discardPendingFid}
+                  disabled={approvingFid}
+                  style={{
+                    background: "transparent",
+                    color: T.textDim,
+                    border: `1px solid ${T.border}`,
+                    borderRadius: 4,
+                    padding: "8px 14px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    cursor: approvingFid ? "default" : "pointer",
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Splits / Groupings inline card */}
       {(pendingSplits.length > 0 || splitEvents.length > 0) && (
