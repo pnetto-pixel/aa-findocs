@@ -61,8 +61,14 @@ async function main() {
 
   try {
     // --- Login -------------------------------------------------------------
-    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' });
-    await page.fill('#dom-username-input', FIDELITY_USER);   // TODO: confirm selector
+    // The login URL 307-redirects to the real page; waiting for full
+    // 'domcontentloaded' on a heavy SPA times out. Wait only for the navigation
+    // to commit, then wait explicitly for the username field to appear.
+    page.setDefaultTimeout(60000);
+    await page.goto(LOGIN_URL, { waitUntil: 'commit', timeout: 60000 });
+    const userField = page.locator('#dom-username-input');
+    await userField.waitFor({ state: 'visible', timeout: 60000 });
+    await userField.fill(FIDELITY_USER);                      // TODO: confirm selector
     await page.fill('#dom-pswd-input', FIDELITY_PASS);       // TODO: confirm selector
     await page.click('#dom-login-button');                    // TODO: confirm selector
 
