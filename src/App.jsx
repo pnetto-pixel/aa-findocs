@@ -52,6 +52,17 @@ const CASH_ID = "cash-permanent";
 const MAX_ALERT_LOG = 50;
 const ALERT_DISPLAY_COUNT = 10;
 
+function alertLogKey(auth) {
+  if (!auth) return "alertLog:anon";
+  if (auth.kind === "google" && auth.email) {
+    return `alertLog:g:${auth.email}`;
+  }
+  if (auth.kind === "password" && auth.password) {
+    return `alertLog:p:${auth.password.slice(0, 8)}`;
+  }
+  return "alertLog:anon";
+}
+
 function ensureCashAccount(list) {
   const arr = Array.isArray(list) ? list : [];
   const hasCash = arr.some((h) => h && h.id === CASH_ID);
@@ -610,12 +621,20 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // each was first detected ("sentDate"). Persisted in localStorage; read state
   // and last-10 display are derived from it.
   const [alertLog, setAlertLog] = useState(() => {
+    const key = alertLogKey(auth);
     try {
-      const raw = localStorage.getItem("alertLog");
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
+      const raw = localStorage.getItem(key);
+      if (raw) return JSON.parse(raw);
+      // One-time migration from legacy unscoped key
+      const legacy = localStorage.getItem("alertLog");
+      if (legacy) {
+        const parsed = JSON.parse(legacy);
+        localStorage.setItem(key, legacy);
+        localStorage.removeItem("alertLog");
+        return parsed;
+      }
+    } catch {}
+    return [];
   });
 
   // Manual asset form state
@@ -775,7 +794,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Persist the alert log so read state and bundling survive reloads.
   useEffect(() => {
     try {
-      localStorage.setItem("alertLog", JSON.stringify(alertLog));
+      localStorage.setItem(alertLogKey(auth), JSON.stringify(alertLog));
     } catch (e) {}
   }, [alertLog]);
 
