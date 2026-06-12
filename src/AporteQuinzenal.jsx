@@ -100,6 +100,8 @@ function computeDellSale(transactions, usdBrlRate, year, month) {
 
 // Sums buy transactions for the given year+month, split by first and second
 // halves (days 1-15 vs 16-last). DELL vesting is excluded (same as chart).
+// Bank Bonds: only net positive (buys − sells) counts per half — a rollover
+// (redeem + recompra) does not inflate the contribution.
 // Returns { half1: number, half2: number } in USD.
 function computeHalfInvested(transactions, usdBrlRate, year, month) {
   const yStr = String(year);
@@ -107,26 +109,31 @@ function computeHalfInvested(transactions, usdBrlRate, year, month) {
   const prefix = `${yStr}-${mStr}-`;
   const lastDay = new Date(year, month, 0).getDate();
 
-  let half1 = 0;
-  let half2 = 0;
+  let half1 = 0, half2 = 0;
+  let bbBuy1 = 0, bbSell1 = 0, bbBuy2 = 0, bbSell2 = 0;
 
   for (const tx of transactions) {
-    if (tx.side !== "buy") continue;
-    if (!tx.date) continue;
-    if ((tx.ticker || "").toUpperCase() === "DELL") continue;
-    if (!tx.date.startsWith(prefix)) continue;
-
+    if (!tx.date || !tx.date.startsWith(prefix)) continue;
     const day = parseInt(tx.date.slice(8, 10), 10);
     if (day < 1 || day > lastDay) continue;
+    if ((tx.ticker || "").toUpperCase() === "DELL") continue;
 
+    const isFirst = day <= 15;
     const amount = txToUSD(tx, usdBrlRate);
 
-    if (day <= 15) {
-      half1 += amount;
-    } else {
-      half2 += amount;
+    if (tx.assetClass === "Bank Bonds") {
+      if (tx.side === "buy") {
+        if (isFirst) bbBuy1 += amount; else bbBuy2 += amount;
+      } else if (tx.side === "sell") {
+        if (isFirst) bbSell1 += amount; else bbSell2 += amount;
+      }
+    } else if (tx.side === "buy") {
+      if (isFirst) half1 += amount; else half2 += amount;
     }
   }
+
+  half1 += Math.max(0, bbBuy1 - bbSell1);
+  half2 += Math.max(0, bbBuy2 - bbSell2);
 
   return { half1, half2 };
 }
@@ -173,21 +180,25 @@ function txToUSD(tx, usdBrlRate) {
 
 // Full history from first transaction, grouped by the chosen granularity.
 // DELL buys are excluded (stock vesting, not real contributions).
+// Bank Bonds: only net positive (buys − sells) per bucket counts — rollovers
+// (redeem + recompra) do not inflate the contribution history.
 // Optional fromDate/toDate ("YYYY-MM-DD") filter the date range shown.
 // groupBy: "Month" | "Quarter" | "Half" | "Year"
 function buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate) {
-  const buys = transactions.filter((tx) => {
-    if (tx.side !== "buy") return false;
+  const relevant = transactions.filter((tx) => {
+    if (tx.side !== "buy" && !(tx.assetClass === "Bank Bonds" && tx.side === "sell")) return false;
     if ((tx.ticker || "").toUpperCase() === "DELL") return false;
     if (!tx.date) return false;
     if (fromDate && tx.date < fromDate) return false;
     if (toDate && tx.date > toDate) return false;
     return true;
   });
-  if (!buys.length) return [];
+  if (!relevant.length) return [];
 
   const byKey = {};
-  for (const tx of buys) {
+  const bbBuy = {}, bbSell = {};
+
+  for (const tx of relevant) {
     const [yStr, mStr] = tx.date.slice(0, 7).split("-");
     const y = parseInt(yStr, 10);
     const m = parseInt(mStr, 10);
@@ -201,7 +212,21 @@ function buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate) {
     } else {
       key = yStr;
     }
-    byKey[key] = (byKey[key] || 0) + txToUSD(tx, usdBrlRate);
+
+    const amount = txToUSD(tx, usdBrlRate);
+    if (tx.assetClass === "Bank Bonds") {
+      if (tx.side === "buy") bbBuy[key] = (bbBuy[key] || 0) + amount;
+      else bbSell[key] = (bbSell[key] || 0) + amount;
+    } else if (tx.side === "buy") {
+      byKey[key] = (byKey[key] || 0) + amount;
+    }
+  }
+
+  // Merge net Bank Bond contributions per bucket
+  const allKeys = new Set([...Object.keys(byKey), ...Object.keys(bbBuy)]);
+  for (const key of allKeys) {
+    const net = Math.max(0, (bbBuy[key] || 0) - (bbSell[key] || 0));
+    if (net > 0) byKey[key] = (byKey[key] || 0) + net;
   }
 
   return Object.keys(byKey)
