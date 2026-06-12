@@ -1,0 +1,41 @@
+# Copy this file to .github/workflows/sync.yml in the PRIVATE fidelity-sync repo.
+#
+# Manual trigger only (workflow_dispatch) — you press "Run workflow" in the GitHub
+# app when you want an update. No schedule until you opt in. To enable a daily run
+# later, uncomment the `schedule` block.
+
+name: Fidelity sync
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: '0 22 * * 1-5'   # weekdays ~22:00 UTC (after US close). Opt-in later.
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run sync
+        env:
+          FIDELITY_USER: ${{ secrets.FIDELITY_USER }}
+          FIDELITY_PASS: ${{ secrets.FIDELITY_PASS }}
+          FIDELITY_TOTP_SECRET: ${{ secrets.FIDELITY_TOTP_SECRET }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          INGEST_URL: https://aa-findocs.vercel.app/api/ingest-fidelity
+        run: npm run sync
