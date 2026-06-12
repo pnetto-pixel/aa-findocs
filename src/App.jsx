@@ -2580,7 +2580,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             <div
               style={{
                 fontFamily: FONT_DISPLAY,
-                fontSize: 38,
+                fontSize: windowWidth >= 1024 ? 44 : 38,
                 fontWeight: 500,
                 letterSpacing: "-0.02em",
                 lineHeight: 1.05,
@@ -2613,327 +2613,340 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           </section>
 
-          {/* Allocation charts: Target vs Actual */}
-          {(chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0) && (
-            <section
-              style={{
-                background: T.card,
-                border: `1px solid ${T.borderSoft}`,
-                borderRadius: 4,
-                padding: 16,
-                marginBottom: 20,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: 14,
-                  flexWrap: "wrap",
-                  gap: 8,
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.18em",
-                    color: T.textDim,
-                    textTransform: "uppercase",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                >
-                  Allocation
-                  {chartData.portfolioDayChange != null && (
-                    <span
-                      style={{
-                        textTransform: "none",
-                        letterSpacing: "0.04em",
-                        fontSize: 11,
-                        color:
-                          chartData.portfolioDayChange > 0
-                            ? T.green
-                            : chartData.portfolioDayChange < 0
-                            ? T.red
-                            : T.textDim,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 3,
-                      }}
-                    >
-                      {chartData.portfolioDayChange > 0 ? (
-                        <TrendingUp size={10} strokeWidth={2.5} />
-                      ) : chartData.portfolioDayChange < 0 ? (
-                        <TrendingDown size={10} strokeWidth={2.5} />
-                      ) : (
-                        <Minus size={10} strokeWidth={2.5} />
-                      )}
-                      {chartData.portfolioDayChange > 0 ? "+" : ""}
-                      {chartData.portfolioDayChange.toFixed(2)}%
-                    </span>
-                  )}
-                  {sp500 && sp500.dayChangePct != null && (
-                    <span
-                      style={{
-                        textTransform: "none",
-                        letterSpacing: "0.04em",
-                        fontSize: 11,
-                        color: T.textDim,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 4,
-                        paddingLeft: 8,
-                        borderLeft: `1px solid ${T.borderSoft}`,
-                      }}
-                    >
-                      <span style={{ color: T.textFaint, fontSize: 9, letterSpacing: "0.1em" }}>
-                        S&P
-                      </span>
-                      <span
-                        style={{
-                          color:
-                            sp500.dayChangePct > 0
-                              ? T.green
-                              : sp500.dayChangePct < 0
-                              ? T.red
-                              : T.textDim,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 2,
-                        }}
-                      >
-                        {sp500.dayChangePct > 0 ? (
-                          <TrendingUp size={10} strokeWidth={2.5} />
-                        ) : sp500.dayChangePct < 0 ? (
-                          <TrendingDown size={10} strokeWidth={2.5} />
-                        ) : (
-                          <Minus size={10} strokeWidth={2.5} />
-                        )}
-                        {sp500.dayChangePct > 0 ? "+" : ""}
-                        {sp500.dayChangePct.toFixed(2)}%
-                      </span>
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <ToggleButton
-                    active={chartGrouping === "class"}
-                    onClick={() => setChartGrouping("class")}
-                    label="By class"
-                  />
-                  <ToggleButton
-                    active={chartGrouping === "holding"}
-                    onClick={() => setChartGrouping("holding")}
-                    label="Per holding"
-                  />
-                </div>
-              </div>
-
-              {(() => {
-                // Responsive donut size: clamp [140, 220] based on available column width.
-                // Column width = (min(viewport, 1200) - 32 outer padding - 32 section padding - 12 gap) / 2
-                // Below 640px (mobile) the clamp floor of 140 ensures no regression.
-                const w = Math.min(windowWidth, 1200);
-                const colW = (w - 32 - 32 - 12) / 2;
-                const donutSize = Math.round(Math.min(Math.max(colW * 0.75, 140), 220));
-                return (
-                  <div
+          {/* Allocation + Rebalance: side-by-side on desktop when both visible */}
+          {(() => {
+            const showAlloc = chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
+            const showRebal = holdings.some((h) => h.target > 0);
+            const sideBySide = windowWidth >= 1024 && showAlloc && showRebal;
+            return (
+              <div style={{ display: sideBySide ? "flex" : "block", gap: 20, alignItems: "flex-start" }}>
+                {/* Allocation charts: Target vs Actual */}
+                {showAlloc && (
+                  <section
                     style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: 12,
-                      marginBottom: 14,
+                      background: T.card,
+                      border: `1px solid ${T.borderSoft}`,
+                      borderRadius: 4,
+                      padding: 16,
+                      marginBottom: sideBySide ? 0 : 20,
+                      flex: sideBySide ? "1 1 0" : undefined,
                     }}
                   >
-                    <DonutChart
-                      size={donutSize}
-                      slices={chartData.targetSlices}
-                      centerLabel="Target"
-                      centerValue={
-                        chartData.totalTarget < 99.5
-                          ? fmtPct(chartData.totalTarget)
-                          : "100%"
-                      }
-                      valuesHidden={valuesHidden}
-                    />
-                    <DonutChart
-                      size={donutSize}
-                      slices={chartData.actualSlices}
-                      centerLabel="Actual"
-                      centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
-                      valuesHidden={valuesHidden}
-                    />
-                  </div>
-                );
-              })()}
-
-              {/* Shared legend */}
-              <ChartLegend
-                colorMap={chartData.colorMap}
-                targetSlices={chartData.targetSlices}
-                actualSlices={chartData.actualSlices}
-                dayChangeMap={chartData.dayChangeMap}
-              />
-            </section>
-          )}
-          {/* Rebalance Section */}
-          {holdings.some((h) => h.target > 0) && (
-            <section style={{ marginTop: 28 }}>
-              <button
-                onClick={() => setShowRebalance(!showRebalance)}
-                style={{
-                  width: "100%",
-                  background: T.card,
-                  border: `1px solid ${T.borderSoft}`,
-                  borderRadius: 4,
-                  padding: "14px 16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  color: T.text,
-                }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: "0.18em",
-                    textTransform: "uppercase",
-                    color: T.gold,
-                  }}
-                >
-                  <Scale size={14} strokeWidth={2} />
-                  Rebalance Suggestion
-                </span>
-                <ChevronDown
-                  size={16}
-                  style={{
-                    color: T.textDim,
-                    transform: showRebalance ? "rotate(180deg)" : "none",
-                    transition: "transform 0.2s",
-                  }}
-                />
-              </button>
-
-              {showRebalance && (
-                <div
-                  className="card-enter"
-                  style={{
-                    background: T.card,
-                    border: `1px solid ${T.borderSoft}`,
-                    borderTop: "none",
-                    borderRadius: "0 0 4px 4px",
-                    padding: 16,
-                    marginTop: -1,
-                  }}
-                >
-                  {/* New cash input */}
-                  <div style={{ marginBottom: 16 }}>
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: 10,
-                        letterSpacing: "0.18em",
-                        textTransform: "uppercase",
-                        color: T.textDim,
-                        fontFamily: FONT_MONO,
-                        marginBottom: 6,
-                      }}
-                    >
-                      New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
-                    </label>
-                    <Input
-                      placeholder="0.00"
-                      value={newCash}
-                      onChange={(e) => setNewCash(e.target.value)}
-                      inputMode="decimal"
-                    />
                     <div
                       style={{
-                        fontSize: 11,
-                        color: T.textFaint,
-                        fontFamily: FONT_MONO,
-                        marginTop: 6,
-                        lineHeight: 1.4,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: 14,
+                        flexWrap: "wrap",
+                        gap: 8,
                       }}
                     >
-                      Suggestions are buys only, integer shares, capped at ${PER_ASSET_CAP.toLocaleString()} per asset. If cash is set, total purchases stay within it (most underweight first).
-                    </div>
-                  </div>
-
-                  {/* Rebalance rows */}
-                  {rebalance.length === 0 ? (
-                    <div
-                      style={{
-                        background: T.cardElev,
-                        borderRadius: 2,
-                        padding: "16px",
-                        textAlign: "center",
-                        fontSize: 12,
-                        color: T.textDim,
-                        fontFamily: FONT_DISPLAY,
-                        fontStyle: "italic",
-                      }}
-                    >
-                      Nothing to buy — you're at or above target on every holding.
-                    </div>
-                  ) : (
-                    <>
                       <div
                         style={{
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          letterSpacing: "0.18em",
+                          color: T.textDim,
+                          textTransform: "uppercase",
                           display: "flex",
-                          flexDirection: "column",
-                          gap: 1,
-                          background: T.borderSoft,
-                          border: `1px solid ${T.borderSoft}`,
-                          borderRadius: 2,
-                          overflow: "hidden",
+                          alignItems: "center",
+                          gap: 10,
                         }}
                       >
-                        {rebalance.map((r) => (
-                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
-                        ))}
+                        Allocation
+                        {chartData.portfolioDayChange != null && (
+                          <span
+                            style={{
+                              textTransform: "none",
+                              letterSpacing: "0.04em",
+                              fontSize: 11,
+                              color:
+                                chartData.portfolioDayChange > 0
+                                  ? T.green
+                                  : chartData.portfolioDayChange < 0
+                                  ? T.red
+                                  : T.textDim,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 3,
+                            }}
+                          >
+                            {chartData.portfolioDayChange > 0 ? (
+                              <TrendingUp size={10} strokeWidth={2.5} />
+                            ) : chartData.portfolioDayChange < 0 ? (
+                              <TrendingDown size={10} strokeWidth={2.5} />
+                            ) : (
+                              <Minus size={10} strokeWidth={2.5} />
+                            )}
+                            {chartData.portfolioDayChange > 0 ? "+" : ""}
+                            {chartData.portfolioDayChange.toFixed(2)}%
+                          </span>
+                        )}
+                        {sp500 && sp500.dayChangePct != null && (
+                          <span
+                            style={{
+                              textTransform: "none",
+                              letterSpacing: "0.04em",
+                              fontSize: 11,
+                              color: T.textDim,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              paddingLeft: 8,
+                              borderLeft: `1px solid ${T.borderSoft}`,
+                            }}
+                          >
+                            <span style={{ color: T.textFaint, fontSize: 9, letterSpacing: "0.1em" }}>
+                              S&P
+                            </span>
+                            <span
+                              style={{
+                                color:
+                                  sp500.dayChangePct > 0
+                                    ? T.green
+                                    : sp500.dayChangePct < 0
+                                    ? T.red
+                                    : T.textDim,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 2,
+                              }}
+                            >
+                              {sp500.dayChangePct > 0 ? (
+                                <TrendingUp size={10} strokeWidth={2.5} />
+                              ) : sp500.dayChangePct < 0 ? (
+                                <TrendingDown size={10} strokeWidth={2.5} />
+                              ) : (
+                                <Minus size={10} strokeWidth={2.5} />
+                              )}
+                              {sp500.dayChangePct > 0 ? "+" : ""}
+                              {sp500.dayChangePct.toFixed(2)}%
+                            </span>
+                          </span>
+                        )}
                       </div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <ToggleButton
+                          active={chartGrouping === "class"}
+                          onClick={() => setChartGrouping("class")}
+                          label="By class"
+                        />
+                        <ToggleButton
+                          active={chartGrouping === "holding"}
+                          onClick={() => setChartGrouping("holding")}
+                          label="Per holding"
+                        />
+                      </div>
+                    </div>
 
-                      {/* Summary */}
-                      <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} valuesHidden={valuesHidden} />
-                    </>
-                  )}
+                    {(() => {
+                      // Responsive donut size: clamp [140, 220] based on available column width.
+                      // When side-by-side: allocation section is (containerW - 20gap) / 2 wide, minus 32 section padding.
+                      // Below 640px (mobile) the clamp floor of 140 ensures no regression.
+                      const w = Math.min(windowWidth, 1200);
+                      const containerW = w - 32; // outer padding 16px each side
+                      const allocSectionW = sideBySide ? (containerW - 20) / 2 - 32 : containerW - 32;
+                      const colW = (allocSectionW - 12) / 2; // gap between the two donuts
+                      const donutSize = Math.round(Math.min(Math.max(colW * 0.75, 140), 220));
+                      return (
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 12,
+                            marginBottom: 14,
+                          }}
+                        >
+                          <DonutChart
+                            size={donutSize}
+                            slices={chartData.targetSlices}
+                            centerLabel="Target"
+                            centerValue={
+                              chartData.totalTarget < 99.5
+                                ? fmtPct(chartData.totalTarget)
+                                : "100%"
+                            }
+                            valuesHidden={valuesHidden}
+                          />
+                          <DonutChart
+                            size={donutSize}
+                            slices={chartData.actualSlices}
+                            centerLabel="Actual"
+                            centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
+                            valuesHidden={valuesHidden}
+                          />
+                        </div>
+                      );
+                    })()}
 
-                  {Math.abs(totalTarget - 100) > 0.5 && (
-                    <div
+                    {/* Shared legend */}
+                    <ChartLegend
+                      colorMap={chartData.colorMap}
+                      targetSlices={chartData.targetSlices}
+                      actualSlices={chartData.actualSlices}
+                      dayChangeMap={chartData.dayChangeMap}
+                    />
+                  </section>
+                )}
+                {/* Rebalance Section */}
+                {showRebal && (
+                  <section style={{ marginTop: sideBySide ? 0 : 28, flex: sideBySide ? "1 1 0" : undefined }}>
+                    <button
+                      onClick={() => setShowRebalance(!showRebalance)}
                       style={{
-                        marginTop: 12,
-                        padding: "8px 10px",
-                        fontSize: 11,
-                        color: T.gold,
-                        background: "rgba(201, 169, 97, 0.06)",
-                        border: `1px solid ${T.goldDim}33`,
-                        borderRadius: 2,
+                        width: "100%",
+                        background: T.card,
+                        border: `1px solid ${T.borderSoft}`,
+                        borderRadius: 4,
+                        padding: "14px 16px",
                         display: "flex",
-                        alignItems: "flex-start",
-                        gap: 6,
-                        fontFamily: FONT_MONO,
-                        lineHeight: 1.5,
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        color: T.text,
                       }}
                     >
-                      <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
-                      <span>
-                        Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
-                        assume the targets you've set; cash may not be fully deployed.
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.18em",
+                          textTransform: "uppercase",
+                          color: T.gold,
+                        }}
+                      >
+                        <Scale size={14} strokeWidth={2} />
+                        Rebalance Suggestion
                       </span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
+                      <ChevronDown
+                        size={16}
+                        style={{
+                          color: T.textDim,
+                          transform: showRebalance ? "rotate(180deg)" : "none",
+                          transition: "transform 0.2s",
+                        }}
+                      />
+                    </button>
+
+                    {showRebalance && (
+                      <div
+                        className="card-enter"
+                        style={{
+                          background: T.card,
+                          border: `1px solid ${T.borderSoft}`,
+                          borderTop: "none",
+                          borderRadius: "0 0 4px 4px",
+                          padding: 16,
+                          marginTop: -1,
+                        }}
+                      >
+                        {/* New cash input */}
+                        <div style={{ marginBottom: 16 }}>
+                          <label
+                            style={{
+                              display: "block",
+                              fontSize: 10,
+                              letterSpacing: "0.18em",
+                              textTransform: "uppercase",
+                              color: T.textDim,
+                              fontFamily: FONT_MONO,
+                              marginBottom: 6,
+                            }}
+                          >
+                            New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
+                          </label>
+                          <Input
+                            placeholder="0.00"
+                            value={newCash}
+                            onChange={(e) => setNewCash(e.target.value)}
+                            inputMode="decimal"
+                          />
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: T.textFaint,
+                              fontFamily: FONT_MONO,
+                              marginTop: 6,
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            Suggestions are buys only, integer shares, capped at ${PER_ASSET_CAP.toLocaleString()} per asset. If cash is set, total purchases stay within it (most underweight first).
+                          </div>
+                        </div>
+
+                        {/* Rebalance rows */}
+                        {rebalance.length === 0 ? (
+                          <div
+                            style={{
+                              background: T.cardElev,
+                              borderRadius: 2,
+                              padding: "16px",
+                              textAlign: "center",
+                              fontSize: 12,
+                              color: T.textDim,
+                              fontFamily: FONT_DISPLAY,
+                              fontStyle: "italic",
+                            }}
+                          >
+                            Nothing to buy — you're at or above target on every holding.
+                          </div>
+                        ) : (
+                          <>
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 1,
+                                background: T.borderSoft,
+                                border: `1px solid ${T.borderSoft}`,
+                                borderRadius: 2,
+                                overflow: "hidden",
+                              }}
+                            >
+                              {rebalance.map((r) => (
+                                <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
+                              ))}
+                            </div>
+
+                            {/* Summary */}
+                            <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} valuesHidden={valuesHidden} />
+                          </>
+                        )}
+
+                        {Math.abs(totalTarget - 100) > 0.5 && (
+                          <div
+                            style={{
+                              marginTop: 12,
+                              padding: "8px 10px",
+                              fontSize: 11,
+                              color: T.gold,
+                              background: "rgba(201, 169, 97, 0.06)",
+                              border: `1px solid ${T.goldDim}33`,
+                              borderRadius: 2,
+                              display: "flex",
+                              alignItems: "flex-start",
+                              gap: 6,
+                              fontFamily: FONT_MONO,
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
+                            <span>
+                              Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
+                              assume the targets you've set; cash may not be fully deployed.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
+              </div>
+            );
+          })()}
 
 
           {/* Holdings */}

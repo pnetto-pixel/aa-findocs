@@ -96,7 +96,7 @@
 
 ### Tab Contributions — Bank Bonds e aporte líquido
 
-- **Filtro de Bank Bonds no cálculo de aporte investido**: Na tab Contributions, o valor investido em Bank Bonds não deve ser considerado como aporte se houve um bond maturing no mesmo período. Só conta como contribution se o net qty overall de Bank Bonds cresceu recentemente (compra nova > redeem no período). Evita inflar o aporte quinzenal quando o usuário apenas rolou um bond que venceu.
+- **Filtro de Bank Bonds no cálculo de aporte investido — ENTREGUE (jun/2026 — PR #108 + fix fa48b02):** `computeHalfInvested` e `buildChartData` em `src/AporteQuinzenal.jsx` passaram a usar net qty de Bank Bonds por período (compras − redemptions). Rolagem de bond que venceu não infla mais o aporte quinzenal nem o histórico de aportes. Fix subsequente (fa48b02): campo "Dividends (last month)" agora soma também os juros reais de bonds (`bondIncome` com `kind: "interest"`) que o `POST /api/dividends` não retorna (endpoint só processa `kind: "dividend"`).
 
 ### Automacao de Download Fidelity
 
