@@ -422,10 +422,14 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             const now = new Date();
             const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
             const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
-            const total = (data.events || [])
+            const apiTotal = (data.events || [])
               .filter((e) => e.date && e.date.startsWith(prefix))
               .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
-            setDivLastMonth(total);
+            // Add real bond interest payments (kind="interest") not returned by /api/dividends
+            const bondTotal = (bi || [])
+              .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
+              .reduce((sum, e) => sum + Number(e.amount), 0);
+            setDivLastMonth(apiTotal + bondTotal);
           })
           .catch(() => { setDivLastMonth(0); });
       })
