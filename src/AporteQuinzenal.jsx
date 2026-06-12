@@ -381,6 +381,13 @@ function PlanRow({ label, value, onChange }) {
 export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [config, setConfig] = useState(loadConfig);
 
+  const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
+  useEffect(() => {
+    function handleResize() { setWindowWidth(window.innerWidth); }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const [transactions, setTransactions] = useState([]);
   const [bondIncome, setBondIncome] = useState([]);
   const [txLoading, setTxLoading] = useState(true);
@@ -522,8 +529,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   return (
     <div style={{ paddingBottom: 40 }}>
+      <div style={{ display: windowWidth >= 768 ? "flex" : "block", gap: 16, alignItems: "flex-start" }}>
       {/* ── Monthly Plan ── */}
-      <section style={cardStyle}>
+      <section style={{ ...cardStyle, flex: windowWidth >= 768 ? "3 1 0" : undefined }}>
         <div style={goldAccent} />
         <CardToggle
           label="Monthly Plan"
@@ -720,7 +728,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
       </section>
 
       {/* ── This Month (Track) ── */}
-      <section style={cardStyle}>
+      <section style={{ ...cardStyle, flex: windowWidth >= 768 ? "2 1 0" : undefined, marginTop: windowWidth >= 768 ? 0 : 16 }}>
         <div style={goldAccent} />
         <CardToggle
           label="This Month"
@@ -819,6 +827,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
           </div>
         )}
       </section>
+      </div>
 
       {/* ── Contribution History ── */}
       <section style={{ ...cardStyle, marginBottom: 0 }}>
