@@ -1895,7 +1895,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 display: "flex",
                 alignItems: "flex-start",
                 justifyContent: "center",
-                padding: "24px 16px",
+                paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)",
+                paddingBottom: "24px",
+                paddingLeft: "16px",
+                paddingRight: "16px",
                 overflowY: "auto",
               }}
               onClick={() => setAlertPanelOpen(false)}
