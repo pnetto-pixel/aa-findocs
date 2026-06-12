@@ -82,10 +82,12 @@
 
 ## 🔲 Pendentes
 
-### Desktop responsivo — polish futuro
-- **Layout 2 colunas / sidebar em widescreen**: aproveitar a largura extra de telas > 1024px com layout de 2 colunas (ex: holdings + rebalance side-by-side). Fora do escopo do PR #85.
-- **Responsividade dedicada em sub-views**: Transactions, Performance, Dividends e AporteQuinzenal beneficiam do container expandido, mas nao receberam ajustes internos de layout para widescreen. Pode ser feito em sessions futuras por view.
-- **Font-size por breakpoint**: textos e headings podem escalar com a viewport em telas grandes. Nao implementado no PR #85.
+### Desktop responsivo — polish futuro — ENTREGUE (jun/2026 — commit c09a595)
+
+- **Layout 2 colunas Allocation + Rebalance — ENTREGUE**: em `App.jsx`, quando `windowWidth >= 1024` e ambos os cards estão visíveis, Allocation (flex 1) e Rebalance (flex 1) ficam lado a lado. Stacked em mobile sem regressão. Donut size recalculado para a coluna mais estreita.
+- **Total Value font scaling — ENTREGUE**: `fontSize: 38` → `windowWidth >= 1024 ? 44 : 38`.
+- **AporteQuinzenal 2 colunas — ENTREGUE**: Monthly Plan (flex 3) + This Month (flex 2) lado a lado em `windowWidth >= 768`. `windowWidth` state + resize listener adicionados em `AporteQuinzenal.jsx`. Contribution History permanece full-width.
+- **Sub-views (Transactions, Performance, Dividends)**: KPI cards já usam `flexWrap`, tabelas têm scroll horizontal, charts usam `ResponsiveContainer` — comportamento adequado sem mudanças adicionais.
 
 
 ### US Bank Bonds — income real (follow-up do item 36)

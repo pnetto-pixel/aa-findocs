@@ -9,6 +9,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Atualizar esses dois arquivos** ao final de sessions que mudam features ou decisões técnicas — commitar junto com o PR da feature ou num PR separado de docs.
 
+## Deploy Pattern
+
+**Merge direto no main** — não usar PR. O usuário não tem como fazer preview funcional antes do merge (constraint iPhone-only). Workflow:
+
+1. Implementar na branch de feature
+2. Build verde confirmado (`npm run build`)
+3. `git checkout -B main origin/main` → `git merge --no-ff <branch>` → `git push origin main`
+4. Vercel rebuilda automaticamente em ~1-2 min
+
+**Não criar PR** a menos que o usuário peça explicitamente.
+
 ## Commands
 
 ```bash
