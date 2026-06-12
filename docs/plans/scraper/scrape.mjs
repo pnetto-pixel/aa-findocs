@@ -45,8 +45,18 @@ const LOGIN_URL = 'https://digital.fidelity.com/prgw/digital/login/full-page';
 const ACTIVITY_URL = 'https://digital.fidelity.com/ftgw/digital/portfolio/activity';
 
 async function main() {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ acceptDownloads: true });
+  // --disable-http2: Fidelity's edge sometimes breaks Playwright's HTTP/2
+  // negotiation (ERR_HTTP2_PROTOCOL_ERROR on page.goto). Forcing HTTP/1.1 fixes it.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-http2'],
+  });
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    // A real UA reduces the chance the edge serves a bot-challenge page.
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  });
   const page = await context.newPage();
 
   try {
