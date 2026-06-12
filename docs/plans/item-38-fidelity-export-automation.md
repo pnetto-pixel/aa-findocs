@@ -43,10 +43,10 @@ Há um atalho a testar **antes** (OFX, ~1h de spike) e dois caminhos descartados
 3. ✅ **API oficial (Fidelity Access / Akoya) não é para pessoa física.** Akoya é rede B2B para
    bancos/fintechs/agregadores, com onboarding institucional. Sem programa individual. Inviável.
 
-4. ⚠️ **OFX/Direct Connect em deprecação,** substituído pelo Fidelity Access. Relatos de
-   `403 Forbidden` e NetBenefits não suportado — mas brokerage às vezes ainda puxa via
-   `ofxtools`/`ofxget`. Vale **probe rápido** (HTTP puro, sem browser; robusto se vivo), baixa
-   confiança de durar.
+4. ✅ **OFX/Direct Connect DESCONTINUADO** (~jan/2026). Confirmado em jun/2026: a Fidelity
+   desligou o Direct Connect/OFX e migrou todos (Quicken, Moneydance) pro "Fidelity Access".
+   O site agora oferece **só download em CSV**. Probe OFX é porta fechada por design — não rodar.
+   URL legada (`ofx.fidelity.com:443/ftgw/OFX/clients/download`, FID 7776) está morta.
 
 5. ✅ **Libs open-source de scraping existem** (`kennyboy106/fidelity-api`, Playwright) mas fazem
    2FA **manual** (`input()`) e não documentam download de histórico em CSV. Referência de
@@ -68,7 +68,7 @@ Há um atalho a testar **antes** (OFX, ~1h de spike) e dois caminhos descartados
 | Caminho | Veredito | Por quê |
 |---|---|---|
 | (a) Fidelity Access / Akoya oficial | ❌ Descartar | B2B institucional; sem onboarding individual |
-| (b) OFX / Direct Connect | 🟡 Probar 1h primeiro | HTTP puro, simples se vivo; Fidelity está matando, 403 frequente |
+| (b) OFX / Direct Connect | ❌ Descartar | Descontinuado pela Fidelity (~jan/2026); site só oferece CSV agora |
 | (c) Parsing de e-mail | ❌ Descartar como fonte | Confirmações não têm qty/total/data-do-trade |
 | (d) Playwright headless + TOTP em GitHub Actions | ✅ **Recomendado** | Único com dado completo **e** sem humano, compatível com iPhone-only |
 
@@ -112,8 +112,9 @@ App lê normalmente (já existe sync Transactions→Holdings)
 
 ## Fases de execução
 
-- **Fase 0 — Probe OFX (1h).** Testar `ofxget`/`ofxtools` contra a brokerage. Se puxar transações:
-  pivota pra OFX (sem browser, mais robusto) e pula quase tudo. Se 403/morto: segue pro Playwright.
+> ~~Fase 0 — Probe OFX~~: **eliminada.** Confirmado em jun/2026 que a Fidelity descontinuou o OFX
+> (~jan/2026) e só oferece CSV. Scraper do CSV (caminho d) é o único viável. Ir direto à Fase 1.
+
 - **Fase 1 — Backend (`aa-findocs`).** (1) Extrair parsing pro `lib/fidelity-parse.js`;
   (2) criar `api/ingest-fidelity.js` (service-token `INGEST_TOKEN`, alvo = chave do e-mail,
   merge+dedupe de `transactions` e `bondIncome`). Testar postando output de um CSV conhecido.
@@ -140,7 +141,8 @@ App lê normalmente (já existe sync Transactions→Holdings)
 
 ## Próximo passo concreto
 
-Começar pela **Fase 0 (probe OFX)** — 1h e pode tornar 80% do resto desnecessário.
+Ir direto à **Fase 1** (refactor do parser pra `lib/fidelity-parse.js` + `api/ingest-fidelity.js`).
+A probe OFX foi eliminada — OFX morto desde ~jan/2026. Caminho (d) é o único restante.
 
 ## Fontes
 - Fidelity TOTP/autenticadores: https://www.mymoneyblog.com/fidelity-adds-multi-factor-authentication-with-authenticator-apps.html
