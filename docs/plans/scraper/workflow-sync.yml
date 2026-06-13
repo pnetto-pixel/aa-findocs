@@ -31,6 +31,15 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Diag
+        run: |
+          echo "neutro:"; curl -sSL -m 30 -o /dev/null -w "%{http_code} %{time_total}s -> %{url_effective}\n" https://example.com
+          echo "fidelity (segue redirect, UA real):"
+          curl -sSL -m 30 -o /dev/null \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
+            -w "%{http_code} %{time_total}s -> %{url_effective}\n" \
+            https://digital.fidelity.com/prgw/digital/login/full-page || echo "curl falhou/timeout"
+
       - name: Run sync
         env:
           FIDELITY_USER: ${{ secrets.FIDELITY_USER }}
@@ -38,4 +47,5 @@ jobs:
           FIDELITY_TOTP_SECRET: ${{ secrets.FIDELITY_TOTP_SECRET }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           INGEST_URL: https://aa-findocs.vercel.app/api/ingest-fidelity
-        run: npm run sync
+        # Headed browser under a virtual display to defeat headless detection.
+        run: xvfb-run -a npm run sync

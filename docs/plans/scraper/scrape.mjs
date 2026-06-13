@@ -45,11 +45,16 @@ const LOGIN_URL = 'https://digital.fidelity.com/prgw/digital/login/full-page';
 const ACTIVITY_URL = 'https://digital.fidelity.com/ftgw/digital/portfolio/activity';
 
 async function main() {
-  // --disable-http2: Fidelity's edge sometimes breaks Playwright's HTTP/2
-  // negotiation (ERR_HTTP2_PROTOCOL_ERROR on page.goto). Forcing HTTP/1.1 fixes it.
+  // Fidelity sits behind Akamai Bot Manager, which fingerprints headless Chromium
+  // and tarpits it (navigation never commits). Run HEADED under a virtual display
+  // (xvfb-run, see workflow) with anti-automation flags to look like a real browser.
   const browser = await chromium.launch({
-    headless: true,
-    args: ['--disable-http2'],
+    headless: false,
+    args: [
+      '--disable-http2',
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+    ],
   });
   const context = await browser.newContext({
     acceptDownloads: true,
