@@ -167,6 +167,47 @@ async function fetchTransactions(auth) {
   };
 }
 
+async function fetchContributionsHistory(auth) {
+  const res = await fetch("/api/contributions-history", { headers: authHeaders(auth) });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (!res.ok) {
+    let msg = `Error ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  return data.history && typeof data.history === "object" ? data.history : {};
+}
+
+async function putContributionsSnapshot(auth, month, snapshot) {
+  const res = await fetch("/api/contributions-history", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders(auth) },
+    body: JSON.stringify({ month, snapshot }),
+  });
+  if (!res.ok) throw new Error(`Error ${res.status}`);
+  return res.json();
+}
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// "2026-06" -> "Jun 2026"
+function monthKeyLabel(key) {
+  const [y, m] = key.split("-");
+  const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
 function txToUSD(tx, usdBrlRate) {
   const qty = parseFloat(tx.qty) || 0;
   const price = parseFloat(tx.price) || 0;
@@ -401,6 +442,10 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [planOpen, setPlanOpen] = useState(true);
   const [realizadoOpen, setRealizadoOpen] = useState(true);
   const [histOpen, setHistOpen] = useState(true);
+  const [capacityOpen, setCapacityOpen] = useState(true);
+
+  const [capacityHistory, setCapacityHistory] = useState({}); // { "YYYY-MM": snapshot }
+  const [capacityLoaded, setCapacityLoaded] = useState(false);
 
   const [newExtraLabel, setNewExtraLabel] = useState("");
   const [newExtraValue, setNewExtraValue] = useState("");
@@ -412,6 +457,16 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   useEffect(() => {
     localStorage.removeItem(LS_REALIZADO);
+    // Load contribution-capacity history (silent failure — table just stays empty).
+    fetchContributionsHistory(auth)
+      .then((hist) => {
+        setCapacityHistory(hist);
+        setCapacityLoaded(true);
+      })
+      .catch((e) => {
+        if (e.code === 401) { onAuthFail(); return; }
+        setCapacityLoaded(true);
+      });
     fetchTransactions(auth)
       .then(({ transactions: txs, bondIncome: bi }) => {
         setTransactions(txs);
@@ -499,6 +554,77 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     const { half1, half2 } = computeHalfInvested(transactions, usdBrlRate, now.getFullYear(), now.getMonth() + 1);
     return { half1Auto: half1, half2Auto: half2 };
   }, [transactions, usdBrlRate]);
+
+  // ── Chunk A: rollover ──
+  // Semantics: "deficit rolls into the 2nd half, monthly total stays fixed".
+  // The month goal is planTotal and never changes. The 1st-half goal is
+  // halfPlanned (= planTotal/2). Whatever was NOT invested in the 1st half
+  // (deficit) is added to the 2nd-half goal. A 1st-half surplus makes the 2nd
+  // cheaper. All derived from half1Auto / half2Auto / halfPlanned — no fetch.
+  const rollover = useMemo(() => {
+    const half1Target = halfPlanned;
+    const half1Deficit = Math.max(0, half1Target - half1Auto);
+    const half2Target = halfPlanned + half1Deficit;
+    const half1Remaining = Math.max(0, half1Target - half1Auto);
+    const half2Remaining = Math.max(0, half2Target - half2Auto);
+    const totalInvested = half1Auto + half2Auto;
+    const monthRemaining = Math.max(0, planTotal - totalInvested);
+    return {
+      half1Target,
+      half2Target,
+      half1Deficit,
+      half1Remaining,
+      half2Remaining,
+      totalInvested,
+      monthRemaining,
+    };
+  }, [halfPlanned, half1Auto, half2Auto, planTotal]);
+
+  // ── Chunk B: auto-snapshot the CURRENT month (idempotent overwrite) ──
+  // Runs once history + dividends + transactions are loaded. Always overwrites
+  // the current month with the freshest plan values; never touches past months
+  // (the endpoint does a read-modify-write of the map). Also keeps the in-memory
+  // capacityHistory in sync so the table reflects the latest plan immediately.
+  useEffect(() => {
+    if (!capacityLoaded || txLoading || divLastMonth === null) return;
+    const month = currentMonthKey();
+    const snapshot = {
+      monthlyFixed: parseFloat(config.monthlyFixed) || 0,
+      dividends: divLastMonth ?? 0,
+      dellSale: dellSaleAuto,
+      extras: (config.extras || []).map((e) => ({
+        name: e.label,
+        amount: parseFloat(e.value) || 0,
+      })),
+      planTotal,
+      invested: half1Auto + half2Auto,
+    };
+    setCapacityHistory((prev) => ({
+      ...prev,
+      [month]: { ...snapshot, savedAt: new Date().toISOString() },
+    }));
+    putContributionsSnapshot(auth, month, snapshot).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    capacityLoaded,
+    txLoading,
+    divLastMonth,
+    config.monthlyFixed,
+    config.extras,
+    dellSaleAuto,
+    planTotal,
+    half1Auto,
+    half2Auto,
+  ]);
+
+  // Months sorted most-recent first for the capacity table.
+  const capacityRows = useMemo(() => {
+    return Object.keys(capacityHistory)
+      .filter((k) => /^\d{4}-\d{2}$/.test(k))
+      .sort()
+      .reverse()
+      .map((k) => ({ month: k, ...capacityHistory[k] }));
+  }, [capacityHistory]);
 
   const chartData = useMemo(
     () => buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate),
@@ -740,9 +866,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
           <div style={{ padding: "0 20px 20px" }}>
             {[1, 2].map((half) => {
               const invested = half === 1 ? half1Auto : half2Auto;
-              const remaining = Math.max(0, halfPlanned - invested);
-              const done = invested >= halfPlanned && halfPlanned > 0;
+              const planned = half === 1 ? rollover.half1Target : rollover.half2Target;
+              const remaining = half === 1 ? rollover.half1Remaining : rollover.half2Remaining;
+              const done = invested >= planned && planned > 0;
               const dateRange = half === 1 ? "1-15" : `16-${days}`;
+              const rolledUp = half === 2 && rollover.half1Deficit > 0;
 
               return (
                 <div
@@ -769,9 +897,17 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                       <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
                         Planned
                       </div>
-                      <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
-                        {fmtUSD(halfPlanned, valuesHidden)}
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: rolledUp ? T.gold : T.textDim }}>
+                        {fmtUSD(planned, valuesHidden)}
                       </div>
+                      {rolledUp && (
+                        <div
+                          title="Rolled over from the 1st-half deficit"
+                          style={{ fontFamily: FONT_BODY, fontSize: 10, color: T.gold, marginTop: 3 }}
+                        >
+                          +{fmtUSD(rollover.half1Deficit, valuesHidden)} rollover
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ flex: 1 }}>
@@ -815,7 +951,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                           Done
                         </div>
                       ) : (
-                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: halfPlanned > 0 ? T.text : T.textFaint }}>
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: planned > 0 ? T.text : T.textFaint }}>
                           {fmtUSD(remaining, valuesHidden)}
                         </div>
                       )}
@@ -824,6 +960,57 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                 </div>
               );
             })}
+
+            {/* Month totalizer */}
+            <div style={{ marginTop: 4, borderTop: `1px solid ${T.border}`, paddingTop: 16 }}>
+              {(() => {
+                const monthDone = rollover.totalInvested >= planTotal && planTotal > 0;
+                return (
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
+                        Month total
+                      </div>
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                        {fmtUSD(planTotal, valuesHidden)}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
+                        Invested
+                      </div>
+                      {txLoading ? (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>Loading...</div>
+                      ) : txError ? (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textFaint }}>--</div>
+                      ) : (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.text, fontWeight: 600 }}>
+                          {fmtUSD(rollover.totalInvested, valuesHidden)}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: FONT_BODY, fontSize: 11, color: T.textFaint, marginBottom: 5 }}>
+                        Remaining for month
+                      </div>
+                      {txLoading ? (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>Loading...</div>
+                      ) : txError ? (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textFaint }}>--</div>
+                      ) : monthDone ? (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.green, fontWeight: 600 }}>
+                          Month Done
+                        </div>
+                      ) : (
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: planTotal > 0 ? T.text : T.textFaint, fontWeight: 600 }}>
+                          {fmtUSD(rollover.monthRemaining, valuesHidden)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         )}
       </section>
@@ -956,6 +1143,144 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                   <Bar dataKey="value" fill={T.gold} radius={[2, 2, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ── Contribution Capacity History (Chunk B) ── */}
+      {/* Monthly snapshots of planned capacity vs realized, persisted in Redis.
+          Limitation: months PRIOR to the first use of this feature have no
+          monthlyFixed/extras stored — those cells render as "—" (no invented
+          data). The current month is re-snapshotted (idempotent) on every load. */}
+      <section style={{ ...cardStyle, marginTop: 16, marginBottom: 0 }}>
+        <div style={goldAccent} />
+        <CardToggle
+          label="Contribution Capacity History"
+          sub="Planned capacity vs invested · per month · stored in Redis"
+          open={capacityOpen}
+          onToggle={() => setCapacityOpen((v) => !v)}
+        />
+        {capacityOpen && (
+          <div style={{ padding: "0 20px 24px" }}>
+            {!capacityLoaded ? (
+              <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                Loading…
+              </div>
+            ) : capacityRows.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                No capacity history yet
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <table style={{ width: "100%", minWidth: 620, borderCollapse: "collapse" }}>
+                  <colgroup>
+                    <col style={{ width: 84 }} />
+                    <col /><col /><col /><col /><col /><col /><col />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      {[
+                        { label: "Month", align: "left" },
+                        { label: "Fixed", align: "right" },
+                        { label: "Dividends", align: "right" },
+                        { label: "DELL", align: "right" },
+                        { label: "Extras", align: "right" },
+                        { label: "Planned", align: "right" },
+                        { label: "Invested", align: "right" },
+                        { label: "Balance", align: "right" },
+                      ].map((c) => (
+                        <th
+                          key={c.label}
+                          style={{
+                            textAlign: c.align,
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            letterSpacing: "0.1em",
+                            textTransform: "uppercase",
+                            color: T.textFaint,
+                            fontWeight: 600,
+                            padding: "8px 10px",
+                            borderBottom: `1px solid ${T.border}`,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {c.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {capacityRows.map((row) => {
+                      const extrasSum = (row.extras || []).reduce(
+                        (s, e) => s + (parseFloat(e.amount) || 0),
+                        0
+                      );
+                      const planned = row.planTotal != null ? row.planTotal : null;
+                      const invested = row.invested != null ? row.invested : null;
+                      const balance =
+                        planned != null && invested != null ? planned - invested : null;
+                      const tdBase = {
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                        textAlign: "right",
+                        padding: "9px 10px",
+                        borderBottom: `1px solid ${T.borderSoft}`,
+                        whiteSpace: "nowrap",
+                        color: T.text,
+                      };
+                      const dash = (v) => (v == null ? "—" : fmtUSD(v, valuesHidden));
+                      return (
+                        <tr key={row.month}>
+                          <td
+                            style={{
+                              ...tdBase,
+                              textAlign: "left",
+                              color: T.gold,
+                              fontWeight: 600,
+                              letterSpacing: "0.04em",
+                            }}
+                          >
+                            {monthKeyLabel(row.month)}
+                          </td>
+                          <td style={{ ...tdBase, color: T.textDim }}>
+                            {dash(row.monthlyFixed)}
+                          </td>
+                          <td style={{ ...tdBase, color: T.textDim }}>
+                            {dash(row.dividends)}
+                          </td>
+                          <td style={{ ...tdBase, color: T.textDim }}>
+                            {dash(row.dellSale)}
+                          </td>
+                          <td style={{ ...tdBase, color: T.textDim }}>
+                            {row.extras == null ? "—" : fmtUSD(extrasSum, valuesHidden)}
+                          </td>
+                          <td style={{ ...tdBase, fontWeight: 600 }}>
+                            {dash(planned)}
+                          </td>
+                          <td style={{ ...tdBase, color: T.text, fontWeight: 600 }}>
+                            {dash(invested)}
+                          </td>
+                          <td
+                            style={{
+                              ...tdBase,
+                              fontWeight: 600,
+                              color:
+                                balance == null
+                                  ? T.textFaint
+                                  : balance > 0.005
+                                  ? T.red
+                                  : T.green,
+                            }}
+                          >
+                            {dash(balance)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
