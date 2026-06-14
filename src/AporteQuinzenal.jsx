@@ -564,7 +564,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const rollover = useMemo(() => {
     const half1Target = halfPlanned;
     const half1Deficit = Math.max(0, half1Target - half1Auto);
-    const half2Target = halfPlanned + half1Deficit;
+    // Only roll deficit into the 2nd half once the 1st half has closed (day > 15).
+    const past15 = new Date().getDate() > 15;
+    const half2Target = halfPlanned + (past15 ? half1Deficit : 0);
     const half1Remaining = Math.max(0, half1Target - half1Auto);
     const half2Remaining = Math.max(0, half2Target - half2Auto);
     const totalInvested = half1Auto + half2Auto;
