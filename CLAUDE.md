@@ -74,6 +74,7 @@ Vercel serverless functions (Node.js ESM). Each file exports a default `async fu
 | `api/index-quote.js` | SPY day quote (for dashboard benchmark badge) |
 | `api/perf-history.js` | POST `{ transactions }` → TWR series + portfolioUSD series |
 | `api/users.js` | Admin: list/invite/remove allowlist emails |
+| `api/contributions-history.js` | GET/PUT monthly contribution capacity snapshots (Redis) |
 
 ### Shared libraries (`lib/`)
 
@@ -83,11 +84,12 @@ Vercel serverless functions (Node.js ESM). Each file exports a default `async fu
 ### Redis key scheme
 
 ```
-portfolio:email:<sha256(email)[0:16]>:holdings        — holdings JSON
-portfolio:email:<sha256(email)[0:16]>:transactions    — transactions JSON
-portfolio:email:<sha256(email)[0:16]>:perf-history:vN — perf cache
-portfolio:pwd:<sha256(password)[0:16]>:holdings       — password-auth variant
-portfolio:allowlist                                    — SET of allowed emails
+portfolio:email:<sha256(email)[0:16]>:holdings              — holdings JSON
+portfolio:email:<sha256(email)[0:16]>:transactions          — transactions JSON
+portfolio:email:<sha256(email)[0:16]>:perf-history:vN       — perf cache
+portfolio:email:<sha256(email)[0:16]>:contributions-history — contribution capacity snapshots JSON
+portfolio:pwd:<sha256(password)[0:16]>:holdings             — password-auth variant
+portfolio:allowlist                                         — SET of allowed emails
 ```
 
 **Cache versioning:** `perf-history` cache includes a version suffix (`v11` currently). Bump the version whenever the response shape changes — old cached responses will be ignored automatically.
