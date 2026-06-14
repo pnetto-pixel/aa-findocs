@@ -342,6 +342,41 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 
 -----
 
+## 💵 Feature: Contributions (Tab Aporte Quinzenal — PR #112 — jun/2026)
+
+Tab para planejamento e acompanhamento de aportes quinzenais. Arquivo `src/AporteQuinzenal.jsx`.
+
+### Logica de rollover de quinzena (Chunk A — frontend puro)
+
+- `planTotal` = total do mes fixo (entrada manual: Fixed + Dividends + DELL + Extras).
+- 1a quinzena: meta = `halfPlanned = planTotal / 2`; realizado = `half1Auto` (derivado de Transactions via `computeHalfInvested`).
+- 2a quinzena: meta = `half2Target = halfPlanned + max(0, halfPlanned - half1Auto)`. Deficit da 1a rola; excesso na 1a reduz a meta da 2a. Total do mes nunca muda.
+- UI: sufixo "+R$X rollover" na card da 2a quinzena quando ha deficit.
+- Linha totalizadora "Month total / Invested / Remaining for month" = `max(0, planTotal - (half1Auto + half2Auto))`. Exibe estado "Month Done" em verde quando quitado.
+
+### Historico de capacidade de aporte (Chunk B — Redis)
+
+#### Storage
+
+- Chave Redis: `portfolio:<auth.storageKey com :holdings substituido por :contributions-history>:contributions-history` — objeto JSON mapeando `"YYYY-MM"` para snapshot.
+- Formato do snapshot: `{ monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt }`.
+- **Sem versionamento `vN`:** e um store de upsert proprio, nao um cache de calculo. Snapshots sao permanentes; o mes corrente e sobrescrito a cada load (idempotente).
+- Endpoint: `api/contributions-history.js` (GET + PUT). `authenticate(req)` de `lib/auth.js`. `getRedis()` de `lib/redis.js`. PUT e read-modify-write: le o objeto existente, faz merge do mes corrente, grava de volta — preserva meses passados.
+
+#### Auto-snapshot
+
+A cada load do componente, o mes corrente e enviado via PUT com os valores atuais. Meses passados nunca sao sobrescritos.
+
+#### Tabela "Contribution Capacity History"
+
+Renderizada em `src/AporteQuinzenal.jsx`. Colunas: Month, Fixed, Dividends, DELL, Extras, Planned, Invested, Balance. Scroll horizontal com `overflowX: auto` + `WebkitOverflowScrolling: touch` para iPhone. Valores mascarados por `valuesHidden`. Ordenada mais-recente-primeiro. Celulas sem dado (meses anteriores ao primeiro uso) exibem `--`.
+
+#### Limitacao conhecida
+
+Meses anteriores ao primeiro uso da feature nao possuem `monthlyFixed`/extras gravados no Redis — o historico so existe a partir da primeira vez que o usuario carregou a tab apos o deploy do PR #112. O historico se acumula organicamente daqui para frente.
+
+-----
+
 ## 💰 Feature: Dividends (em construção)
 
 Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. **US assets only** — income manual foi descartado (decisão jun/2026): a tab cobre apenas dividendos de ativos US via Yahoo. Tesouro/Bank Bonds/BRA Stocks ficam fora por ora.
@@ -591,6 +626,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**Dismiss de split persiste (commit 4e66bd9)**|Dados Fidelity geralmente já vêm split-adjusted — split detectado pode já estar no cost basis. Persistir o dismiss evita re-sinalizar a cada load; usuário decide por split.|
 |**`alertLogKey(auth)` para chave localStorage do alertLog (PR #109)**|Chave `alertLog` sem sufixo de usuario causava contaminacao cruzada quando dois usuarios alternavam login no mesmo browser — alertas lidos de um reapareciam como nao lidos para o outro. Derivar a chave da identidade do usuario (`alertLog:g:<email>` / `alertLog:p:<senha[:8]>`) isola o estado de leitura por conta, replicando no frontend o padrao ja adotado nas chaves Redis do backend.|
 |**Bank Bond rollovers excluídos do aporte quinzenal via net qty por período (PR #108)**|`computeHalfInvested` e `buildChartData` em `AporteQuinzenal.jsx` calculam net qty de Bank Bonds por período (compras − redemptions) em vez de somar buys brutos. Rolagem de bond vencido (redeem + recompra no mesmo período) não infla o aporte. Fix subsequente (commit fa48b02): campo "Dividends (last month)" soma também `bondIncome` com `kind: "interest"` diretamente no frontend — `POST /api/dividends` só devolve `kind: "dividend"`, omitindo juros de bonds.|
+|**`:contributions-history` sem versionamento `vN` (PR #112)**|E um store de upsert de dados do usuario (snapshots de capacidade de aporte), nao um cache de calculo — nunca e invalidado ou descartado. Cache de calculo (como `perf-history:vN`) precisa de versao para descartar formato antigo; dados de usuario persistidos devem ser preservados indefinidamente. PUT usa read-modify-write para mesclar o mes corrente sem apagar meses anteriores.|
+|**Rollover de quinzena como calculo puro no frontend, sem backend (PR #112)**|`half2Target = halfPlanned + max(0, halfPlanned - half1Auto)` e determinístico dado `planTotal` e `half1Auto`. Nao ha ambiguidade de estado — o valor do rollover muda em tempo real a medida que Transactions mudam. Persistir no Redis introduziria complexidade de sincronizacao sem beneficio; calcular no `useMemo` e suficiente.|
 |**Desktop polish: IIFE para side-by-side condicional (commit c09a595)**|Allocation + Rebalance envolvidos em IIFE que computa `sideBySide = windowWidth >= 1024 && showAlloc && showRebal` — a flag é falsa se qualquer seção não está visível, evitando coluna vazia no layout. `flex: sideBySide ? "1 1 0" : undefined` em cada seção, `marginBottom`/`marginTop` condicionais. Donut size reformulado: `allocSectionW = sideBySide ? (containerW - 20) / 2 - 32 : containerW - 32` para refletir coluna mais estreita no modo lado a lado. AporteQuinzenal segue o mesmo padrão de `windowWidth` já estabelecido em App.jsx (PR #85).|
 |**Merge direto no main sem PR (constraint iPhone-only)**|Usuário não tem acesso a preview funcional antes do merge — não há staging e o Vercel só deploya do main. Workflow adotado: implementar na branch de feature → build verde → `git checkout -B main origin/main` + `git merge --no-ff` + `git push origin main`. Registrado no CLAUDE.md.|
 
@@ -613,7 +650,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - Frontend Transactions: `src/Transactions.jsx`
 - Frontend Performance: `src/Performance.jsx`
 - Frontend Events: `src/Events.jsx`
-- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`, `api/split-detect.js`
+- Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`, `api/split-detect.js`, `api/contributions-history.js`
 - Auth + Redis: `lib/auth.js`, `lib/redis.js`
 
 **Endpoints (resumo):**
@@ -630,6 +667,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
 | `POST /api/events` | Recebe `{ tickers }`, retorna eventos corporativos (ex_dividend, payout, earnings, split) janela -30d/+90d; cache Redis GLOBAL por hash de tickers, TTL ate proximo fechamento de mercado |
 | `POST /api/split-detect` | Recebe `{ tickers }`, retorna TODOS os splits historicos (Yahoo `chart?events=split` range=10y, fallback Polygon) para deteccao de splits nao refletidos no historico; cache Redis GLOBAL `splitdetect:v1:{hash}`, TTL ate proximo fechamento de mercado |
+| `GET /api/contributions-history` | Retorna snapshot do mes corrente + historico de meses anteriores (`{ history: { "YYYY-MM": { monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt } } }`) |
+| `PUT /api/contributions-history` | Upsert idempotente do mes corrente; preserva meses passados (read-modify-write). Body: `{ month, monthlyFixed, dividends, dellSale, extras, planTotal, invested }` |
 
 -----
 
