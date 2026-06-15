@@ -71,24 +71,36 @@ async function main() {
     // to commit, then wait explicitly for the username field to appear.
     page.setDefaultTimeout(60000);
     await page.goto(LOGIN_URL, { waitUntil: 'commit', timeout: 60000 });
+    console.log('page commit, url:', page.url());
     const userField = page.locator('#dom-username-input');
     await userField.waitFor({ state: 'visible', timeout: 60000 });
+    console.log('username field visible');
     await userField.fill(FIDELITY_USER);                      // TODO: confirm selector
     await page.fill('#dom-pswd-input', FIDELITY_PASS);       // TODO: confirm selector
     await page.click('#dom-login-button');                    // TODO: confirm selector
+    console.log('credentials submitted');
 
     // --- 2FA via TOTP ------------------------------------------------------
     // Fidelity shows the authenticator-code field after submitting credentials.
     const otpField = page.locator('input[autocomplete="one-time-code"], #dom-otp-code-input');
     if (await otpField.first().isVisible({ timeout: 15000 }).catch(() => false)) {
+      console.log('2FA field visible, generating TOTP');
       const code = authenticator.generate(FIDELITY_TOTP_SECRET);
       await otpField.first().fill(code);
       // Some flows offer "remember this device" — clicking it reduces future 2FA.
       await page.click('button:has-text("Continue"), #dom-otp-submit-button').catch(() => {});
+      console.log('2FA submitted');
+    } else {
+      console.log('no 2FA field detected');
     }
 
-    await page.waitForLoadState('networkidle', { timeout: 30000 });
-    console.log('login ok');
+    // networkidle never fires on Fidelity's SPA (persistent background requests).
+    // Wait for the URL to leave the login path instead.
+    await page.waitForURL(
+      (url) => !url.toString().includes('/login/'),
+      { timeout: 30000 }
+    ).catch(() => console.log('waitForURL timeout, url:', page.url()));
+    console.log('login ok, url:', page.url());
 
     // --- Download the Accounts History CSV --------------------------------
     await page.goto(ACTIVITY_URL, { waitUntil: 'domcontentloaded' });
