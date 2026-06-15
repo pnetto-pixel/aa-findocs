@@ -121,10 +121,35 @@ async function main() {
 
     // --- Download the Accounts History CSV --------------------------------
     await page.goto(ACTIVITY_URL, { waitUntil: 'domcontentloaded' });
-    // The download control is usually a "Download" link/button on the activity page.
+    await page.waitForTimeout(6000); // let the SPA render the activity table + controls
+    console.log('activity url:', page.url());
+    console.log('activity title:', await page.title());
+    await page.screenshot({ path: 'fidelity-activity.png', fullPage: true });
+    console.log('activity screenshot saved');
+
+    // Discovery: dump candidate download/export controls so we can confirm the
+    // exact selector on the first run (Fidelity's DOM isn't public).
+    const candidates = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+      return els
+        .map((el) => ({
+          tag: el.tagName.toLowerCase(),
+          text: (el.textContent || '').trim().slice(0, 40),
+          aria: el.getAttribute('aria-label') || '',
+          id: el.id || '',
+        }))
+        .filter((e) => /download|export|csv/i.test(`${e.text} ${e.aria} ${e.id}`));
+    });
+    console.log('download candidates:', JSON.stringify(candidates));
+
+    // Best-effort: try to trigger the CSV download with a broad locator. If it
+    // fails, the screenshot + candidates above tell us what to target next.
+    const dlLocator = page.locator(
+      'a:has-text("Download"), button:has-text("Download"), [aria-label*="download" i], [aria-label*="export" i]'
+    );
     const [download] = await Promise.all([
       page.waitForEvent('download', { timeout: 30000 }),
-      page.click('text=/download/i'),                         // TODO: confirm selector
+      dlLocator.first().click(),                              // TODO: confirm selector
     ]);
     const csvPath = await download.path();
     const csvText = await readFile(csvPath, 'utf8');
