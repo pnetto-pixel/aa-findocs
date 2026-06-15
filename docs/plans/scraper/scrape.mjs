@@ -45,15 +45,16 @@ const LOGIN_URL = 'https://digital.fidelity.com/prgw/digital/login/full-page';
 const ACTIVITY_URL = 'https://digital.fidelity.com/ftgw/digital/portfolio/activity';
 
 async function main() {
-  // Fidelity sits behind Akamai Bot Manager, which fingerprints headless Chromium
-  // and tarpits it (navigation never commits). Run HEADED under a virtual display
-  // (xvfb-run, see workflow) with anti-automation flags to look like a real browser.
+  // Fidelity sits behind Akamai Bot Manager. It blocks datacenter IPs (GitHub-hosted
+  // runners get a "Sorry, we can't complete this action" page) and fingerprints
+  // headless Chromium. So this runs on a SELF-HOSTED runner on a Windows laptop
+  // (residential IP) in an interactive desktop session, HEADED, with anti-automation
+  // flags. The interactive session gives the headed browser a real display.
   const browser = await chromium.launch({
     headless: false,
     args: [
       '--disable-http2',
       '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
     ],
   });
   const context = await browser.newContext({
@@ -82,7 +83,8 @@ async function main() {
     await page.waitForTimeout(4000);
     console.log('url 4s after submit:', page.url());
     console.log('page title:', await page.title());
-    await page.screenshot({ path: '/tmp/fidelity-after-submit.png' });
+    // Relative path so it works on the Windows self-hosted runner too.
+    await page.screenshot({ path: 'fidelity-after-submit.png' });
     console.log('screenshot saved');
 
     // --- 2FA via TOTP ------------------------------------------------------

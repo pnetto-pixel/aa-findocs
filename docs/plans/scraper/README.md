@@ -24,8 +24,13 @@ Bundle pronto pra copiar pro **repo privado** `fidelity-sync`. NÃO mora no
    `FIDELITY_TOTP_SECRET`, `INGEST_TOKEN`.
 4. No Vercel (projeto aa-findocs): setar `INGEST_TOKEN` (mesmo valor) e `INGEST_EMAIL`
    (seu e-mail). Mergear a branch do app pro `main` pra publicar os endpoints.
+5. **Self-hosted runner no laptop Windows** (runbook passo B2). A Fidelity bloqueia IP de
+   datacenter; o runner roda no seu laptop (IP residencial). Iniciar com `run.cmd` em
+   **sessão interativa** (não como serviço), laptop logado/desbloqueado.
 
 ## Primeiro run (validar seletores)
+
+> Pré-requisito: runner ativo no laptop (`run.cmd` rodando, "Listening for Jobs").
 
 A Fidelity não publica o DOM; os seletores em `scrape.mjs` marcados `TODO: confirm`
 podem precisar de ajuste.
