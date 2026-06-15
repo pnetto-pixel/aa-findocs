@@ -3,9 +3,16 @@
 Bundle pronto pra copiar pro **repo privado** `fidelity-sync`. NÃO mora no
 `aa-findocs` (público) por conter o fluxo que usa credenciais.
 
-> Estes arquivos ficam versionados aqui só como template. Copie-os pro repo privado.
-> O código é **read-only** na Fidelity (só navega e baixa CSV); não há caminho de
-> trade/transferência.
+> Estes arquivos ficam versionados aqui só como template (a fonte da verdade do que
+> **roda** é o repo `fidelity-sync`). Copie-os pro repo privado. O código é
+> **read-only** na Fidelity (só navega e baixa CSV); não há caminho de trade/transferência.
+
+> **Runner self-hosted (importante):** a Fidelity está atrás do Akamai Bot Manager e
+> bloqueia IPs de datacenter (runners GitHub-hosted recebem "Sorry, we can't complete
+> this action") + faz fingerprint de Chromium headless. Por isso o `sync.yml` usa
+> `runs-on: self-hosted` (laptop Windows, IP residencial) com browser **headed** numa
+> sessão **interativa** (rode `run.cmd` logado, NÃO como Windows Service). Estado atual
+> e blocker em [`../item-38-handoff.md`](../item-38-handoff.md).
 
 ## Arquivos
 

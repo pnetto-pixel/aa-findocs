@@ -1,8 +1,15 @@
 # Copy this file to .github/workflows/sync.yml in the PRIVATE fidelity-sync repo.
 #
 # Manual trigger only (workflow_dispatch) — you press "Run workflow" in the GitHub
-# app when you want an update. No schedule until you opt in. To enable a daily run
-# later, uncomment the `schedule` block.
+# app when you want an update. No schedule until you opt in.
+#
+# Runs on a SELF-HOSTED runner (your Windows laptop). GitHub-hosted runners use
+# datacenter IPs that Fidelity blocks ("Sorry, we can't complete this action").
+# A self-hosted runner uses your home/residential IP, which Fidelity accepts.
+#
+# IMPORTANT: the runner must be started INTERACTIVELY (run `run.cmd` while logged
+# into the laptop), NOT installed as a Windows Service. A service runs in a
+# non-interactive session with no desktop, and the headed browser needs a display.
 
 name: Fidelity sync
 
@@ -16,7 +23,7 @@ permissions:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +36,8 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        # No --with-deps: that flag only installs OS packages on Ubuntu/Debian.
+        run: npx playwright install chromium
 
       - name: Run sync
         env:
@@ -38,4 +46,13 @@ jobs:
           FIDELITY_TOTP_SECRET: ${{ secrets.FIDELITY_TOTP_SECRET }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           INGEST_URL: https://aa-findocs.vercel.app/api/ingest-fidelity
+        # Headed browser using the laptop's real desktop session.
         run: npm run sync
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: fidelity-*.png
+          if-no-files-found: ignore
