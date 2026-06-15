@@ -323,6 +323,7 @@ Loading / erro / vazio com mensagens específicas por `meta.reason`.
 - **Manage Users:** seção colapsável no dashboard, visível apenas para `isAdmin`
 - **Como adicionar holdings (PR #84 — jun/2026):** O formulario "Add Live Asset" foi removido. Tickers `type: "auto"` sao criados/atualizados exclusivamente via sync com o log de Transactions (item 32/33). Apenas o form "Add Manual Asset" permanece na tab Holdings — para holdings manuais e Cash.
 - **SectionLabel com acento dourado (PR #113 — jun/2026):** Componente `SectionLabel` em `src/App.jsx` recebeu um `<div>` de acento — gradiente `linear-gradient(to right, ${T.gold}, transparent)`, `height: 2px`, `position: "absolute"`, `top: 0`, `left: 0`, `right: 0` — como primeiro filho do wrapper. Wrapper ganhou `position: "relative"` e `overflow: "hidden"`. `fontSize` do label: `9` → `12`. Usado em exatamente 2 lugares na tab Holdings: "Your Holdings" e "Cash & Fixed Income". Padrao visual identico ao dos cards de destaque da tab Contributions.
+- **SectionLabel paddingTop e fontWeight (jun/2026):** `paddingTop: 13` adicionado ao `baseStyle` para que a barra dourada absoluta (height 2, top 0) fique acima do texto e nao o cruze. `fontWeight: 600` adicionado ao label para mais destaque visual. Rebalance Suggestion card movido para apos o card "Add Manual Asset" — fora do IIFE de Allocation, posicao mais logica no JSX.
 
 ### Holdings manuais — Bank Bonds (PR #93 — jun/2026)
 
@@ -375,6 +376,16 @@ Renderizada em `src/AporteQuinzenal.jsx`. Colunas: Month, Fixed, Dividends, DELL
 #### Limitacao conhecida
 
 Meses anteriores ao primeiro uso da feature nao possuem `monthlyFixed`/extras gravados no Redis — o historico so existe a partir da primeira vez que o usuario carregou a tab apos o deploy do PR #112. O historico se acumula organicamente daqui para frente.
+
+### MonthlyFixedRow — preset do mes anterior (jun/2026)
+
+O campo "Monthly fixed amount" na tab Contributions usa o componente `MonthlyFixedRow` (substitui o `PlanRow` generico). Comportamento:
+
+- **Modo leitura:** exibe o valor salvo + botao Pencil para editar. Se sem valor, exibe "Not set".
+- **Modo edicao:** input + botao Check (salvar) + botao X (cancelar).
+- **Preset automatico:** ao abrir um mes sem `monthlyFixed` configurado, `useEffect` com `useRef` (roda so uma vez) le `capacityHistory[prevMonthKey].monthlyFixed` e pre-preenche o input — nunca inventa valor se o mes anterior tambem nao tiver.
+- Em modo edicao, exibe "Last month: $X" como referencia visual abaixo do input.
+- Imports adicionados em `AporteQuinzenal.jsx`: `useRef` do React, `Pencil`, `Check`, `X` do lucide-react.
 
 -----
 
@@ -633,6 +644,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**Layout 2 colunas Holdings revertido para single-column (commit c50fcf1)**|`sideBySide` removido de `App.jsx`. Wrapper da seção Holdings agora sempre `display: "block"` — layout linear empilhado em qualquer largura. `marginBottom` fixo em 20px, `marginTop` fixo em 28px, sem condicionais. `allocSectionW = containerW - 32` sempre (donuts ocupam largura total). Razão: preferencia de UX — single-column e mais legivel em qualquer tamanho de tela. `windowWidth` state e `containerW` permanecem para clamp de donuts e font scaling.|
 |**Merge direto no main sem PR (constraint iPhone-only)**|Usuário não tem acesso a preview funcional antes do merge — não há staging e o Vercel só deploya do main. Workflow adotado: implementar na branch de feature → build verde → `git checkout -B main origin/main` + `git merge --no-ff` + `git push origin main`. Registrado no CLAUDE.md.|
 |**`SectionLabel` com acento dourado como padrao de destaque de secao (PR #113)**|Cards de destaque na tab Contributions ja usavam linha dourada no topo. Aplicar o mesmo elemento (gradiente `T.gold → transparent`, 2px, `position: absolute`) no `SectionLabel` unifica o padrao visual entre tabs sem criar um componente novo. Modificacao cirurgica: wrapper ganha `position: relative` + `overflow: hidden`, elemento absoluto inserido como primeiro filho.|
+|**`SectionLabel` exige `paddingTop` para acomodar barra absoluta (jun/2026)**|Barra dourada tem `position: "absolute"`, `top: 0`, `height: 2`. Sem `paddingTop: 13` no `baseStyle`, a barra cruzava o texto em vez de ficar acima dele. Regra: elemento filho absoluto no topo de um wrapper com overflow hidden requer padding correspondente no conteudo pai.|
+|**`MonthlyFixedRow` preset via `useRef` roda-uma-vez (jun/2026)**|Pre-preencher o input com o valor do mes anterior ao abrir o mes usa `useEffect` + `useRef(false)` para garantir que o efeito rode so na montagem inicial. Sem `useRef`, o efeito poderia re-executar e sobrescrever edicoes do usuario ao re-renderizar. Nunca pre-preenche se o mes anterior tambem nao tiver valor — sem invencao de dados.|
 
 -----
 
