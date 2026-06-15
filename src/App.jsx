@@ -4529,8 +4529,18 @@ function SectionLabel({ label, count, of, icon, collapsible, collapsed, onToggle
     <>
       <div
         style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 2,
+          background: `linear-gradient(to right, ${T.gold}, transparent)`,
+        }}
+      />
+      <div
+        style={{
           fontFamily: FONT_MONO,
-          fontSize: 9,
+          fontSize: 12,
           letterSpacing: "0.2em",
           textTransform: "uppercase",
           color: T.gold,
@@ -4574,6 +4584,8 @@ function SectionLabel({ label, count, of, icon, collapsible, collapsed, onToggle
     gap: 8,
     paddingBottom: 6,
     borderBottom: `1px solid ${T.borderSoft}`,
+    position: "relative",
+    overflow: "hidden",
   };
 
   if (collapsible) {
