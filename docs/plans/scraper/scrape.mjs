@@ -9,30 +9,36 @@
 // residential IP on a self-hosted runner ("Sorry, we can't complete this action right
 // now"). So we DON'T automate the login. Instead:
 //
-//   1. ONE TIME, on the laptop, log in by hand into a persistent browser profile:
+//   1. ONE TIME, on the laptop, log in by hand:
 //          npm run login
 //      Log in (username + password + 2FA) until you can see your portfolio, then come
-//      back to the terminal and press Enter. The authenticated cookies are saved in the
-//      profile dir.
+//      back to the terminal and press Enter.
 //
-//   2. Every sync run reuses that profile and goes STRAIGHT to the activity page — no
-//      login step, so there is nothing for Akamai to flag. When the saved session
-//      eventually expires, a run exits with a clear "session expired" message and you
-//      just run `npm run login` again to refresh it.
+//   2. Every sync run reuses that session and goes STRAIGHT to the activity page — no
+//      login step, so there is nothing for Akamai to flag. When the session eventually
+//      expires, a run exits with a clear "session expired" message and you just run
+//      `npm run login` again.
 //
-// The profile dir lives OUTSIDE the repo workspace (default: ~/.fidelity-sync-profile)
-// so `actions/checkout` cleaning the workspace never wipes the saved session. The manual
-// login and the runner MUST run as the SAME Windows user so they share the profile.
+// === How the session is persisted (belt + suspenders) ===
+// Fidelity's auth cookie is a SESSION cookie (lives only in browser memory). A plain
+// persistent profile does NOT write session cookies to disk on close, so reusing the
+// profile alone logs back out. Fix: also save Playwright `storageState` (which captures
+// ALL cookies incl. session ones, plus localStorage) to a JSON file, and on sync we both
+// reuse the persistent profile (fingerprint/localStorage) AND re-inject the saved cookies.
+//
+// Both files live OUTSIDE the repo workspace so `actions/checkout` cleaning never wipes
+// them. The manual login and the runner MUST run as the SAME OS user so the paths match.
 //
 // Env:
 //   sync mode (workflow):  INGEST_TOKEN, INGEST_URL   (FIDELITY_* no longer needed)
 //   login mode (`npm run login` on the laptop): none — you type credentials by hand
-//   optional: FIDELITY_PROFILE_DIR to override where the session is stored
+//   optional: FIDELITY_PROFILE_DIR, FIDELITY_STATE_FILE to override storage locations
 //
 // Deps: playwright, papaparse
 
 import { chromium } from 'playwright';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +51,8 @@ const INGEST_TOKEN = (process.env.INGEST_TOKEN || '').trim();
 
 const PROFILE_DIR =
   process.env.FIDELITY_PROFILE_DIR || path.join(os.homedir(), '.fidelity-sync-profile');
+const STATE_FILE =
+  process.env.FIDELITY_STATE_FILE || path.join(os.homedir(), '.fidelity-sync-state.json');
 
 const LOGIN_URL = 'https://digital.fidelity.com/prgw/digital/login/full-page';
 const ACTIVITY_URL = 'https://digital.fidelity.com/ftgw/digital/portfolio/activity';
@@ -70,9 +78,10 @@ function waitForEnter(prompt) {
   });
 }
 
-// --- ONE-TIME manual login: open headed, let the human log in, persist cookies. -------
+// --- ONE-TIME manual login: open headed, let the human log in, save the session. ------
 async function loginMode() {
   console.log('Profile dir:', PROFILE_DIR);
+  console.log('State file :', STATE_FILE);
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, LAUNCH);
   try {
     const page = ctx.pages()[0] || (await ctx.newPage());
@@ -82,20 +91,38 @@ async function loginMode() {
     console.log('Log in by hand in the browser window: username, password, 2FA.');
     console.log('When you can see your portfolio/positions, return here and press Enter.');
     await waitForEnter('\nPress Enter once you are fully logged in... ');
-    // Cookies are persisted to PROFILE_DIR automatically by the persistent context.
+    // storageState captures ALL cookies (incl. session cookies) + localStorage — the bit
+    // a persistent profile alone would drop on close.
+    const state = await ctx.storageState();
+    await writeFile(STATE_FILE, JSON.stringify(state));
+    console.log(`Saved ${state.cookies.length} cookies to`, STATE_FILE);
   } finally {
     await ctx.close();
   }
-  console.log('Session saved to', PROFILE_DIR, '— you can now run the sync.');
+  console.log('Session saved — you can now run the sync.');
 }
 
 // --- Recurring sync: reuse the saved session, no login. -------------------------------
 async function syncMode() {
   need('INGEST_TOKEN', INGEST_TOKEN);
   need('INGEST_URL', INGEST_URL);
+  console.log('Profile dir:', PROFILE_DIR);
+  console.log('State file :', STATE_FILE);
+
+  if (!existsSync(STATE_FILE)) {
+    console.error(`No saved session at ${STATE_FILE}. On the laptop run \`npm run login\` first.`);
+    process.exit(2);
+  }
 
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, LAUNCH);
   try {
+    // Re-inject the saved cookies (incl. the session cookie the profile didn't keep).
+    const state = JSON.parse(await readFile(STATE_FILE, 'utf8'));
+    if (Array.isArray(state.cookies) && state.cookies.length) {
+      await ctx.addCookies(state.cookies);
+      console.log(`re-injected ${state.cookies.length} cookies`);
+    }
+
     const page = ctx.pages()[0] || (await ctx.newPage());
     page.setDefaultTimeout(60000);
 
@@ -112,28 +139,62 @@ async function syncMode() {
       process.exit(2);
     }
 
-    // Discovery: dump candidate download/export controls so we can confirm the exact
-    // selector (Fidelity's DOM isn't public). Logged as status only.
-    const candidates = await page.evaluate(() => {
-      const els = Array.from(document.querySelectorAll('a, button, [role="button"]'));
-      return els
+    // --- Download the CSV --------------------------------------------------
+    // The "Download" control on the activity page opens an EXPORT DIALOG (format/date
+    // range) instead of downloading immediately — the first click only opens it. Then a
+    // "Download as CSV" button inside the dialog produces the file.
+    const openBtn = page.locator(
+      'button[aria-label="Download" i], [aria-label="Download" i], button:has-text("Download"), a:has-text("Download")'
+    );
+    await openBtn.first().click().catch((e) => console.log('open-download click note:', e.message));
+    await page.waitForTimeout(3000); // let the dialog/menu render
+    await page.screenshot({ path: 'fidelity-download-dialog.png', fullPage: true }).catch(() => {});
+
+    // Dump interactive controls now visible (the dialog's options) so the log tells us
+    // exactly what to click if the selector below ever drifts.
+    const dialogControls = await page.evaluate(() => {
+      const sel = 'button, a, [role="button"], [role="menuitem"], input, label, select, option';
+      return Array.from(document.querySelectorAll(sel))
         .map((el) => ({
           tag: el.tagName.toLowerCase(),
-          text: (el.textContent || '').trim().slice(0, 40),
+          type: el.getAttribute('type') || '',
+          text: (el.textContent || '').trim().slice(0, 50),
           aria: el.getAttribute('aria-label') || '',
           id: el.id || '',
+          name: el.getAttribute('name') || '',
         }))
-        .filter((e) => /download|export|csv/i.test(`${e.text} ${e.aria} ${e.id}`));
+        .filter(
+          (e) =>
+            (e.text || e.aria || e.id || e.name) &&
+            /download|export|csv|spreadsheet|excel|comma|file|format|date|range|apply|confirm|\bok\b|\bgo\b/i.test(
+              `${e.text} ${e.aria} ${e.id} ${e.name}`
+            )
+        );
     });
-    console.log('download candidates:', JSON.stringify(candidates));
+    console.log('dialog controls:', JSON.stringify(dialogControls));
 
-    const dlLocator = page.locator(
-      'a:has-text("Download"), button:has-text("Download"), [aria-label*="download" i], [aria-label*="export" i]'
-    );
-    const [download] = await Promise.all([
-      page.waitForEvent('download', { timeout: 30000 }),
-      dlLocator.first().click(),                              // TODO: confirm selector
-    ]);
+    // Confirm: "Download as CSV" inside the dialog produces the file. Fall back to any
+    // CSV/Download/Export control in a dialog/menu, then to the last Download-ish control.
+    const csvBtn = page.getByRole('button', { name: /download as csv/i });
+    const inDialog = page
+      .locator('[role="dialog"] :is(button,a,[role="menuitem"]), [role="menu"] :is(button,a,[role="menuitem"])')
+      .filter({ hasText: /download|csv|export/i });
+    const clicker = (await csvBtn.count())
+      ? csvBtn.first()
+      : (await inDialog.count())
+        ? inDialog.last()
+        : page.locator('button:has-text("Download"), a:has-text("Download"), [aria-label="Download" i]').last();
+
+    let download;
+    try {
+      [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 20000 }),
+        clicker.click(),
+      ]);
+    } catch (e) {
+      console.error('No download fired. See `dialog controls` above + the fidelity-download-dialog.png artifact to pick the exact confirm/CSV control.');
+      process.exit(3);
+    }
     const csvPath = await download.path();
     const csvText = await readFile(csvPath, 'utf8');
     console.log('CSV downloaded');

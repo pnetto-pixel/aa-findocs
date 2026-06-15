@@ -6,12 +6,12 @@
 
 ## Onde estamos (resumo de 30s)
 
-A arquitetura recomendada no plano foi **construída e está parcialmente validada**. O backend
-no `aa-findocs` está pronto e mergeado; o scraper vive no repo privado `fidelity-sync` e roda num
-**self-hosted runner**. O fio ainda **não fechou**, mas o blocker mudou de diagnóstico: o screenshot
-provou que o **Akamai bloqueia o login automatizado** (não era seletor). Pivotamos para **reuso de
-sessão** (login manual 1×, scraper reusa os cookies) — implementado, falta o usuário rodar. Nenhum
-dado real foi ingerido ainda.
+A arquitetura recomendada no plano foi **construída e está FUNCIONANDO de ponta a ponta** (15/jun/2026).
+O backend no `aa-findocs` está mergeado; o scraper no `fidelity-sync` roda num **self-hosted runner**.
+O Akamai bloqueava o login automatizado, então o caminho é **reuso de sessão**: login manual 1× salva
+a sessão (`storageState`, 88 cookies), e cada run reusa, abre o diálogo de export, clica **"Download as
+CSV"**, faz parse e ingere com dedupe. Primeiro run real verde: `parsed 17 trades, 18 income rows` →
+`ingest ok: added=0 alreadyLive=17` (os trades já estavam ao vivo; dedupe funcionando).
 
 ## O que está PRONTO (✅)
 
@@ -43,7 +43,17 @@ sessão **interativa** (rodar `run.cmd` logado, NÃO como Windows Service — se
 browser headed precisa de display), browser **headed** com `--disable-blink-features=AutomationControlled`
 + UA real. Isso destravou o bot-gate: o login agora renderiza o campo de usuário (antes nem isso).
 
-## Blocker (🔴 → resolvido por pivô; aguarda o usuário rodar)
+## ✅ Resolvido (15/jun) — pipeline verde de ponta a ponta
+
+Run `27557841703` (sync.yml, self-hosted `PEDRO-LAT-5455`): `re-injected 88 cookies` →
+`activity url: .../portfolio/activity` (logado) → diálogo com botão **"Download as CSV"** →
+`CSV downloaded` → `parsed 17 trades, 18 income rows` → `ingest ok: added=0 alreadyLive=17`.
+
+**Operação de rotina:** ligar o runner (`run.cmd`, sessão interativa) → Actions → Run workflow.
+A sessão dura até a Fidelity expirar; quando expirar, o run sai com `Session expired` e basta rodar
+`npm run login` de novo no laptop. Cron diário (bloco `schedule` no `sync.yml`) é opt-in pra depois.
+
+**Histórico do blocker (resolvido):**
 
 Última run de login automatizado (`workflow_dispatch`, 15/jun 04:09 UTC, run `27523413828`):
 todas as runs falharam. O screenshot `fidelity-after-submit.png` (artifact da run) mostra a página
