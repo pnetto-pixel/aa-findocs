@@ -25,10 +25,14 @@ import { parseFidelityCSV } from './parse-fidelity.mjs';
 const {
   FIDELITY_USER,
   FIDELITY_PASS,
-  FIDELITY_TOTP_SECRET,
-  INGEST_TOKEN,
   INGEST_URL, // e.g. https://aa-findocs.vercel.app/api/ingest-fidelity
 } = process.env;
+
+// A stray trailing newline/space in a GitHub Secret is easy to introduce when
+// pasting and silently breaks the TOTP (otplib gets a bad base32) or token auth.
+// Normalize these: base32 secrets and tokens never contain whitespace.
+const FIDELITY_TOTP_SECRET = (process.env.FIDELITY_TOTP_SECRET || '').replace(/\s/g, '');
+const INGEST_TOKEN = (process.env.INGEST_TOKEN || '').trim();
 
 function need(name, v) {
   if (!v) { console.error(`Missing env ${name}`); process.exit(1); }
