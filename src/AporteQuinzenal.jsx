@@ -4,8 +4,8 @@
 // Item 26: track invested vs planned per half (this month)
 // Item 27: full contribution history bar chart (buy transactions, excluding DELL vesting)
 
-import { useEffect, useState, useMemo } from "react";
-import { Plus, Trash2, ChevronDown } from "lucide-react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { Plus, Trash2, ChevronDown, Pencil, Check, X } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -417,6 +417,92 @@ function PlanRow({ label, value, onChange }) {
   );
 }
 
+// Monthly fixed amount: presets to the previous month's saved value, but is
+// gated behind an Edit → Save flow so a stored value is only changed when the
+// user explicitly confirms. Blank (placeholder) when there's no prior month.
+function MonthlyFixedRow({ value, prevMonthValue, valuesHidden, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+
+  // Keep the draft in sync with the stored value while not actively editing.
+  useEffect(() => {
+    if (!editing) setDraft(value ?? "");
+  }, [value, editing]);
+
+  const hasValue = value !== "" && value != null;
+  const iconBtn = {
+    background: "transparent",
+    border: `1px solid ${T.border}`,
+    borderRadius: 4,
+    color: T.textDim,
+    padding: "4px 6px",
+    display: "flex",
+    alignItems: "center",
+    cursor: "pointer",
+  };
+
+  return (
+    <div style={{ padding: "9px 0", borderBottom: `1px solid ${T.borderSoft}` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim, flex: 1 }}>
+          Monthly fixed amount
+        </span>
+        {!editing ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: hasValue ? T.text : T.textFaint }}>
+              {hasValue ? fmtUSD(parseFloat(value) || 0, valuesHidden) : "Not set"}
+            </span>
+            <button
+              type="button"
+              onClick={() => { setDraft(value ?? ""); setEditing(true); }}
+              title="Edit monthly fixed amount"
+              style={iconBtn}
+            >
+              <Pencil size={12} />
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="0"
+              autoFocus
+              style={{ ...INPUT_STYLE, width: 90 }}
+            />
+            <button
+              type="button"
+              onClick={() => { onSave(draft); setEditing(false); }}
+              title="Save"
+              style={{ ...iconBtn, border: `1px solid ${T.gold}`, color: T.gold }}
+            >
+              <Check size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => { setDraft(value ?? ""); setEditing(false); }}
+              title="Cancel"
+              style={iconBtn}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+      </div>
+      {editing && prevMonthValue != null && (
+        <div style={{ fontFamily: FONT_BODY, fontSize: 10, color: T.textFaint, textAlign: "right", marginTop: 4 }}>
+          Last month: {fmtUSD(prevMonthValue, valuesHidden)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
@@ -510,6 +596,28 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     setConfig(next);
     localStorage.setItem(LS_CONFIG, JSON.stringify(next));
   }
+
+  // Previous month's saved "monthly fixed amount" (from the capacity snapshots).
+  // Used to preset the current month's value. null when there's no prior value.
+  const prevMonthFixed = useMemo(() => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const v = Number(capacityHistory[key]?.monthlyFixed);
+    return isFinite(v) && v > 0 ? v : null;
+  }, [capacityHistory]);
+
+  // One-time preset: when the current month has no fixed amount set yet, seed it
+  // from the previous month's value. Leaves it blank if there's no prior value.
+  const seededFixed = useRef(false);
+  useEffect(() => {
+    if (!capacityLoaded || seededFixed.current) return;
+    seededFixed.current = true;
+    if ((config.monthlyFixed === "" || config.monthlyFixed == null) && prevMonthFixed != null) {
+      updateConfig({ monthlyFixed: String(prevMonthFixed) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capacityLoaded, prevMonthFixed]);
 
   function addExtra() {
     const label = newExtraLabel.trim();
@@ -669,10 +777,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         />
         {planOpen && (
           <div style={{ padding: "0 20px 20px" }}>
-            <PlanRow
-              label="Monthly fixed amount"
+            <MonthlyFixedRow
               value={config.monthlyFixed}
-              onChange={(v) => updateConfig({ monthlyFixed: v })}
+              prevMonthValue={prevMonthFixed}
+              valuesHidden={valuesHidden}
+              onSave={(v) => updateConfig({ monthlyFixed: v })}
             />
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
               <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>Dividends (last month)</span>
