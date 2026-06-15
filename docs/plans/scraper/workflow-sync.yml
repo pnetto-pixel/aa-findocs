@@ -49,3 +49,11 @@ jobs:
           INGEST_URL: https://aa-findocs.vercel.app/api/ingest-fidelity
         # Headed browser under a virtual display to defeat headless detection.
         run: xvfb-run -a npm run sync
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: /tmp/fidelity-*.png
+          if-no-files-found: ignore

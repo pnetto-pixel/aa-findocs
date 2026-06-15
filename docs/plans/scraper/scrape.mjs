@@ -82,6 +82,8 @@ async function main() {
     await page.waitForTimeout(4000);
     console.log('url 4s after submit:', page.url());
     console.log('page title:', await page.title());
+    await page.screenshot({ path: '/tmp/fidelity-after-submit.png' });
+    console.log('screenshot saved');
 
     // --- 2FA via TOTP ------------------------------------------------------
     // Broad set of selectors — Fidelity's OTP field id/autocomplete varies.
