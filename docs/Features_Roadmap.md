@@ -85,7 +85,7 @@
 
 ### Desktop responsivo — polish futuro — ENTREGUE (jun/2026 — commit c09a595)
 
-- **Layout 2 colunas Allocation + Rebalance — ENTREGUE**: em `App.jsx`, quando `windowWidth >= 1024` e ambos os cards estão visíveis, Allocation (flex 1) e Rebalance (flex 1) ficam lado a lado. Stacked em mobile sem regressão. Donut size recalculado para a coluna mais estreita.
+- **Layout 2 colunas Allocation + Rebalance — REVERTIDO (jun/2026 — commit c50fcf1)**: o layout side-by-side (`sideBySide`, `flex row`) foi removido por preferencia de UX. Wrapper da secao Holdings voltou a `display: "block"` sempre — layout single-column empilhado em qualquer largura. `marginBottom`/`marginTop` fixos, sem condicional. `allocSectionW` usa `containerW - 32` sempre (donuts ocupam largura total do container). `windowWidth` state e `containerW` permanecem para outros usos (clamp dos donuts, font scaling). Mobile identico ao anterior.
 - **Total Value font scaling — ENTREGUE**: `fontSize: 38` → `windowWidth >= 1024 ? 44 : 38`.
 - **AporteQuinzenal 2 colunas — ENTREGUE**: Monthly Plan (flex 3) + This Month (flex 2) lado a lado em `windowWidth >= 768`. `windowWidth` state + resize listener adicionados em `AporteQuinzenal.jsx`. Contribution History permanece full-width.
 - **Sub-views (Transactions, Performance, Dividends)**: KPI cards já usam `flexWrap`, tabelas têm scroll horizontal, charts usam `ResponsiveContainer` — comportamento adequado sem mudanças adicionais.

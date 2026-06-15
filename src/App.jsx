@@ -2613,13 +2613,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           </section>
 
-          {/* Allocation + Rebalance: side-by-side on desktop when both visible */}
+          {/* Allocation + Rebalance: stacked layout (single column) */}
           {(() => {
             const showAlloc = chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
             const showRebal = holdings.some((h) => h.target > 0);
-            const sideBySide = windowWidth >= 1024 && showAlloc && showRebal;
             return (
-              <div style={{ display: sideBySide ? "flex" : "block", gap: 20, alignItems: "flex-start" }}>
+              <div style={{ display: "block" }}>
                 {/* Allocation charts: Target vs Actual */}
                 {showAlloc && (
                   <section
@@ -2628,8 +2627,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       border: `1px solid ${T.borderSoft}`,
                       borderRadius: 4,
                       padding: 16,
-                      marginBottom: sideBySide ? 0 : 20,
-                      flex: sideBySide ? "1 1 0" : undefined,
+                      marginBottom: 20,
                     }}
                   >
                     <div
@@ -2741,12 +2739,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     </div>
 
                     {(() => {
-                      // Responsive donut size: clamp [140, 220] based on available column width.
-                      // When side-by-side: allocation section is (containerW - 20gap) / 2 wide, minus 32 section padding.
+                      // Responsive donut size: clamp [140, 220] based on available section width.
                       // Below 640px (mobile) the clamp floor of 140 ensures no regression.
                       const w = Math.min(windowWidth, 1200);
                       const containerW = w - 32; // outer padding 16px each side
-                      const allocSectionW = sideBySide ? (containerW - 20) / 2 - 32 : containerW - 32;
+                      const allocSectionW = containerW - 32;
                       const colW = (allocSectionW - 12) / 2; // gap between the two donuts
                       const donutSize = Math.round(Math.min(Math.max(colW * 0.75, 140), 220));
                       return (
@@ -2791,7 +2788,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 )}
                 {/* Rebalance Section */}
                 {showRebal && (
-                  <section style={{ marginTop: sideBySide ? 0 : 28, flex: sideBySide ? "1 1 0" : undefined }}>
+                  <section style={{ marginTop: 28 }}>
                     <button
                       onClick={() => setShowRebalance(!showRebalance)}
                       style={{
