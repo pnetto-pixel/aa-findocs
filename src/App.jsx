@@ -2613,10 +2613,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           </section>
 
-          {/* Allocation + Rebalance: stacked layout (single column) */}
+          {/* Allocation chart (single column) */}
           {(() => {
             const showAlloc = chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
-            const showRebal = holdings.some((h) => h.target > 0);
             return (
               <div style={{ display: "block" }}>
                 {/* Allocation charts: Target vs Actual */}
@@ -2784,161 +2783,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       actualSlices={chartData.actualSlices}
                       dayChangeMap={chartData.dayChangeMap}
                     />
-                  </section>
-                )}
-                {/* Rebalance Section */}
-                {showRebal && (
-                  <section style={{ marginTop: 28 }}>
-                    <button
-                      onClick={() => setShowRebalance(!showRebalance)}
-                      style={{
-                        width: "100%",
-                        background: T.card,
-                        border: `1px solid ${T.borderSoft}`,
-                        borderRadius: 4,
-                        padding: "14px 16px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        color: T.text,
-                      }}
-                    >
-                      <span
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          fontFamily: FONT_MONO,
-                          fontSize: 11,
-                          letterSpacing: "0.18em",
-                          textTransform: "uppercase",
-                          color: T.gold,
-                        }}
-                      >
-                        <Scale size={14} strokeWidth={2} />
-                        Rebalance Suggestion
-                      </span>
-                      <ChevronDown
-                        size={16}
-                        style={{
-                          color: T.textDim,
-                          transform: showRebalance ? "rotate(180deg)" : "none",
-                          transition: "transform 0.2s",
-                        }}
-                      />
-                    </button>
-
-                    {showRebalance && (
-                      <div
-                        className="card-enter"
-                        style={{
-                          background: T.card,
-                          border: `1px solid ${T.borderSoft}`,
-                          borderTop: "none",
-                          borderRadius: "0 0 4px 4px",
-                          padding: 16,
-                          marginTop: -1,
-                        }}
-                      >
-                        {/* New cash input */}
-                        <div style={{ marginBottom: 16 }}>
-                          <label
-                            style={{
-                              display: "block",
-                              fontSize: 10,
-                              letterSpacing: "0.18em",
-                              textTransform: "uppercase",
-                              color: T.textDim,
-                              fontFamily: FONT_MONO,
-                              marginBottom: 6,
-                            }}
-                          >
-                            New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
-                          </label>
-                          <Input
-                            placeholder="0.00"
-                            value={newCash}
-                            onChange={(e) => setNewCash(e.target.value)}
-                            inputMode="decimal"
-                          />
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: T.textFaint,
-                              fontFamily: FONT_MONO,
-                              marginTop: 6,
-                              lineHeight: 1.4,
-                            }}
-                          >
-                            Suggestions are buys only, integer shares, capped at ${PER_ASSET_CAP.toLocaleString()} per asset. If cash is set, total purchases stay within it (most underweight first).
-                          </div>
-                        </div>
-
-                        {/* Rebalance rows */}
-                        {rebalance.length === 0 ? (
-                          <div
-                            style={{
-                              background: T.cardElev,
-                              borderRadius: 2,
-                              padding: "16px",
-                              textAlign: "center",
-                              fontSize: 12,
-                              color: T.textDim,
-                              fontFamily: FONT_DISPLAY,
-                              fontStyle: "italic",
-                            }}
-                          >
-                            Nothing to buy — you're at or above target on every holding.
-                          </div>
-                        ) : (
-                          <>
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: 1,
-                                background: T.borderSoft,
-                                border: `1px solid ${T.borderSoft}`,
-                                borderRadius: 2,
-                                overflow: "hidden",
-                              }}
-                            >
-                              {rebalance.map((r) => (
-                                <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
-                              ))}
-                            </div>
-
-                            {/* Summary */}
-                            <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} valuesHidden={valuesHidden} />
-                          </>
-                        )}
-
-                        {Math.abs(totalTarget - 100) > 0.5 && (
-                          <div
-                            style={{
-                              marginTop: 12,
-                              padding: "8px 10px",
-                              fontSize: 11,
-                              color: T.gold,
-                              background: "rgba(201, 169, 97, 0.06)",
-                              border: `1px solid ${T.goldDim}33`,
-                              borderRadius: 2,
-                              display: "flex",
-                              alignItems: "flex-start",
-                              gap: 6,
-                              fontFamily: FONT_MONO,
-                              lineHeight: 1.5,
-                            }}
-                          >
-                            <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
-                            <span>
-                              Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
-                              assume the targets you've set; cash may not be fully deployed.
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </section>
                 )}
               </div>
@@ -3411,6 +3255,162 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               </div>
             )}
           </section>
+
+          {/* Rebalance Suggestion — placed below Add Manual Asset */}
+          {holdings.some((h) => h.target > 0) && (
+            <section style={{ marginTop: 18 }}>
+              <button
+                onClick={() => setShowRebalance(!showRebalance)}
+                style={{
+                  width: "100%",
+                  background: T.card,
+                  border: `1px solid ${T.borderSoft}`,
+                  borderRadius: 4,
+                  padding: "14px 16px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  color: T.text,
+                }}
+              >
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: T.gold,
+                  }}
+                >
+                  <Scale size={14} strokeWidth={2} />
+                  Rebalance Suggestion
+                </span>
+                <ChevronDown
+                  size={16}
+                  style={{
+                    color: T.textDim,
+                    transform: showRebalance ? "rotate(180deg)" : "none",
+                    transition: "transform 0.2s",
+                  }}
+                />
+              </button>
+
+              {showRebalance && (
+                <div
+                  className="card-enter"
+                  style={{
+                    background: T.card,
+                    border: `1px solid ${T.borderSoft}`,
+                    borderTop: "none",
+                    borderRadius: "0 0 4px 4px",
+                    padding: 16,
+                    marginTop: -1,
+                  }}
+                >
+                  {/* New cash input */}
+                  <div style={{ marginBottom: 16 }}>
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: 10,
+                        letterSpacing: "0.18em",
+                        textTransform: "uppercase",
+                        color: T.textDim,
+                        fontFamily: FONT_MONO,
+                        marginBottom: 6,
+                      }}
+                    >
+                      New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
+                    </label>
+                    <Input
+                      placeholder="0.00"
+                      value={newCash}
+                      onChange={(e) => setNewCash(e.target.value)}
+                      inputMode="decimal"
+                    />
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: T.textFaint,
+                        fontFamily: FONT_MONO,
+                        marginTop: 6,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      Suggestions are buys only, integer shares, capped at ${PER_ASSET_CAP.toLocaleString()} per asset. If cash is set, total purchases stay within it (most underweight first).
+                    </div>
+                  </div>
+
+                  {/* Rebalance rows */}
+                  {rebalance.length === 0 ? (
+                    <div
+                      style={{
+                        background: T.cardElev,
+                        borderRadius: 2,
+                        padding: "16px",
+                        textAlign: "center",
+                        fontSize: 12,
+                        color: T.textDim,
+                        fontFamily: FONT_DISPLAY,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      Nothing to buy — you're at or above target on every holding.
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 1,
+                          background: T.borderSoft,
+                          border: `1px solid ${T.borderSoft}`,
+                          borderRadius: 2,
+                          overflow: "hidden",
+                        }}
+                      >
+                        {rebalance.map((r) => (
+                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
+                        ))}
+                      </div>
+
+                      {/* Summary */}
+                      <RebalanceSummary items={rebalance} newCash={parseFloat(newCash) || 0} valuesHidden={valuesHidden} />
+                    </>
+                  )}
+
+                  {Math.abs(totalTarget - 100) > 0.5 && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: "8px 10px",
+                        fontSize: 11,
+                        color: T.gold,
+                        background: "rgba(201, 169, 97, 0.06)",
+                        border: `1px solid ${T.goldDim}33`,
+                        borderRadius: 2,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 6,
+                        fontFamily: FONT_MONO,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
+                      <span>
+                        Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
+                        assume the targets you've set; cash may not be fully deployed.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Backup / restore */}
           <div
@@ -4541,6 +4541,7 @@ function SectionLabel({ label, count, of, icon, collapsible, collapsed, onToggle
         style={{
           fontFamily: FONT_MONO,
           fontSize: 12,
+          fontWeight: 600,
           letterSpacing: "0.2em",
           textTransform: "uppercase",
           color: T.gold,
@@ -4582,7 +4583,8 @@ function SectionLabel({ label, count, of, icon, collapsible, collapsed, onToggle
     display: "flex",
     alignItems: "center",
     gap: 8,
-    paddingBottom: 6,
+    paddingTop: 13,
+    paddingBottom: 7,
     borderBottom: `1px solid ${T.borderSoft}`,
     position: "relative",
     overflow: "hidden",
@@ -4597,8 +4599,8 @@ function SectionLabel({ label, count, of, icon, collapsible, collapsed, onToggle
           width: "100%",
           background: "transparent",
           border: "none",
-          padding: 0,
-          paddingBottom: 6,
+          paddingLeft: 0,
+          paddingRight: 0,
           cursor: "pointer",
           textAlign: "left",
         }}
