@@ -53,6 +53,24 @@ Run `27557841703` (sync.yml, self-hosted `PEDRO-LAT-5455`): `re-injected 88 cook
 A sessão dura até a Fidelity expirar; quando expirar, o run sai com `Session expired` e basta rodar
 `npm run login` de novo no laptop. Cron diário (bloco `schedule` no `sync.yml`) é opt-in pra depois.
 
+## 🅿️ Parking lot (decisão do usuário, 15/jun)
+
+O pipeline **funciona**, mas a operação é **manual/dependente do laptop** (runner self-hosted numa
+sessão logada + disparo manual ou cron, mas só roda se o runner estiver "Listening"). O usuário achou
+isso pouco melhor que baixar o CSV na mão (~2 min) e **parou pra pensar em outras soluções** — sem
+trabalho adicional por enquanto.
+
+**Restrição central (a "outra solução" tem que respeitar):** a Fidelity/Akamai bloqueia IP de data
+center mesmo com sessão salva → **não existe versão 100% nuvem confiável**. O único caminho robusto
+pra "automático sem o laptop do dia a dia" é um **aparelho sempre-ligado na rede residencial**
+(Raspberry Pi / mini-PC / PC velho) rodando o runner em background (Linux + Xvfb + cron). Mesmo assim,
+**re-login manual ocasional é inevitável** (quando a Fidelity expira a sessão).
+
+**Gap menor conhecido (não consertado, por opção):** o card "Fidelity Import" só aparece quando há
+**trades** novos (`pendingFid.length > 0`, `src/Transactions.jsx:4722`). Income pendente sozinho (sem
+trades) fica no staging e **não é exibido**. Conserto = mostrar o card também quando há
+`pendingFidBond`. (No run real, 18 linhas de income ficaram no staging invisíveis.)
+
 **Histórico do blocker (resolvido):**
 
 Última run de login automatizado (`workflow_dispatch`, 15/jun 04:09 UTC, run `27523413828`):
