@@ -78,28 +78,37 @@ async function main() {
     await userField.fill(FIDELITY_USER);                      // TODO: confirm selector
     await page.fill('#dom-pswd-input', FIDELITY_PASS);       // TODO: confirm selector
     await page.click('#dom-login-button');                    // TODO: confirm selector
-    console.log('credentials submitted');
+    // Let the page process the submit before checking state.
+    await page.waitForTimeout(4000);
+    console.log('url 4s after submit:', page.url());
+    console.log('page title:', await page.title());
 
     // --- 2FA via TOTP ------------------------------------------------------
-    // Fidelity shows the authenticator-code field after submitting credentials.
-    const otpField = page.locator('input[autocomplete="one-time-code"], #dom-otp-code-input');
-    if (await otpField.first().isVisible({ timeout: 15000 }).catch(() => false)) {
+    // Broad set of selectors — Fidelity's OTP field id/autocomplete varies.
+    const otpField = page.locator([
+      'input[autocomplete="one-time-code"]',
+      '#dom-otp-code-input',
+      'input[type="tel"]',
+      'input[name*="code" i]',
+    ].join(', '));
+    const otpVisible = await otpField.first().isVisible({ timeout: 10000 }).catch(() => false);
+    if (otpVisible) {
       console.log('2FA field visible, generating TOTP');
       const code = authenticator.generate(FIDELITY_TOTP_SECRET);
       await otpField.first().fill(code);
       // Some flows offer "remember this device" — clicking it reduces future 2FA.
       await page.click('button:has-text("Continue"), #dom-otp-submit-button').catch(() => {});
-      console.log('2FA submitted');
+      console.log('2FA submitted, url:', page.url());
     } else {
-      console.log('no 2FA field detected');
+      console.log('no 2FA field, url:', page.url());
     }
 
-    // networkidle never fires on Fidelity's SPA (persistent background requests).
-    // Wait for the URL to leave the login path instead.
+    // Wait for the authenticated area of Fidelity (/ftgw/ = logged-in pages).
+    // Throws if login didn't succeed so we get a clear error instead of a silent wrong state.
     await page.waitForURL(
-      (url) => !url.toString().includes('/login/'),
+      (url) => /\/ftgw\/|\/portfolio\/|\/summary\//.test(url.toString()),
       { timeout: 30000 }
-    ).catch(() => console.log('waitForURL timeout, url:', page.url()));
+    );
     console.log('login ok, url:', page.url());
 
     // --- Download the Accounts History CSV --------------------------------
