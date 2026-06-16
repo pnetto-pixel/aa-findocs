@@ -1400,11 +1400,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     );
   }
 
-  function removeHolding(id) {
-    if (id === CASH_ID) return; // cash account is permanent
-    setHoldings((prev) => prev.filter((h) => h.id !== id));
-  }
-
   function addManualHolding() {
     setManualFormError("");
     const name = manualName.trim();
@@ -2965,7 +2960,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onUpdate={(patch) => updateManualHolding(h.id, patch)}
-                              onRemove={() => removeHolding(h.id)}
                             />
                           ) : (
                             <HoldingRow
@@ -2975,7 +2969,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onRefresh={() => refreshOne(h.id, h.ticker)}
-                              onRemove={() => removeHolding(h.id)}
                               onUpdate={(patch) => updateHolding(h.id, patch)}
                               editingClass={editingClassId === h.id}
                               editingClassValue={editingClassValue}
@@ -3017,7 +3010,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         valuesHidden={valuesHidden}
                         deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                         onUpdate={(patch) => updateManualHolding(h.id, patch)}
-                        onRemove={() => removeHolding(h.id)}
                         locked={h.id === CASH_ID}
                       />
                     </div>
@@ -3752,7 +3744,6 @@ function HoldingRow({
   valuesHidden,
   deltaColor,
   onRefresh,
-  onRemove,
   onUpdate,
   editingClass,
   editingClassValue,
@@ -3880,9 +3871,6 @@ function HoldingRow({
         <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
-          </IconButton>
-          <IconButton onClick={onRemove} label="Remove" danger>
-            <Trash2 size={12} />
           </IconButton>
         </div>
       </div>
@@ -4636,7 +4624,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, locked }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -4784,11 +4772,6 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
-          {!locked && !isBankBonds && (
-            <IconButton onClick={onRemove} label="Remove" danger>
-              <Trash2 size={12} />
-            </IconButton>
-          )}
         </div>
       </div>
 
