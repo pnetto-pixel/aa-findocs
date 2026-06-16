@@ -2975,7 +2975,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onRefresh={() => refreshOne(h.id, h.ticker)}
-                              onRemove={() => removeHolding(h.id)}
                               onUpdate={(patch) => updateHolding(h.id, patch)}
                               editingClass={editingClassId === h.id}
                               editingClassValue={editingClassValue}
@@ -3752,7 +3751,6 @@ function HoldingRow({
   valuesHidden,
   deltaColor,
   onRefresh,
-  onRemove,
   onUpdate,
   editingClass,
   editingClassValue,
@@ -3880,9 +3878,6 @@ function HoldingRow({
         <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
-          </IconButton>
-          <IconButton onClick={onRemove} label="Remove" danger>
-            <Trash2 size={12} />
           </IconButton>
         </div>
       </div>
