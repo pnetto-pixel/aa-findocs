@@ -1400,6 +1400,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     );
   }
 
+  function removeHolding(id) {
+    if (id === CASH_ID) return; // cash account is permanent
+    setHoldings((prev) => prev.filter((h) => h.id !== id));
+  }
+
   function addManualHolding() {
     setManualFormError("");
     const name = manualName.trim();
@@ -2960,6 +2965,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                              onRemove={() => removeHolding(h.id)}
                             />
                           ) : (
                             <HoldingRow
@@ -3010,6 +3016,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         valuesHidden={valuesHidden}
                         deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                         onUpdate={(patch) => updateManualHolding(h.id, patch)}
+                        onRemove={() => removeHolding(h.id)}
                         locked={h.id === CASH_ID}
                       />
                     </div>
@@ -4624,7 +4631,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, locked }) {
+function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -4772,6 +4779,11 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
+          {!locked && !isBankBonds && (
+            <IconButton onClick={onRemove} label="Remove" danger>
+              <Trash2 size={12} />
+            </IconButton>
+          )}
         </div>
       </div>
 
