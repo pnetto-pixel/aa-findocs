@@ -3563,9 +3563,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     </div>
                     <button
                       onClick={() => { setShowCSVImport(true); setCsvImportStep("upload"); setCsvImportRows([]); }}
-                      style={{ fontSize: 12, padding: "4px 10px", background: T.cardElev, color: T.text, border: `1px solid ${T.border}`, borderRadius: 6, cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.08em", whiteSpace: "nowrap", flexShrink: 0 }}
+                      style={{ fontSize: 12, padding: "6px 14px", background: "rgba(201,169,97,0.12)", color: T.gold, border: `1px solid ${T.gold}55`, borderRadius: 6, cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.08em", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}
                     >
-                      Import CSV
+                      Import Allocation Targets
                     </button>
                   </div>
                   {!trackedCollapsed && (
@@ -5486,18 +5486,17 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
             {editingPopupClass ? (
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <input
+                <select
                   value={draftPopupClass}
                   onChange={(e) => setDraftPopupClass(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") { onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null }); setEditingPopupClass(false); }
-                    if (e.key === "Escape") setEditingPopupClass(false);
-                  }}
                   autoFocus
-                  placeholder="Class"
                   style={{ background: T.bg, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, flex: 1, minWidth: 0 }}
-                />
-                <button type="button" onClick={() => { onUpdate({ assetClass: draftPopupClass.trim() || "Manual", assetClassOverride: draftPopupClass.trim() || null }); setEditingPopupClass(false); }} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
+                >
+                  {ASSET_CLASS_OPTIONS.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => { onUpdate({ assetClass: draftPopupClass, assetClassOverride: draftPopupClass || null }); setEditingPopupClass(false); }} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
                 <button type="button" onClick={() => setEditingPopupClass(false)} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}>✕</button>
               </div>
             ) : (
@@ -5582,7 +5581,15 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           <div style={{ display: "grid", gridTemplateColumns: (locked || isBankBonds) ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <Input placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
             {!locked && !isBankBonds && (
-              <Input placeholder="Class" value={draftClass} onChange={(e) => setDraftClass(e.target.value)} />
+              <select
+                value={draftClass}
+                onChange={(e) => setDraftClass(e.target.value)}
+                style={{ background: T.cardElev, border: `1px solid ${T.border}`, color: T.text, padding: "10px 12px", fontSize: 14, fontFamily: FONT_MONO, borderRadius: 2, width: "100%" }}
+              >
+                {ASSET_CLASS_OPTIONS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
             )}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
