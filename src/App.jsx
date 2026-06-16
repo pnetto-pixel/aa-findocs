@@ -3605,8 +3605,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               onChangeEditClassValue={setEditingClassValue}
                               fromCSVImport={!!h.fromCSVImport}
                               hasTransactions={transactions.some((tx) => (tx.ticker || "").toUpperCase() === (h.ticker || "").toUpperCase())}
-                              onRemove={h.fromCSVImport ? () => removeHolding(h.id) : undefined}
-                              onAssetClassChange={h.fromCSVImport ? (cls) => updateHolding(h.id, { assetClass: cls }) : undefined}
+                              onRemove={() => removeHolding(h.id)}
+                              onAssetClassChange={(cls) => updateHolding(h.id, { assetClass: cls })}
                             />
                           )}
                         </div>
@@ -4531,7 +4531,7 @@ function HoldingRow({
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
-          {fromCSVImport && !hasTransactions && onRemove && (
+          {!hasTransactions && onRemove && (
             <IconButton onClick={onRemove} label="Remove" danger>
               <Trash2 size={12} />
             </IconButton>
@@ -4592,14 +4592,18 @@ function HoldingRow({
           <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-              <button
-                type="button"
-                onClick={() => { onEditClass(); setDriftOpen(false); }}
-                style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
-              >
-                {holding.assetClass || "Uncategorized"}
-                <Pencil size={7} />
-              </button>
+              {hasTransactions ? (
+                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: T.gold, padding: "1px 6px" }}>{holding.assetClass || "Uncategorized"}</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { onEditClass(); setDriftOpen(false); }}
+                  style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
+                >
+                  {holding.assetClass || "Uncategorized"}
+                  <Pencil size={7} />
+                </button>
+              )}
             </div>
             <button
               type="button"
@@ -4617,17 +4621,16 @@ function HoldingRow({
       {/* Asset class inline edit — triggered from accordion, expands below */}
       {editingClass && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
-          <input
+          <select
             value={editingClassValue}
             onChange={(e) => onChangeEditClassValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onSaveClass();
-              if (e.key === "Escape") onCancelEditClass();
-            }}
             autoFocus
-            placeholder="Asset class"
-            style={{ background: T.cardElev, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, minWidth: 0, flex: 1, maxWidth: 180 }}
-          />
+            style={{ background: T.cardElev, border: `1px solid ${T.gold}`, color: T.text, padding: "3px 6px", fontSize: 10, fontFamily: FONT_MONO, borderRadius: 1, minWidth: 0, flex: 1, maxWidth: 200 }}
+          >
+            {ASSET_CLASS_OPTIONS.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
           <button type="button" onClick={onSaveClass} style={{ background: T.gold, color: T.bg, border: "none", padding: "3px 8px", fontSize: 10, borderRadius: 1, fontWeight: 600 }}>Save</button>
           <button type="button" onClick={onCancelEditClass} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.textDim, padding: "3px 8px", fontSize: 10, borderRadius: 1 }}>Cancel</button>
         </div>
