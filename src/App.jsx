@@ -532,6 +532,562 @@ function isUserAdmin(auth) {
 // How long client-side profile info is considered fresh (avoid asking the server for name/class on every refresh).
 const PROFILE_REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+const ASSET_CLASS_OPTIONS = [
+  "Alternative",
+  "BRA Fixed Income",
+  "Bank Bonds",
+  "Bonds",
+  "Real Estate",
+  "Stocks",
+  "BRA Stocks",
+  "Unallocated BRL",
+  "Unallocated USD",
+];
+
+function parseAllocationCSV(text) {
+  if (!text || !text.trim()) return [];
+  const lines = text.split(/\r?\n/);
+  const delim = (() => {
+    const first = lines.find((l) => l.trim());
+    if (!first) return ",";
+    if (first.includes("\t")) return "\t";
+    if (first.includes(";")) return ";";
+    return ",";
+  })();
+  const rows = [];
+  const seenTickers = new Set();
+  let startIdx = 0;
+  const firstLine = lines[0] ? lines[0].toLowerCase() : "";
+  if (firstLine.includes("ticker") || firstLine.includes("symbol") || firstLine.includes("ativo")) {
+    startIdx = 1;
+  }
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const parts = line.split(delim);
+    if (parts.length < 2) continue;
+    const ticker = (parts[0] || "").trim().toUpperCase();
+    if (!ticker) continue;
+    const rawPct = (parts[1] || "").trim().replace(/[%\s]/g, "");
+    const targetPct = parseFloat(rawPct);
+    let error = null;
+    if (isNaN(targetPct) || targetPct < 0 || targetPct > 100) {
+      error = "invalid_target";
+    } else if (seenTickers.has(ticker)) {
+      error = "duplicate";
+    }
+    if (error !== "invalid_target") seenTickers.add(ticker);
+    rows.push({ ticker, targetPct: error ? null : targetPct, error });
+  }
+  return rows;
+}
+
+function classifyCSVRows(rows, holdings, transactions) {
+  return rows.map((row) => {
+    if (row.error) {
+      return {
+        ...row,
+        action: "error",
+        existingHolding: null,
+        txAssetClass: null,
+        chosenAssetClass: "",
+        apiStatus: null,
+      };
+    }
+    const tickerUp = row.ticker.toUpperCase();
+    const found = holdings.find(
+      (h) => (h.ticker || "").toUpperCase() === tickerUp
+    );
+    if (found) {
+      return {
+        ...row,
+        action: "update_target",
+        existingHolding: found,
+        txAssetClass: null,
+        chosenAssetClass: found.assetClass || "",
+        apiStatus: null,
+      };
+    }
+    const txMatch = transactions
+      .slice()
+      .reverse()
+      .find((tx) => (tx.ticker || "").toUpperCase() === tickerUp);
+    if (txMatch) {
+      return {
+        ...row,
+        action: "create_from_tx",
+        existingHolding: null,
+        txAssetClass: txMatch.assetClass || "Stocks",
+        chosenAssetClass: txMatch.assetClass || "Stocks",
+        apiStatus: null,
+      };
+    }
+    return {
+      ...row,
+      action: "create_new",
+      existingHolding: null,
+      txAssetClass: null,
+      chosenAssetClass: "",
+      apiStatus: null,
+    };
+  });
+}
+
+function shouldSkipValidationCSV(ticker, assetClass) {
+  if (!ticker) return true;
+  if (/^tesouro-/i.test(ticker)) return true;
+  if (assetClass === "BRA Fixed Income") return true;
+  if (assetClass === "Bank Bonds") return true;
+  if (/^[0-9A-Z]{9}[0-9]$/.test(ticker)) return true;
+  return false;
+}
+
+async function validateTickerForCSV(ticker, assetClass, auth) {
+  if (shouldSkipValidationCSV(ticker, assetClass)) return "skipped";
+  try {
+    const res = await fetch(`/api/price?ticker=${encodeURIComponent(ticker)}`, {
+      headers: authHeaders(auth),
+    });
+    return res.ok ? "valid" : "invalid";
+  } catch {
+    return "skipped";
+  }
+}
+
+function AllocationCSVImportModal({ auth, holdings, transactions, onClose, onApply }) {
+  const TM = {
+    bg: "#0b0d10",
+    card: "#13161b",
+    cardElev: "#191d24",
+    border: "#222831",
+    borderSoft: "#1a1e25",
+    text: "#ece8e0",
+    textDim: "#8a8f99",
+    textFaint: "#5a5f69",
+    gold: "#c9a961",
+    goldDim: "#7a6840",
+    green: "#7dd3a4",
+    red: "#e88c8c",
+  };
+  const FM_BODY = "'Manrope', system-ui, sans-serif";
+  const FM_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
+
+  const [step, setStep] = useState("upload");
+  const [csvText, setCsvText] = useState("");
+  const [rows, setRows] = useState([]);
+  const [parseError, setParseError] = useState("");
+  const fileRef = useRef(null);
+
+  function handlePreview() {
+    setParseError("");
+    const parsed = parseAllocationCSV(csvText);
+    if (!parsed.length) {
+      setParseError("No rows found. Check your CSV format.");
+      return;
+    }
+    const validCount = parsed.filter((r) => !r.error).length;
+    if (validCount === 0) {
+      setParseError("All rows have errors. Fix targets (must be 0-100) and duplicates.");
+      return;
+    }
+    const classified = classifyCSVRows(parsed, holdings, transactions);
+    setRows(classified);
+    setStep("preview");
+  }
+
+  function handleFileUpload(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setCsvText(ev.target.result || "");
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  useEffect(() => {
+    if (step !== "preview") return;
+    rows.forEach((row, idx) => {
+      if (row.action !== "create_new") return;
+      if (row.apiStatus !== null) return;
+      setRows((prev) =>
+        prev.map((r, i) => (i === idx ? { ...r, apiStatus: "pending" } : r))
+      );
+      validateTickerForCSV(row.ticker, row.chosenAssetClass, auth).then((status) => {
+        setRows((prev) =>
+          prev.map((r, i) => (i === idx ? { ...r, apiStatus: status } : r))
+        );
+      });
+    });
+  }, [step]);
+
+  const validCount = rows.filter((r) => r.action !== "error").length;
+  const applyBlocked = rows.some(
+    (r) =>
+      r.action === "create_new" &&
+      (r.apiStatus === null ||
+        r.apiStatus === "pending" ||
+        r.apiStatus === "invalid" ||
+        !r.chosenAssetClass)
+  );
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: TM.card,
+          border: `1px solid ${TM.border}`,
+          borderRadius: 12,
+          padding: 24,
+          maxWidth: 680,
+          width: "90%",
+          maxHeight: "80vh",
+          overflowY: "auto",
+          fontFamily: FM_BODY,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 20,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FM_MONO,
+              fontSize: 11,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              color: TM.gold,
+            }}
+          >
+            {step === "upload" ? "Import Allocation CSV" : `Review ${validCount} change${validCount !== 1 ? "s" : ""}`}
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: TM.textDim,
+              cursor: "pointer",
+              padding: 4,
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {step === "upload" && (
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                color: TM.textDim,
+                fontFamily: FM_MONO,
+                marginBottom: 10,
+              }}
+            >
+              Paste CSV or upload a file. Format: ticker, target %
+            </div>
+            <textarea
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              placeholder={"Paste CSV here (ticker, target %)\nAAPL, 10\nMSFT, 15"}
+              rows={8}
+              style={{
+                width: "100%",
+                background: TM.cardElev,
+                border: `1px solid ${TM.border}`,
+                color: TM.text,
+                padding: 10,
+                fontSize: 12,
+                fontFamily: FM_MONO,
+                borderRadius: 6,
+                resize: "vertical",
+                boxSizing: "border-box",
+              }}
+            />
+            {parseError && (
+              <div
+                style={{
+                  color: TM.red,
+                  fontSize: 12,
+                  fontFamily: FM_MONO,
+                  marginTop: 8,
+                }}
+              >
+                {parseError}
+              </div>
+            )}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <button
+                onClick={() => fileRef.current && fileRef.current.click()}
+                style={{
+                  background: TM.cardElev,
+                  border: `1px solid ${TM.border}`,
+                  color: TM.textDim,
+                  padding: "8px 14px",
+                  fontSize: 11,
+                  fontFamily: FM_MONO,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Upload file
+              </button>
+              <input
+                type="file"
+                accept=".csv,.txt"
+                ref={fileRef}
+                onChange={handleFileUpload}
+                style={{ display: "none" }}
+              />
+              <button
+                onClick={handlePreview}
+                disabled={!csvText.trim()}
+                style={{
+                  background: TM.gold,
+                  border: "none",
+                  color: TM.bg,
+                  padding: "8px 18px",
+                  fontSize: 11,
+                  fontFamily: FM_MONO,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                Preview
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "preview" && (
+          <div>
+            <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontFamily: FM_MONO,
+                  fontSize: 12,
+                  minWidth: 520,
+                }}
+              >
+                <thead>
+                  <tr>
+                    {["Ticker", "Target %", "Action", "Asset Class", "API"].map((h) => (
+                      <th
+                        key={h}
+                        style={{
+                          textAlign: "left",
+                          padding: "8px 12px",
+                          borderBottom: `1px solid ${TM.border}`,
+                          fontSize: 10,
+                          letterSpacing: "0.12em",
+                          textTransform: "uppercase",
+                          color: TM.textFaint,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, idx) => {
+                    const actionLabels = {
+                      update_target: "Update target",
+                      create_from_tx: "From transactions",
+                      create_new: "New holding",
+                      error: row.error === "duplicate" ? "Duplicate" : "Invalid target",
+                    };
+                    const actionColors = {
+                      update_target: { bg: "#2a1f00", border: "#b8860b", text: "#f0c040" },
+                      create_from_tx: { bg: "#001a2e", border: "#1a6b9a", text: "#60c0f0" },
+                      create_new: { bg: "#001a0a", border: "#2a6b3a", text: "#60d090" },
+                      error: { bg: "#2e0000", border: "#8b1a1a", text: "#e88c8c" },
+                    };
+                    const ac = actionColors[row.action] || actionColors.error;
+                    return (
+                      <tr key={idx} style={{ opacity: row.action === "error" ? 0.6 : 1 }}>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${TM.borderSoft}`, fontFamily: FM_MONO, fontWeight: 600, color: TM.text }}>
+                          {row.ticker}
+                        </td>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${TM.borderSoft}`, color: TM.textDim }}>
+                          {row.targetPct != null ? `${row.targetPct}%` : "—"}
+                        </td>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${TM.borderSoft}` }}>
+                          <span
+                            style={{
+                              background: ac.bg,
+                              border: `1px solid ${ac.border}`,
+                              color: ac.text,
+                              padding: "2px 7px",
+                              borderRadius: 3,
+                              fontSize: 10,
+                              letterSpacing: "0.06em",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {actionLabels[row.action]}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${TM.borderSoft}`, color: TM.textDim }}>
+                          {row.action === "update_target" && (
+                            <span style={{ color: TM.gold, fontSize: 11 }}>{row.chosenAssetClass || "—"}</span>
+                          )}
+                          {row.action === "create_from_tx" && (
+                            <span style={{ color: TM.textDim, fontSize: 11 }}>{row.txAssetClass || "—"}</span>
+                          )}
+                          {row.action === "create_new" && (
+                            <select
+                              value={row.chosenAssetClass}
+                              onChange={(e) => {
+                                const cls = e.target.value;
+                                setRows((prev) =>
+                                  prev.map((r, i) =>
+                                    i === idx
+                                      ? { ...r, chosenAssetClass: cls, apiStatus: null }
+                                      : r
+                                  )
+                                );
+                                if (cls) {
+                                  validateTickerForCSV(row.ticker, cls, auth).then((status) => {
+                                    setRows((prev) =>
+                                      prev.map((r, i) =>
+                                        i === idx ? { ...r, apiStatus: status } : r
+                                      )
+                                    );
+                                  });
+                                }
+                              }}
+                              style={{
+                                background: TM.cardElev,
+                                border: `1px solid ${TM.border}`,
+                                color: row.chosenAssetClass ? TM.text : TM.textFaint,
+                                padding: "3px 6px",
+                                fontSize: 11,
+                                fontFamily: FM_MONO,
+                                borderRadius: 3,
+                              }}
+                            >
+                              <option value="">Select class...</option>
+                              {ASSET_CLASS_OPTIONS.filter((c) => c !== "Bank Bonds").map((c) => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                            </select>
+                          )}
+                          {row.action === "error" && (
+                            <span style={{ color: TM.textFaint }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${TM.borderSoft}` }}>
+                          {row.action === "create_new" ? (
+                            row.apiStatus === null || row.apiStatus === "pending" ? (
+                              <svg width="14" height="14" viewBox="0 0 14 14" style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>
+                                <circle cx="7" cy="7" r="5" fill="none" stroke={TM.textFaint} strokeWidth="2" strokeDasharray="20 10" />
+                              </svg>
+                            ) : row.apiStatus === "valid" ? (
+                              <span style={{ color: TM.green, fontWeight: 700 }}>✓</span>
+                            ) : row.apiStatus === "invalid" ? (
+                              <span style={{ color: TM.red, fontSize: 11 }}>✗ Not found</span>
+                            ) : (
+                              <span style={{ color: TM.textFaint }}>—</span>
+                            )
+                          ) : (
+                            <span style={{ color: TM.textFaint }}>—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginTop: 20,
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setStep("upload")}
+                style={{
+                  background: TM.cardElev,
+                  border: `1px solid ${TM.border}`,
+                  color: TM.textDim,
+                  padding: "8px 16px",
+                  fontSize: 11,
+                  fontFamily: FM_MONO,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Back
+              </button>
+              <button
+                onClick={() => onApply(rows)}
+                disabled={applyBlocked}
+                style={{
+                  background: applyBlocked ? TM.cardElev : TM.gold,
+                  border: `1px solid ${applyBlocked ? TM.border : TM.gold}`,
+                  color: applyBlocked ? TM.textFaint : TM.bg,
+                  padding: "8px 18px",
+                  fontSize: 11,
+                  fontFamily: FM_MONO,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 4,
+                  cursor: applyBlocked ? "not-allowed" : "pointer",
+                  fontWeight: 600,
+                  opacity: applyBlocked ? 0.6 : 1,
+                }}
+              >
+                Apply {validCount} change{validCount !== 1 ? "s" : ""}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // Auth state can be either Google or password.
   //   { kind: 'google', googleToken, email, name, picture }
@@ -636,6 +1192,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     } catch {}
     return [];
   });
+
+  const [showCSVImport, setShowCSVImport] = useState(false);
+  const [csvImportRows, setCsvImportRows] = useState([]);
+  const [csvImportStep, setCsvImportStep] = useState("upload");
 
   // Manual asset form state
   const [showManualForm, setShowManualForm] = useState(false);
@@ -1403,6 +1963,51 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   function removeHolding(id) {
     if (id === CASH_ID) return; // cash account is permanent
     setHoldings((prev) => prev.filter((h) => h.id !== id));
+  }
+
+  function applyCSVImport(rows) {
+    const actionRows = rows.filter((r) => r.action !== "error");
+    setHoldings((prev) => {
+      let updated = prev.map((h) => {
+        const match = actionRows.find(
+          (r) => r.action === "update_target" && r.existingHolding && r.existingHolding.id === h.id
+        );
+        if (match) return { ...h, target: match.targetPct };
+        return h;
+      });
+      const toAdd = [];
+      for (const r of actionRows) {
+        if (r.action === "create_from_tx") {
+          toAdd.push({
+            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5) + toAdd.length,
+            ticker: r.ticker,
+            assetClass: r.txAssetClass,
+            qty: 0,
+            price: null,
+            previousClose: null,
+            target: r.targetPct,
+            lastUpdated: new Date().toISOString(),
+          });
+        } else if (r.action === "create_new") {
+          toAdd.push({
+            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5) + toAdd.length,
+            ticker: r.ticker,
+            assetClass: r.chosenAssetClass,
+            qty: 0,
+            price: null,
+            previousClose: null,
+            target: r.targetPct,
+            lastUpdated: new Date().toISOString(),
+            fromCSVImport: true,
+          });
+        }
+      }
+      return [...updated, ...toAdd];
+    });
+    saveHoldingsToServer(auth, holdings).catch(() => {});
+    setShowCSVImport(false);
+    const n = actionRows.length;
+    setToast({ kind: "success", message: `Imported ${n} holding${n !== 1 ? "s" : ""} updated` });
   }
 
   function addManualHolding() {
@@ -2945,14 +3550,24 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               {/* Consolidated holdings (auto + manual non-cash) */}
               {filteredHoldings.length > 0 && (
                 <>
-                  <SectionLabel
-                    label="Holdings"
-                    count={filteredHoldings.length}
-                    of={holdings.filter((h) => !isCash(h)).length}
-                    collapsible
-                    collapsed={trackedCollapsed}
-                    onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
-                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <SectionLabel
+                        label="Holdings"
+                        count={filteredHoldings.length}
+                        of={holdings.filter((h) => !isCash(h)).length}
+                        collapsible
+                        collapsed={trackedCollapsed}
+                        onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
+                      />
+                    </div>
+                    <button
+                      onClick={() => { setShowCSVImport(true); setCsvImportStep("upload"); setCsvImportRows([]); }}
+                      style={{ fontSize: 12, padding: "4px 10px", background: T.cardElev, color: T.text, border: `1px solid ${T.border}`, borderRadius: 6, cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.08em", whiteSpace: "nowrap", flexShrink: 0 }}
+                    >
+                      Import CSV
+                    </button>
+                  </div>
                   {!trackedCollapsed && (
                     <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4 }}>
                       {filteredHoldings.map((h, i) => (
@@ -2988,6 +3603,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                                 setEditingClassValue("");
                               }}
                               onChangeEditClassValue={setEditingClassValue}
+                              fromCSVImport={!!h.fromCSVImport}
+                              hasTransactions={transactions.some((tx) => (tx.ticker || "").toUpperCase() === (h.ticker || "").toUpperCase())}
+                              onRemove={h.fromCSVImport ? () => removeHolding(h.id) : undefined}
+                              onAssetClassChange={h.fromCSVImport ? (cls) => updateHolding(h.id, { assetClass: cls }) : undefined}
                             />
                           )}
                         </div>
@@ -3700,6 +4319,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </section>
           )}
 
+          {showCSVImport && (
+            <AllocationCSVImportModal
+              auth={auth}
+              holdings={holdings}
+              transactions={transactions}
+              onClose={() => setShowCSVImport(false)}
+              onApply={applyCSVImport}
+            />
+          )}
+
           </>
           )}
 
@@ -3758,6 +4387,10 @@ function HoldingRow({
   onSaveClass,
   onCancelEditClass,
   onChangeEditClassValue,
+  fromCSVImport,
+  hasTransactions,
+  onRemove,
+  onAssetClassChange,
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTarget, setDraftTarget] = useState("");
@@ -3875,10 +4508,34 @@ function HoldingRow({
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 3, flexShrink: 0, alignItems: "center" }}>
+          {fromCSVImport && onAssetClassChange && !hasTransactions && (
+            <select
+              value={holding.assetClass || ""}
+              onChange={(e) => onAssetClassChange(e.target.value)}
+              style={{
+                background: T.cardElev,
+                border: `1px solid ${T.border}`,
+                color: T.text,
+                padding: "3px 6px",
+                fontSize: 10,
+                fontFamily: FONT_MONO,
+                borderRadius: 2,
+              }}
+            >
+              {ASSET_CLASS_OPTIONS.filter((c) => c !== "Bank Bonds").map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
           <IconButton onClick={editing ? () => setEditing(false) : startEdit} label="Edit">
             <Pencil size={12} />
           </IconButton>
+          {fromCSVImport && !hasTransactions && onRemove && (
+            <IconButton onClick={onRemove} label="Remove" danger>
+              <Trash2 size={12} />
+            </IconButton>
+          )}
         </div>
       </div>
 
