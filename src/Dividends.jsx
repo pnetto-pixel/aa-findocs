@@ -1720,10 +1720,19 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     () => buildBondEvents(transactions, bondIncome, todayISO),
     [transactions, bondIncome, todayISO]
   );
-  const allEvents = useMemo(
-    () => [...events, ...bondEvents],
-    [events, bondEvents]
-  );
+  // Pay/received-date basis — consistent with the Contributions "Dividends
+  // (last month)" KPI. /api/dividends sets e.date = payDate || exDate, so a
+  // dividend whose Polygon pay date isn't warmed yet falls back to its ex-date
+  // and would land in the wrong month (a June-paying dividend with a May ex-date
+  // showing under May). When pay dates are available, drop API dividend events
+  // that don't yet have a resolved pay date — their e.date would be an ex-date;
+  // they reappear automatically once the pay date warms. Bond events carry exact
+  // received dates already, so they pass through untouched.
+  const allEvents = useMemo(() => {
+    const havePayDates = events.some((e) => e.payDate);
+    const norm = havePayDates ? events.filter((e) => e.payDate) : events;
+    return [...norm, ...bondEvents];
+  }, [events, bondEvents]);
 
   // KPIs
   const kpis = useMemo(() => {
