@@ -2839,11 +2839,11 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
   // follow-up). Stored separately from buy/sell transactions; never enter the
   // position-math path (computeNetQty/dupKey).
   const incomeEvents = [];
-  // Share-distribution rows (Type "Shares", e.g. NOBL "DISTRIBUTION ... DIVIDEND
-  // ARISTOCRATS"). These are NOT cash dividends and are never imported as income.
-  // We still collect them so the import can PURGE any matching stale dividend
-  // record that an older parser wrongly captured (it keyed off "DIVIDEND" in the
-  // name). Keyed by date|ticker|amount to match the stored income entry exactly.
+  // Purge list: rows that must NOT be income but that an older parser wrongly
+  // captured — share distributions (Type "Shares", e.g. NOBL "DISTRIBUTION ...
+  // DIVIDEND ARISTOCRATS") and core-cash/sweep interest ("INTEREST EARNED CASH").
+  // Collected here keyed by date|ticker|amount so a re-import removes the exact
+  // matching stale income record (see handleImport).
   const distributionEvents = [];
   for (let i = headerIdx + 1; i < result.data.length; i++) {
     const arr = result.data[i];
@@ -2853,12 +2853,22 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 
     // Interest/coupon payment rows: capture as real income events, not txns.
     // Fidelity labels these "INTEREST" / "INTEREST EARNED" with the amount in
-    // the Amount ($) column. Only keep CUSIP-symboled (bond/CD) payments.
+    // the Amount ($) column. Only keep CUSIP-symboled (bond/CD) payments — and
+    // exclude core-cash/sweep interest ("INTEREST EARNED CASH", Symbol Description
+    // "CASH"), which Fidelity reports separately from dividends and the user wants
+    // out of the dividend/income KPI. (The cash symbol, e.g. 315994103, otherwise
+    // matches CUSIP_RX since it's 9 digits.)
     if (upper.includes("INTEREST") && idxAmount >= 0) {
       const isoDateI = toISO(arr[idxDate]);
       const symbolI = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const descI = idxDesc >= 0 ? String(arr[idxDesc] || "").trim().toUpperCase() : "";
+      const isCashSweep = upper.includes("EARNED CASH") || descI === "CASH";
       const amountI = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
-      if (isoDateI && symbolI && CUSIP_RX.test(symbolI) && isFinite(amountI) && amountI > 0) {
+      if (isCashSweep && isoDateI && symbolI && isFinite(amountI) && amountI > 0) {
+        // Record core-cash interest for purging — an older parser captured it as
+        // bond interest, so re-importing must remove the stale matching record.
+        distributionEvents.push({ date: isoDateI, ticker: symbolI, amount: amountI });
+      } else if (isoDateI && symbolI && CUSIP_RX.test(symbolI) && isFinite(amountI) && amountI > 0) {
         incomeEvents.push({
           id: newId(),
           date: isoDateI,
