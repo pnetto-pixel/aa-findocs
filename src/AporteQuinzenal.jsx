@@ -570,8 +570,22 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             const now = new Date();
             const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
             const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
-            const apiTotal = (data.events || [])
-              .filter((e) => e.date && e.date.startsWith(prefix))
+            // Pay/received-date basis: count a dividend in the month its CASH
+            // actually lands (matches Fidelity statements + contribution-planning
+            // intent). /api/dividends sets e.date = payDate || exDate, so a dividend
+            // whose Polygon pay date isn't warmed yet falls back to its ex-date and
+            // would leak into the wrong month (e.g. a June-paying dividend with a May
+            // ex-date inflating May). Bucket strictly by the real pay date instead.
+            // Fidelity-imported events carry payDate = received date. If pay dates are
+            // entirely unavailable (no Polygon data / no key), fall back to e.date so
+            // the KPI isn't blanked out.
+            const apiEvents = data.events || [];
+            const havePayDates = apiEvents.some((e) => e.payDate);
+            const apiTotal = apiEvents
+              .filter((e) => {
+                const d = havePayDates ? e.payDate : e.date;
+                return d && d.startsWith(prefix);
+              })
               .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
             // Add real bond interest payments not returned by /api/dividends.
             // This MUST mirror buildBondEvents() in Dividends.jsx (which treats
