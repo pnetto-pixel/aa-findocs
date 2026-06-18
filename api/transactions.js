@@ -49,16 +49,7 @@ export default async function handler(req, res) {
           } else if (parsed && Array.isArray(parsed.transactions)) {
             transactions = parsed.transactions;
             savedAt = parsed.savedAt || null;
-            if (Array.isArray(parsed.bondIncome)) {
-              // Strip share-distribution events mistakenly captured as dividends.
-              // Fidelity "DISTRIBUTION ... DIVIDEND ARISTOCRATS" rows could contain
-              // the word DIVIDEND and get stored as kind="dividend" with very large
-              // amounts (e.g. $2,915 for a share distribution). Real cash dividends
-              // from individual stocks/ETFs are almost never above $500 per event.
-              bondIncome = parsed.bondIncome.filter(
-                (e) => !(e.kind === 'dividend' && Number(e.amount) >= 500)
-              );
-            }
+            if (Array.isArray(parsed.bondIncome)) bondIncome = parsed.bondIncome;
             if (Array.isArray(parsed.splitEvents)) splitEvents = parsed.splitEvents;
           }
           exists = Array.isArray(transactions);
