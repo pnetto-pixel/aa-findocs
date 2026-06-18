@@ -2839,6 +2839,12 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
   // follow-up). Stored separately from buy/sell transactions; never enter the
   // position-math path (computeNetQty/dupKey).
   const incomeEvents = [];
+  // Share-distribution rows (Type "Shares", e.g. NOBL "DISTRIBUTION ... DIVIDEND
+  // ARISTOCRATS"). These are NOT cash dividends and are never imported as income.
+  // We still collect them so the import can PURGE any matching stale dividend
+  // record that an older parser wrongly captured (it keyed off "DIVIDEND" in the
+  // name). Keyed by date|ticker|amount to match the stored income entry exactly.
+  const distributionEvents = [];
   for (let i = headerIdx + 1; i < result.data.length; i++) {
     const arr = result.data[i];
     if (!arr || arr.length === 0) continue;
@@ -2883,6 +2889,20 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
           kind: "dividend",
           source: "fidelity",
         });
+      }
+      continue;
+    }
+
+    // Share distributions (paid in shares, not cash). Record for stale-record
+    // purging, then skip — they must never enter the income or transaction path.
+    if (upper.startsWith("DISTRIBUTION")) {
+      const isoDateX = toISO(arr[idxDate]);
+      const symbolX = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountX = idxAmount >= 0
+        ? parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""))
+        : NaN;
+      if (isoDateX && symbolX && isFinite(amountX) && amountX > 0) {
+        distributionEvents.push({ date: isoDateX, ticker: symbolX, amount: amountX });
       }
       continue;
     }
@@ -3039,7 +3059,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     rawRows.push(arr);
   }
 
-  return { results, incomeEvents, hadHeader: true, rawRows, sourceText: text };
+  return { results, incomeEvents, distributionEvents, hadHeader: true, rawRows, sourceText: text };
 }
 
 function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
@@ -3221,6 +3241,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     function onAllLoaded() {
       let mergedResults = [];
       let mergedIncome = [];
+      let mergedDistributions = [];
       let mergedRawRows = [];
       const crossFileKeys = new Set();
 
@@ -3241,6 +3262,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
         });
         mergedResults = mergedResults.concat(deduped);
         mergedIncome = mergedIncome.concat(out.incomeEvents || []);
+        mergedDistributions = mergedDistributions.concat(out.distributionEvents || []);
         mergedRawRows = mergedRawRows.concat(out.rawRows || []);
       }
 
@@ -3260,6 +3282,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setParsed({
         results: annotated,
         incomeEvents: mergedIncome,
+        distributionEvents: mergedDistributions,
         hadHeader: true,
         rawRows: mergedRawRows,
         sourceText: "",
@@ -3299,8 +3322,9 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       .filter((r, i) => r.ok && checkedRows.has(i))
       .map((r) => r.tx);
     const income = parsed.incomeEvents || [];
-    if (validTx.length === 0 && income.length === 0) return;
-    onConfirm(validTx, mode, income);
+    const distributions = parsed.distributionEvents || [];
+    if (validTx.length === 0 && income.length === 0 && distributions.length === 0) return;
+    onConfirm(validTx, mode, income, distributions);
   }
 
   function startPreviewEdit(idx) {
@@ -4553,16 +4577,29 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     await persist(next);
   }
 
-  async function handleImport(newTxs, mode, newIncome = []) {
+  async function handleImport(newTxs, mode, newIncome = [], distributions = []) {
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
     // Merge detected interest payments into the income store, deduping by
     // date+ticker+amount. On "replace" the income store is rebuilt from scratch.
     const base = mode === "replace" ? [] : bondIncome;
-    const seen = new Set(base.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
-    const mergedIncome = [...base];
+    // Purge any stale income record that matches a share-distribution row in the
+    // imported file. An older parser wrongly captured "DISTRIBUTION ... DIVIDEND
+    // ARISTOCRATS" (NOBL) rows as cash dividends; re-importing the same file now
+    // self-heals that by removing the exact (date|ticker|amount) match.
+    const distKeys = new Set(
+      (distributions || []).map((d) => `${d.date}|${d.ticker}|${d.amount}`)
+    );
+    const seen = new Set();
+    const mergedIncome = [];
+    for (const e of base) {
+      const k = `${e.date}|${e.ticker}|${e.amount}`;
+      if (distKeys.has(k)) continue; // drop the mis-captured distribution
+      seen.add(k);
+      mergedIncome.push(e);
+    }
     for (const e of newIncome) {
       const k = `${e.date}|${e.ticker}|${e.amount}`;
-      if (seen.has(k)) continue;
+      if (seen.has(k) || distKeys.has(k)) continue;
       seen.add(k);
       mergedIncome.push(e);
     }
