@@ -4334,6 +4334,206 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
 
 // --- Main view -------------------------------------------------------------
 
+function BondIncomeAudit({ bondIncome, onDelete, saving }) {
+  const [open, setOpen] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  const sorted = useMemo(
+    () => [...(bondIncome || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")),
+    [bondIncome]
+  );
+
+  const fmt = (n) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n || 0);
+
+  const totalByKind = useMemo(() => {
+    const t = { interest: 0, dividend: 0, other: 0 };
+    for (const e of bondIncome || []) {
+      const k = e.kind === "interest" ? "interest" : e.kind === "dividend" ? "dividend" : "other";
+      t[k] += Number(e.amount) || 0;
+    }
+    return t;
+  }, [bondIncome]);
+
+  if (!bondIncome || bondIncome.length === 0) return null;
+
+  const thStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.10em",
+    textTransform: "uppercase",
+    fontWeight: 500,
+    padding: "6px 10px",
+    borderBottom: `1px solid ${T.border}`,
+    color: T.textFaint,
+    whiteSpace: "nowrap",
+    textAlign: "left",
+  };
+  const tdStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 12,
+    padding: "6px 10px",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    color: T.text,
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          background: "transparent",
+          border: `1px solid ${T.border}`,
+          borderRadius: 4,
+          padding: "8px 14px",
+          color: T.textDim,
+          fontFamily: FONT_MONO,
+          fontSize: 11,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+          width: "100%",
+          justifyContent: "space-between",
+        }}
+      >
+        <span>
+          Import History — Bond Income
+          <span style={{ marginLeft: 10, color: T.textFaint }}>
+            {sorted.length} entries · {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.other)}
+          </span>
+        </span>
+        <ChevronDown
+          size={14}
+          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            marginTop: 4,
+            border: `1px solid ${T.border}`,
+            borderRadius: 4,
+            overflow: "hidden",
+          }}
+        >
+          <div style={{ padding: "8px 12px", background: T.cardElev, display: "flex", gap: 20 }}>
+            {totalByKind.interest > 0 && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Interest <span style={{ color: T.text }}>{fmt(totalByKind.interest)}</span>
+              </span>
+            )}
+            {totalByKind.dividend > 0 && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Dividend <span style={{ color: T.text }}>{fmt(totalByKind.dividend)}</span>
+              </span>
+            )}
+            {totalByKind.other > 0 && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Other <span style={{ color: T.text }}>{fmt(totalByKind.other)}</span>
+              </span>
+            )}
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, marginLeft: "auto" }}>
+              Click trash to delete individual entries
+            </span>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Date</th>
+                  <th style={thStyle}>Ticker</th>
+                  <th style={thStyle}>Kind</th>
+                  <th style={thStyle}>Source</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Amount</th>
+                  <th style={thStyle}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((e) => {
+                  const key = e.id || `${e.date}|${e.ticker}|${e.amount}`;
+                  const isConfirming = confirmId === key;
+                  return (
+                    <tr key={key} style={{ background: isConfirming ? "rgba(232,140,140,0.07)" : "transparent" }}>
+                      <td style={tdStyle}>{e.date || "—"}</td>
+                      <td style={{ ...tdStyle, fontWeight: 600 }}>{e.ticker || "—"}</td>
+                      <td style={{ ...tdStyle, color: T.textDim }}>{e.kind || "—"}</td>
+                      <td style={{ ...tdStyle, color: T.textFaint }}>{e.source || "—"}</td>
+                      <td style={{ ...tdStyle, textAlign: "right", color: T.green }}>{fmt(e.amount)}</td>
+                      <td style={{ ...tdStyle, padding: "4px 8px" }}>
+                        {isConfirming ? (
+                          <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                            <button
+                              disabled={saving}
+                              onClick={() => {
+                                setConfirmId(null);
+                                onDelete(key);
+                              }}
+                              style={{
+                                background: T.red,
+                                border: "none",
+                                borderRadius: 3,
+                                color: "#fff",
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                padding: "3px 8px",
+                                cursor: saving ? "not-allowed" : "pointer",
+                                letterSpacing: "0.1em",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              onClick={() => setConfirmId(null)}
+                              style={{
+                                background: "transparent",
+                                border: `1px solid ${T.border}`,
+                                borderRadius: 3,
+                                color: T.textDim,
+                                fontFamily: FONT_MONO,
+                                fontSize: 10,
+                                padding: "3px 8px",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmId(key)}
+                            title="Delete entry"
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: T.textFaint,
+                              cursor: "pointer",
+                              padding: 2,
+                              display: "flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange, pendingSplits = [], splitEvents = [], splitActionInFlight = null, onApproveSplit, onDismissSplit }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -5365,6 +5565,17 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         valuesHidden={valuesHidden}
         tickerStatus={tickerStatus}
         checkingTickers={checkingTickers}
+      />
+
+      <BondIncomeAudit
+        bondIncome={bondIncome}
+        onDelete={(key) => {
+          const next = bondIncome.filter(
+            (e) => (e.id || `${e.date}|${e.ticker}|${e.amount}`) !== key
+          );
+          persist(transactions, next);
+        }}
+        saving={saving}
       />
 
       <ImportModal
