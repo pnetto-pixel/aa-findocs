@@ -573,9 +573,15 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             const apiTotal = (data.events || [])
               .filter((e) => e.date && e.date.startsWith(prefix))
               .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
-            // Add real bond interest payments (kind="interest") not returned by /api/dividends
+            // Add real bond interest payments not returned by /api/dividends.
+            // This MUST mirror buildBondEvents() in Dividends.jsx (which treats
+            // entries with kind="interest" OR no kind at all as real bond interest)
+            // so this KPI stays in lockstep with the Dividends tab's "previous
+            // month" total. Stock dividends (kind="dividend") are excluded here —
+            // they already arrive via apiTotal from /api/dividends, so counting
+            // them again would double-count.
             const bondTotal = (bi || [])
-              .filter((e) => e && e.kind === "interest" && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
+              .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
               .reduce((sum, e) => sum + Number(e.amount), 0);
             setDivLastMonth(apiTotal + bondTotal);
           })
