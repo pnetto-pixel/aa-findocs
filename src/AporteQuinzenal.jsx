@@ -575,7 +575,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
             // Add real bond interest payments (kind="interest") not returned by /api/dividends
             const bondTotal = (bi || [])
-              .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
+              .filter((e) => e && e.kind === "interest" && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
               .reduce((sum, e) => sum + Number(e.amount), 0);
             setDivLastMonth(apiTotal + bondTotal);
           })

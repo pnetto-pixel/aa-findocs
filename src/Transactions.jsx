@@ -2888,8 +2888,8 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
 
     let side = null;
     let isRedemption = false;
-    if (upper.startsWith("YOU BOUGHT")) side = "buy";
-    else if (upper.startsWith("YOU SOLD")) side = "sell";
+    if (upper.includes("YOU BOUGHT")) side = "buy";
+    else if (upper.includes("YOU SOLD")) side = "sell";
     else if (upper.includes("REDEMPTION") || upper.startsWith("REDEEMED")) {
       // Bond/CD maturity: Fidelity returns the principal as a REDEMPTION row.
       // Record it as a sell of the CUSIP so the position math removes the
