@@ -203,8 +203,38 @@ function TypeBadge({ type }) {
 }
 
 function EventDetail({ ev }) {
-  const lines = [];
+  const detailStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 11,
+    color: T.textDim,
+    marginTop: 4,
+    letterSpacing: "0.02em",
+  };
 
+  if (ev.type === 'earnings') {
+    if (ev.epsActual != null) {
+      if (ev.epsEstimate != null) {
+        const beat = ev.epsActual > ev.epsEstimate;
+        const miss = ev.epsActual < ev.epsEstimate;
+        const beatMissLabel = beat ? 'beat' : miss ? 'miss' : 'in-line';
+        const beatMissColor = beat ? T.green : miss ? T.red : T.textDim;
+        return (
+          <div style={detailStyle}>
+            {`EPS est. ${fmtEPS(ev.epsEstimate)} → reported ${fmtEPS(ev.epsActual)}`}
+            {' · '}
+            <span style={{ color: beatMissColor }}>{beatMissLabel}</span>
+          </div>
+        );
+      }
+      return <div style={detailStyle}>{`EPS reported ${fmtEPS(ev.epsActual)}`}</div>;
+    }
+    if (ev.epsEstimate != null) {
+      return <div style={detailStyle}>{`EPS est. ${fmtEPS(ev.epsEstimate)}`}</div>;
+    }
+    return null;
+  }
+
+  const lines = [];
   if (ev.type === 'ex_dividend') {
     const amt = fmtAmount(ev.amount);
     if (amt) lines.push(amt);
@@ -212,13 +242,6 @@ function EventDetail({ ev }) {
   } else if (ev.type === 'payout') {
     const amt = fmtAmount(ev.amount);
     if (amt) lines.push(amt);
-  } else if (ev.type === 'earnings') {
-    if (ev.epsActual != null) {
-      lines.push(`EPS actual ${fmtEPS(ev.epsActual)}`);
-      if (ev.epsEstimate != null) lines.push(`est. ${fmtEPS(ev.epsEstimate)}`);
-    } else if (ev.epsEstimate != null) {
-      lines.push(`EPS est. ${fmtEPS(ev.epsEstimate)}`);
-    }
   } else if (ev.type === 'split') {
     if (ev.splitRatio) {
       // Reverse split: denominator > numerator — display as "1:10 reverse split"
@@ -232,15 +255,7 @@ function EventDetail({ ev }) {
 
   if (!lines.length) return null;
   return (
-    <div
-      style={{
-        fontFamily: FONT_MONO,
-        fontSize: 11,
-        color: T.textDim,
-        marginTop: 4,
-        letterSpacing: "0.02em",
-      }}
-    >
+    <div style={detailStyle}>
       {lines.join(' · ')}
     </div>
   );
