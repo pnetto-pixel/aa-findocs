@@ -1356,7 +1356,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     try {
       localStorage.setItem(alertLogKey(auth), JSON.stringify(alertLog));
     } catch (e) {}
-  }, [alertLog]);
+  }, [alertLog, auth]);
 
   // Sync state: tracks server-side persistence health.
   // "loading" while initial load; "synced" when up-to-date; "saving" mid-write;
