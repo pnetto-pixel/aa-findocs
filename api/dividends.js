@@ -23,11 +23,13 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v7: per-(ticker,month) de-dupe instead of per-ticker skip — a partial Fidelity import
+//     (e.g. only June) no longer erases that ticker's API dividends for other months (e.g. May).
 // v6: Fidelity-imported dividend events (bondIncome kind=dividend) bypass Yahoo/Finnhub entirely.
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -279,6 +281,14 @@ export default async function handler(req, res) {
     ? body.bondIncome.filter((e) => e.kind === 'dividend' && e.ticker && e.date && e.amount > 0)
     : [];
   const fidelityTickers = new Set(fidelityDivEvents.map((e) => e.ticker));
+  // (ticker, YYYY-MM) pairs that a Fidelity import actually covers. Used to de-dupe
+  // API dividends per month — NOT per ticker. A Fidelity import only covers the
+  // months present in the imported CSV(s), so a ticker can have a Fidelity dividend
+  // for June yet still need Yahoo data for May. De-duping per month keeps the exact
+  // Fidelity amount where it exists and falls back to Yahoo for every other month.
+  const fidelityCoveredMonths = new Set(
+    fidelityDivEvents.map((e) => `${e.ticker}|${e.date.slice(0, 7)}`)
+  );
 
   // Only US tickers in eligible classes
   const relevant = transactions.filter(
@@ -304,10 +314,11 @@ export default async function handler(req, res) {
     if (cached) return res.status(200).json(JSON.parse(cached));
   }
 
-  // Skip Yahoo/Finnhub for tickers already covered by Fidelity import (use exact data).
-  const tickers = [...new Set(relevant.map((tx) => tx.ticker))].filter(
-    (t) => !fidelityTickers.has(t)
-  );
+  // Fetch Yahoo/Finnhub for ALL eligible tickers — including ones with a Fidelity
+  // import. We de-dupe per (ticker, month) below rather than skipping a ticker
+  // wholesale, so a partial Fidelity import (e.g. only June) never erases that
+  // ticker's API dividends for the months it doesn't cover (e.g. May).
+  const tickers = [...new Set(relevant.map((tx) => tx.ticker))];
 
   if (!tickers.length && !fidelityDivEvents.length) {
     return res.status(200).json({ events: [], meta: { tickers: 0, eventsFound: 0 } });
@@ -380,6 +391,9 @@ export default async function handler(req, res) {
         futureSkipped++;
         continue;
       }
+      // De-dupe against Fidelity: if an exact Fidelity dividend already covers this
+      // ticker+month, skip the API-reconstructed one so we don't double-count.
+      if (fidelityCoveredMonths.has(`${ticker}|${date.slice(0, 7)}`)) continue;
       events.push({
         date,
         exDate,

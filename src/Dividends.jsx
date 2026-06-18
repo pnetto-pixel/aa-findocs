@@ -1683,9 +1683,13 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         if (!txRes.ok) throw new Error(`Transactions: ${txRes.status}`);
         const txData = await txRes.json();
         const txs = Array.isArray(txData.transactions) ? txData.transactions : [];
+        // Use a local — `bondIncome` state isn't updated yet inside this closure
+        // (setBondIncome is async), so referencing the state var would send a stale
+        // (empty) array to /api/dividends and change the de-dupe/cache behavior.
+        const bi = Array.isArray(txData.bondIncome) ? txData.bondIncome : [];
         if (!cancelled) {
           setTransactions(txs);
-          setBondIncome(Array.isArray(txData.bondIncome) ? txData.bondIncome : []);
+          setBondIncome(bi);
         }
 
         if (!txs.length) {
@@ -1696,7 +1700,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         const divRes = await fetch("/api/dividends", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ transactions: txs, bondIncome }),
+          body: JSON.stringify({ transactions: txs, bondIncome: bi }),
         });
         if (divRes.status === 401) { onAuthFail?.(); return; }
         if (!divRes.ok) throw new Error(`Dividends: ${divRes.status}`);
@@ -1720,19 +1724,10 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     () => buildBondEvents(transactions, bondIncome, todayISO),
     [transactions, bondIncome, todayISO]
   );
-  // Pay/received-date basis — consistent with the Contributions "Dividends
-  // (last month)" KPI. /api/dividends sets e.date = payDate || exDate, so a
-  // dividend whose Polygon pay date isn't warmed yet falls back to its ex-date
-  // and would land in the wrong month (a June-paying dividend with a May ex-date
-  // showing under May). When pay dates are available, drop API dividend events
-  // that don't yet have a resolved pay date — their e.date would be an ex-date;
-  // they reappear automatically once the pay date warms. Bond events carry exact
-  // received dates already, so they pass through untouched.
-  const allEvents = useMemo(() => {
-    const havePayDates = events.some((e) => e.payDate);
-    const norm = havePayDates ? events.filter((e) => e.payDate) : events;
-    return [...norm, ...bondEvents];
-  }, [events, bondEvents]);
+  const allEvents = useMemo(
+    () => [...events, ...bondEvents],
+    [events, bondEvents]
+  );
 
   // KPIs
   const kpis = useMemo(() => {
