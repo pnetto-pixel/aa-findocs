@@ -2869,7 +2869,7 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     // Fidelity labels these "DIVIDEND RECEIVED", "CASH DIV", "ORDINARY DIVIDEND", etc.
     // Amount ($) is the total cash received (not per-share). Skip REINVESTMENT rows.
     if ((upper.includes("DIVIDEND") || upper === "CASH DIV") &&
-        !upper.includes("REINVEST") && idxAmount >= 0) {
+        !upper.includes("REINVEST") && !upper.includes("YOU BOUGHT") && !upper.includes("YOU SOLD") && idxAmount >= 0) {
       const isoDateD = toISO(arr[idxDate]);
       const symbolD = String(arr[idxSymbol] || "").trim().toUpperCase();
       const amountD = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
