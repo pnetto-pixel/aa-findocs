@@ -162,7 +162,7 @@ Click em qualquer header abre `HeaderPopover` ancorado naquela coluna, com:
 
 - Seção **Sort**: 2 botões `↑ Asc` / `↓ Desc` (sempre presente)
 - Seção **Filter** (quando aplicável):
-  - `date` → Date range From/To
+  - `date` → Seletor de ano+mes derivado dos dados. Anos em ordem decrescente com `+/-` para expandir/colapsar meses com transacoes. Click num ano = range `YYYY-01-01` a `YYYY-12-31`; click num mes = `YYYY-MM-01` a `YYYY-MM-lastDay`. Single-select com highlight dourado; botao "Clear" limpa a selecao. `expandedYears` (Set) local ao `HeaderPopover`; `dateOptions` (Map) via `useMemo` no `TransactionTable`. (Antes: inputs manuais `From`/`To` — substituidos no Item 44, jun/2026.)
   - `side` → checkboxes "B (Buy)" / "S (Sell)"
   - `assetClass` → checkboxes com classes presentes nos dados
   - `ticker` → checkboxes com tickers presentes
@@ -818,6 +818,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - **Import parcial de Fidelity nao deve silenciar historico Yahoo de outros meses do mesmo ticker (jun/2026)** — Dedup por ticker inteiro (`fidelityTickers` Set) exclui todos os meses do Yahoo se qualquer mes foi importado. Correto: dedup por `(ticker, month)` via Set `fidelityCoveredMonths` com chave `ticker|YYYY-MM`. Apenas os meses efetivamente presentes no import ignoram o Yahoo; outros meses buscam normalmente.
 - **Juros de core-cash/sweep da Fidelity (INTEREST EARNED CASH, symbol 9 digitos numericos) nao sao bond income (jun/2026)** — Linhas "INTEREST EARNED CASH" com symbol como `315994103` batem na regex de CUSIP (9 chars alfanumericos) mas representam juros do saldo de caixa da conta (sweep account), nao cupom de instrumento de renda fixa. Excluir do capture de bondIncome e adicionar ao purge list. Regra: alem da regex CUSIP, verificar se o action contem "INTEREST EARNED CASH" e tratar como sweep.
 - **Estado local (`bi`) deve ser usado diretamente quando disponivel, nao o estado React (`bondIncome`) (jun/2026)** — Em `Dividends.jsx`, `bondIncome` state estava vazio durante o fetch async inicial porque o `useEffect` capturava a closure com o valor inicial (`[]`). A variavel local `bi` retornada do fetch ja tinha o valor correto. Regra: em `useEffect` com fetch, usar a variavel local retornada pelo fetch para qualquer logica subsequente no mesmo callback — nao ler do state React que ainda nao foi atualizado.
+- **`HeaderPopover` de data usa seletor de ano+mes derivado dos dados, nao inputs manuais (Item 44, jun/2026)** — Inputs `From`/`To` livres eram propensos a erros de digitacao e nao comunicavam quais anos/meses tinham dados. Substituir por `dateOptions` (Map computado via `useMemo` a partir das transacoes carregadas) e derivar o seletor a partir dos dados reais elimina o erro de input e facilita a navegacao por periodo. Estado `expandedYears` (Set) fica local ao `HeaderPopover` — sem necessidade de elevar ao `TransactionTable` ou ao `App.jsx`.
 
 -----
 
