@@ -5,6 +5,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import Papa from "papaparse";
+import DateMonthPicker from "./DateMonthPicker.jsx";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -676,9 +677,6 @@ function inferAssetClass(ticker) {
 
 // --- Filter dropdown popover ----------------------------------------------
 
-// Month abbreviations for the date picker (1-based index).
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 // HeaderPopover: unified sort + filter popover anchored to a header cell.
 // - Always shows sort buttons (asc/desc).
 // - Filter section appears only when `filterable` is true.
@@ -695,46 +693,15 @@ function HeaderPopover({
   selected,
   onChange,
   optionLabel,
-  // date range
-  dateRange,
-  setDateRange,
+  // date filter (multi-select months). dateMonths is a Set<"YYYY-MM">; a non-null
+  // value (even empty) marks this as the date column and renders the picker.
+  dateMonths,
+  setDateMonths,
   // date options: Map<year(number), Set<month(number 1-based)>>
   dateOptions,
 }) {
   const ref = useRef(null);
-
-  // Derive sorted years (desc) for the picker.
-  const sortedYears = useMemo(() => {
-    if (!dateOptions || dateOptions.size === 0) return [];
-    return Array.from(dateOptions.keys()).sort((a, b) => b - a);
-  }, [dateOptions]);
-
-  // Start with the most recent year expanded.
-  const [expandedYears, setExpandedYears] = useState(() => {
-    if (!dateOptions || dateOptions.size === 0) return new Set();
-    const years = Array.from(dateOptions.keys()).sort((a, b) => b - a);
-    return years.length > 0 ? new Set([years[0]]) : new Set();
-  });
-
-  // Derive which year+month is currently selected (single-select).
-  // Selected = dateRange covers exactly a year or a month.
-  const selectedKey = useMemo(() => {
-    if (!dateRange || (!dateRange.from && !dateRange.to)) return null;
-    // Check if it matches a full year: from=YYYY-01-01 to=YYYY-12-31
-    const ym = dateRange.from && dateRange.from.match(/^(\d{4})-01-01$/);
-    const yM = dateRange.to && dateRange.to.match(/^(\d{4})-12-31$/);
-    if (ym && yM && ym[1] === yM[1]) return "y:" + ym[1];
-    // Check if it matches a month: from=YYYY-MM-01 to=YYYY-MM-[lastDay]
-    const mm = dateRange.from && dateRange.from.match(/^(\d{4})-(\d{2})-01$/);
-    if (mm && dateRange.to) {
-      const y = parseInt(mm[1], 10);
-      const mo = parseInt(mm[2], 10);
-      const lastDay = new Date(y, mo, 0).getDate();
-      const expected = `${mm[1]}-${mm[2]}-${String(lastDay).padStart(2, "0")}`;
-      if (dateRange.to === expected) return "m:" + mm[1] + "-" + mm[2];
-    }
-    return null;
-  }, [dateRange]);
+  const isDateFilter = !!dateMonths;
 
   useEffect(() => {
     function handle(e) {
@@ -812,8 +779,8 @@ function HeaderPopover({
         <SortBtn dir="desc" label="↓ Desc" />
       </div>
 
-      {/* Filter section — date picker */}
-      {filterable && dateRange && (
+      {/* Filter section — multi-select year/month picker */}
+      {filterable && isDateFilter && (
         <>
           <div
             style={{
@@ -822,151 +789,18 @@ function HeaderPopover({
               marginBottom: 12,
             }}
           />
-          <div style={sectionLabel}>Date range</div>
-          <div
-            style={{
-              maxHeight: 340,
-              overflowY: "auto",
-              marginBottom: 8,
-            }}
-          >
-            {sortedYears.length === 0 && (
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  color: T.textFaint,
-                  padding: "4px 0",
-                }}
-              >
-                No data
-              </div>
-            )}
-            {sortedYears.map((year) => {
-              const yearKey = "y:" + year;
-              const isYearSelected = selectedKey === yearKey;
-              const isExpanded = expandedYears.has(year);
-              const months = dateOptions.get(year);
-              const sortedMonths = months ? Array.from(months).sort((a, b) => a - b) : [];
-              return (
-                <div key={year} style={{ marginBottom: 4 }}>
-                  {/* Year row */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <button
-                      onClick={() => {
-                        const from = year + "-01-01";
-                        const to = year + "-12-31";
-                        setDateRange({ from, to });
-                      }}
-                      style={{
-                        flex: 1,
-                        textAlign: "left",
-                        background: isYearSelected ? "rgba(201,169,97,0.12)" : "transparent",
-                        border: "none",
-                        color: isYearSelected ? T.gold : T.text,
-                        fontFamily: FONT_MONO,
-                        fontSize: 13,
-                        fontWeight: isYearSelected ? 700 : 500,
-                        padding: "5px 2px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {year}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setExpandedYears((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(year)) next.delete(year);
-                          else next.add(year);
-                          return next;
-                        });
-                      }}
-                      style={{
-                        background: "transparent",
-                        border: `1px solid ${T.border}`,
-                        color: T.textDim,
-                        fontFamily: FONT_MONO,
-                        fontSize: 11,
-                        width: 22,
-                        height: 22,
-                        lineHeight: "20px",
-                        textAlign: "center",
-                        cursor: "pointer",
-                        padding: 0,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {isExpanded ? "-" : "+"}
-                    </button>
-                  </div>
-                  {/* Month pills */}
-                  {isExpanded && sortedMonths.length > 0 && (
-                    <div
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: 4,
-                        paddingLeft: 4,
-                        paddingBottom: 4,
-                      }}
-                    >
-                      {sortedMonths.map((mo) => {
-                        const moStr = String(mo).padStart(2, "0");
-                        const monthKey = "m:" + year + "-" + moStr;
-                        const isMonthSelected = selectedKey === monthKey;
-                        return (
-                          <button
-                            key={mo}
-                            onClick={() => {
-                              const lastDay = new Date(year, mo, 0).getDate();
-                              const from = year + "-" + moStr + "-01";
-                              const to = year + "-" + moStr + "-" + String(lastDay).padStart(2, "0");
-                              setDateRange({ from, to });
-                            }}
-                            style={{
-                              background: isMonthSelected ? "rgba(201,169,97,0.18)" : "transparent",
-                              border: `1px solid ${isMonthSelected ? T.gold : T.border}`,
-                              color: isMonthSelected ? T.gold : T.textDim,
-                              fontFamily: FONT_MONO,
-                              fontSize: 10,
-                              padding: "3px 7px",
-                              cursor: "pointer",
-                              letterSpacing: "0.05em",
-                            }}
-                          >
-                            {MONTH_ABBR[mo - 1]}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <button
-            onClick={() => setDateRange({ from: "", to: "" })}
-            style={{
-              background: "transparent",
-              border: `1px solid ${T.border}`,
-              color: T.textDim,
-              padding: "6px 10px",
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-              width: "100%",
-            }}
-          >
-            Clear range
-          </button>
+          <div style={sectionLabel}>Filter by month</div>
+          <DateMonthPicker
+            dateOptions={dateOptions}
+            selectedMonths={dateMonths}
+            onChange={setDateMonths}
+            T={T}
+            FONT_MONO={FONT_MONO}
+          />
         </>
       )}
 
-      {filterable && !dateRange && (
+      {filterable && !isDateFilter && (
         <>
           <div
             style={{
@@ -1126,14 +960,13 @@ function TransactionTable({
     side: new Set(),
     ticker: new Set(),
     assetClass: new Set(),
-    dateFrom: "",
-    dateTo: "",
+    dateMonths: new Set(), // Set<"YYYY-MM">; empty = no date filter
   });
 
   const [sort, setSort] = useState({ col: "date", dir: "desc" });
 
   function isFiltered(col) {
-    if (col === "date") return !!(filters.dateFrom || filters.dateTo);
+    if (col === "date") return filters.dateMonths.size > 0;
     const f = filters[col];
     if (!f) return false;
     return f.size > 0 && f.size < allValues[col].length;
@@ -1144,8 +977,7 @@ function TransactionTable({
       if (filters.side.size > 0 && !filters.side.has(t.side)) return false;
       if (filters.ticker.size > 0 && !filters.ticker.has(t.ticker)) return false;
       if (filters.assetClass.size > 0 && !filters.assetClass.has(t.assetClass)) return false;
-      if (filters.dateFrom && t.date < filters.dateFrom) return false;
-      if (filters.dateTo && t.date > filters.dateTo) return false;
+      if (filters.dateMonths.size > 0 && !filters.dateMonths.has(String(t.date || "").slice(0, 7))) return false;
       return true;
     });
     const dir = sort.dir === "asc" ? 1 : -1;
@@ -2022,19 +1854,10 @@ function TransactionTable({
                 ? (v) => (v === "buy" ? "B (Buy)" : v === "sell" ? "S (Sell)" : v)
                 : undefined
             }
-            dateRange={
+            dateMonths={isDateCol ? filters.dateMonths : undefined}
+            setDateMonths={
               isDateCol
-                ? { from: filters.dateFrom, to: filters.dateTo }
-                : null
-            }
-            setDateRange={
-              isDateCol
-                ? (r) =>
-                    setFilters((cur) => ({
-                      ...cur,
-                      dateFrom: r.from,
-                      dateTo: r.to,
-                    }))
+                ? (next) => setFilters((cur) => ({ ...cur, dateMonths: next }))
                 : undefined
             }
             dateOptions={isDateCol ? dateOptions : undefined}

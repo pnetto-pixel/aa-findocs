@@ -17,6 +17,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import DateMonthPicker from "./DateMonthPicker.jsx";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -1421,7 +1422,8 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
 
 // ── Dividend History (audit) table ────────────────────────────────────────────
 
-function DivHistPopover({ anchor, onClose, sortDir, onSort, filterable, options, selected, onChange, dateRange, setDateRange }) {
+function DivHistPopover({ anchor, onClose, sortDir, onSort, filterable, options, selected, onChange, dateMonths, setDateMonths, dateOptions }) {
+  const isDateFilter = !!dateMonths;
   const ref = useRef(null);
   useEffect(() => {
     function handle(e) {
@@ -1442,7 +1444,6 @@ function DivHistPopover({ anchor, onClose, sortDir, onSort, filterable, options,
     : { display: "none" };
 
   const secLabel = { fontFamily: FONT_MONO, fontSize: 9, letterSpacing: "0.2em", color: T.textFaint, textTransform: "uppercase", marginBottom: 8 };
-  const inputStyle = { width: "100%", background: T.card, border: `1px solid ${T.border}`, color: T.text, padding: "6px 8px", fontFamily: FONT_MONO, fontSize: 11, marginBottom: 8, boxSizing: "border-box" };
   const linkBtn = (color) => ({ background: "transparent", border: "none", color, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 });
 
   function SortBtn({ dir, label }) {
@@ -1462,19 +1463,21 @@ function DivHistPopover({ anchor, onClose, sortDir, onSort, filterable, options,
         <SortBtn dir="desc" label="↓ Desc" />
       </div>
 
-      {filterable && dateRange && (
+      {filterable && isDateFilter && (
         <>
           <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
-          <div style={secLabel}>Date range</div>
-          <div style={{ marginBottom: 4, fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>From</div>
-          <input type="date" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} style={inputStyle} />
-          <div style={{ marginBottom: 4, fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>To</div>
-          <input type="date" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} style={inputStyle} />
-          <button onClick={() => setDateRange({ from: "", to: "" })} style={{ ...linkBtn(T.textDim), border: `1px solid ${T.border}`, padding: "6px 10px", width: "100%" }}>Clear range</button>
+          <div style={secLabel}>Filter by month</div>
+          <DateMonthPicker
+            dateOptions={dateOptions}
+            selectedMonths={dateMonths}
+            onChange={setDateMonths}
+            T={T}
+            FONT_MONO={FONT_MONO}
+          />
         </>
       )}
 
-      {filterable && !dateRange && options && (
+      {filterable && !isDateFilter && options && (
         <>
           <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
           <div style={secLabel}>Filter</div>
@@ -1498,12 +1501,26 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
   const [openCol, setOpenCol] = useState(null);
   const [anchor, setAnchor] = useState(null);
   const [sort, setSort] = useState({ col: "date", dir: "desc" });
-  const [filters, setFilters] = useState({ ticker: new Set(), dateFrom: "", dateTo: "" });
+  const [filters, setFilters] = useState({ ticker: new Set(), dateMonths: new Set() });
 
   const allTickers = useMemo(() => [...new Set(events.map(e => e.ticker))].sort(), [events]);
 
+  // Date options: Map<year(number), Set<month(number 1-based)>> for the picker.
+  const dateOptions = useMemo(() => {
+    const map = new Map();
+    for (const e of events) {
+      const m = String(e.date || "").match(/^(\d{4})-(\d{2})/);
+      if (!m) continue;
+      const year = parseInt(m[1], 10);
+      const month = parseInt(m[2], 10);
+      if (!map.has(year)) map.set(year, new Set());
+      map.get(year).add(month);
+    }
+    return map;
+  }, [events]);
+
   function isFiltered(col) {
-    if (col === "date") return !!(filters.dateFrom || filters.dateTo);
+    if (col === "date") return filters.dateMonths.size > 0;
     if (col === "ticker") return filters.ticker.size > 0 && filters.ticker.size < allTickers.length;
     return false;
   }
@@ -1511,8 +1528,7 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
   const visible = useMemo(() => {
     let list = events.filter(e => {
       if (filters.ticker.size > 0 && !filters.ticker.has(e.ticker)) return false;
-      if (filters.dateFrom && e.date < filters.dateFrom) return false;
-      if (filters.dateTo && e.date > filters.dateTo) return false;
+      if (filters.dateMonths.size > 0 && !filters.dateMonths.has(String(e.date || "").slice(0, 7))) return false;
       return true;
     });
     const dir = sort.dir === "asc" ? 1 : -1;
@@ -1639,8 +1655,9 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
           options={isTickerCol ? allTickers : null}
           selected={isTickerCol ? filters.ticker : new Set()}
           onChange={next => setFilters(f => ({ ...f, ticker: next }))}
-          dateRange={isDateCol ? { from: filters.dateFrom, to: filters.dateTo } : null}
-          setDateRange={isDateCol ? r => setFilters(f => ({ ...f, dateFrom: r.from, dateTo: r.to })) : undefined}
+          dateMonths={isDateCol ? filters.dateMonths : undefined}
+          setDateMonths={isDateCol ? next => setFilters(f => ({ ...f, dateMonths: next })) : undefined}
+          dateOptions={isDateCol ? dateOptions : undefined}
         />
       )}
     </div>
