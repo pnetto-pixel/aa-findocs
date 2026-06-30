@@ -332,6 +332,18 @@ function detectPendingSplits(transactions, detectedSplits, splitEvents) {
   return pending;
 }
 
+// Returns true when a holding has zero value/qty and should be auto-hidden.
+// Used by filteredHoldings to suppress zero-position holdings that have no
+// target allocation set. Holdings with target > 0 are intentional placeholders
+// and must remain visible regardless of qty/value.
+function isZeroHolding(h) {
+  if (h.type === "manual") {
+    if (h.manualMode === "qty_price") return (h.qty ?? 0) === 0;
+    return (h.manualValue ?? 0) === 0;
+  }
+  return (h.qty ?? 0) === 0;
+}
+
 // Returns patched holdings array if any qty changed, null otherwise.
 // Updates ticker-backed (non-manual) holdings that have at least one transaction.
 // Uses type !== "manual" — the app-wide convention — so legacy holdings
@@ -2252,7 +2264,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   // Consolidated holdings (auto + manual non-cash) — filtered & sorted together
   const filteredHoldings = useMemo(
-    () => applyFiltersAndSort(holdings.filter((h) => !isCash(h))),
+    () =>
+      applyFiltersAndSort(
+        holdings
+          .filter((h) => !isCash(h))
+          .filter((h) => !(isZeroHolding(h) && !(h.target > 0)))
+      ),
     [holdings, filterText, filterClass, sortBy, totalValue]
   );
   // Cash accounts — separate section, not affected by sort/filter (except text filter)
@@ -3555,7 +3572,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       <SectionLabel
                         label="Holdings"
                         count={filteredHoldings.length}
-                        of={holdings.filter((h) => !isCash(h)).length}
+                        of={holdings.filter((h) => !isCash(h) && !(isZeroHolding(h) && !(h.target > 0))).length}
                         collapsible
                         collapsed={trackedCollapsed}
                         onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
