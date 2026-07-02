@@ -383,6 +383,14 @@ Renderizada em `src/AporteQuinzenal.jsx`. Colunas: Month, Fixed, Dividends, DELL
 
 Meses anteriores ao primeiro uso da feature nao possuem `monthlyFixed`/extras gravados no Redis — o historico so existe a partir da primeira vez que o usuario carregou a tab apos o deploy do PR #112. O historico se acumula organicamente daqui para frente.
 
+#### Restore de `extras` a partir do snapshot Redis (bug fix — PR #118 — jul/2026)
+
+O auto-snapshot do Redis **nao e write-only**: ele tambem serve como rede de seguranca de leitura. Bug original: usuario adicionava uma extra label no card "Monthly Plan" (ex: "BRK.B Sale - $3500") e ela sumia ao reabrir o app no dia seguinte, porque `localStorage["aporteConfig"]` era a unica fonte de verdade para `config.extras` e podia ser perdido (ex: Safari iOS limpando site storage).
+
+Fix: `useMemo` `currentMonthSnapshot` le `capacityHistory[currentMonthKey()]`; `useEffect` de restore one-time (guard via ref `seededExtras`, mesmo padrao ja usado por `seededFixed` para `monthlyFixed`) repopula `config.extras` a partir do snapshot Redis do mes corrente **somente quando** o array local esta vazio E o snapshot tem `extras.length > 0` — nunca sobrescreve edicoes feitas pelo usuario apos o load inicial. Mapeia o shape do Redis (`{name, amount}`) de volta para o shape do estado local (`{label, value}`).
+
+**Nao repetir:** qualquer novo campo de `aporteConfig` (localStorage) que tambem seja snapshotted no Redis deve seguir esse mesmo padrao de restore one-time — caso contrario o snapshot fica write-only e nao protege contra perda de localStorage. Limitacao que permanece: `aporteConfig` ainda nao tem month-scoping real (blob global no localStorage), e se o PUT do snapshot falhar silenciosamente antes do localStorage ser perdido, os dados sao irrecuperaveis.
+
 -----
 
 ## 💰 Feature: Dividends (em construção)
@@ -591,6 +599,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
 |**BRA Stocks dividendos = manual (Tab Dividends)**|Sem API gratuita confirmada. Entrada manual no form da Tab Dividends, mesmo padrão de Tesouro/CDB nos Holdings.|
 |**Income model: `totalReceived` direto (Tab Dividends)**|Tesouro IPCA e Bank Bonds pagam cupom cujo valor depende do PU corrigido — mais natural lançar o total recebido do que qty × amountPerUnit.|
+|**Snapshot Redis de Contributions restaura `extras` no localStorage (PR #118)**|`localStorage["aporteConfig"]` era a unica fonte de verdade e podia ser perdido (Safari iOS). Restore one-time a partir de `capacityHistory[currentMonthKey()]` (guard `seededExtras`, mesmo padrao de `seededFixed`) torna o auto-snapshot uma rede de seguranca de leitura tambem, nao so write-only.|
 |**`Promise.allSettled` para fetch secundario em Performance (PR #67)**|Dividends fetch e perf-history fetch rodam em paralelo; falha no dividends nao deve derrubar a tab. `allSettled` garante degradacao silenciosa — a tab carrega mesmo sem dados de dividendos.|
 |**YoC% agregado = media ponderada, nao media aritmetica (PR #67)**|`sum(ttm) / sum(totalCost)` e matematicamente correto pois pondera pelo custo de cada posicao. Media aritmetica dos YoC% individuais daria resultado distorcido por posicoes pequenas com alto yield.|
 |**API dividends retorna `totalReceived`, nao `amount` (PR #67)**|Campo relevante para calculo de TTM e para o YoC e `e.totalReceived`. `amountPerShare` e `qtyHeld` ficam disponiveis mas nao sao usados na Performance tab.|
@@ -821,6 +830,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - **Juros de core-cash/sweep da Fidelity (INTEREST EARNED CASH, symbol 9 digitos numericos) nao sao bond income (jun/2026)** — Linhas "INTEREST EARNED CASH" com symbol como `315994103` batem na regex de CUSIP (9 chars alfanumericos) mas representam juros do saldo de caixa da conta (sweep account), nao cupom de instrumento de renda fixa. Excluir do capture de bondIncome e adicionar ao purge list. Regra: alem da regex CUSIP, verificar se o action contem "INTEREST EARNED CASH" e tratar como sweep.
 - **Estado local (`bi`) deve ser usado diretamente quando disponivel, nao o estado React (`bondIncome`) (jun/2026)** — Em `Dividends.jsx`, `bondIncome` state estava vazio durante o fetch async inicial porque o `useEffect` capturava a closure com o valor inicial (`[]`). A variavel local `bi` retornada do fetch ja tinha o valor correto. Regra: em `useEffect` com fetch, usar a variavel local retornada pelo fetch para qualquer logica subsequente no mesmo callback — nao ler do state React que ainda nao foi atualizado.
 - **`HeaderPopover` de data usa seletor de ano+mes derivado dos dados, nao inputs manuais (Item 44, jun/2026)** — Inputs `From`/`To` livres eram propensos a erros de digitacao e nao comunicavam quais anos/meses tinham dados. Substituir por `dateOptions` (Map computado via `useMemo` a partir das transacoes carregadas) e derivar o seletor a partir dos dados reais elimina o erro de input e facilita a navegacao por periodo. Estado `expandedYears` (Set) fica local ao `HeaderPopover` — sem necessidade de elevar ao `TransactionTable` ou ao `App.jsx`.
+- **Um snapshot Redis que so grava (write-only) nao protege contra perda do localStorage (PR #118, jul/2026)** — O auto-snapshot de Contributions ja existia desde o PR #112, mas so era usado para popular a tabela de historico; `config.extras` continuava dependendo 100% de `localStorage["aporteConfig"]`. Quando o Safari iOS limpava o site storage, a extra label do usuario sumia mesmo com o dado ja salvo no Redis. Regra: se um dado tem um snapshot server-side, adicionar tambem um restore one-time no mount (guard por ref, dispara so quando o estado local esta vazio) — nao deixar o snapshot ser so um log historico.
 
 -----
 

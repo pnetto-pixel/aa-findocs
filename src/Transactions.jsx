@@ -2806,8 +2806,10 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
   }
 
   // Parse a Fidelity MM/DD/YYYY (or MM/DD/YY) date string to ISO, or null.
+  // Fidelity's "Accounts History" export uses MM-DD-YYYY (dashes) while the
+  // "Activity" export uses MM/DD/YYYY (slashes) — accept either separator.
   const toISO = (rawDate) => {
-    const mdy = String(rawDate || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    const mdy = String(rawDate || "").trim().match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
     if (!mdy) return null;
     let [, mo, d, y] = mdy;
     if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
