@@ -671,12 +671,6 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     updateConfig({ extras: (config.extras || []).filter((_, idx) => idx !== i) });
   }
 
-  function updateExtraValue(i, val) {
-    const extras = [...(config.extras || [])];
-    extras[i] = { ...extras[i], value: val };
-    updateConfig({ extras });
-  }
-
   const dellSaleAuto = useMemo(() => {
     if (!transactions.length) return 0;
     const now = new Date();
@@ -866,16 +860,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                   {extra.label}
                 </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textFaint }}>$</span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    step="0.01"
-                    value={extra.value}
-                    onChange={(e) => updateExtraValue(i, e.target.value)}
-                    style={INPUT_STYLE}
-                  />
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.text }}>
+                    {fmtUSD(Number(extra.value) || 0, valuesHidden)}
+                  </span>
                   <button
                     onClick={() => removeExtra(i)}
                     style={{
