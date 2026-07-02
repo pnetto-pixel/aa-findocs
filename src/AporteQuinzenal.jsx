@@ -627,6 +627,38 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capacityLoaded, prevMonthFixed]);
 
+  // The current month's capacity snapshot as last written to Redis (write path
+  // is the auto-snapshot effect below). Used only as a restore source when
+  // localStorage's aporteConfig has been wiped (e.g. Safari clearing site
+  // storage) — the extras a user adds are otherwise persisted exclusively in
+  // localStorage, so losing it silently drops them from the UI even though
+  // they still exist in the last saved Redis snapshot.
+  const currentMonthSnapshot = useMemo(
+    () => capacityHistory[currentMonthKey()],
+    [capacityHistory]
+  );
+
+  // One-time restore: if localStorage has no extras for this session but the
+  // last Redis snapshot for the current month does, repopulate config.extras
+  // from it. Converts the Redis snapshot shape ({name, amount}) back to the
+  // local state shape ({label, value}). Runs only once so it never clobbers
+  // edits the user makes after the initial load.
+  const seededExtras = useRef(false);
+  useEffect(() => {
+    if (!capacityLoaded || seededExtras.current) return;
+    seededExtras.current = true;
+    const snapshotExtras = currentMonthSnapshot?.extras;
+    if ((config.extras || []).length === 0 && Array.isArray(snapshotExtras) && snapshotExtras.length > 0) {
+      updateConfig({
+        extras: snapshotExtras.map((e) => ({
+          label: e.name ?? "",
+          value: e.amount != null ? String(e.amount) : "",
+        })),
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capacityLoaded, currentMonthSnapshot]);
+
   function addExtra() {
     const label = newExtraLabel.trim();
     if (!label) return;
