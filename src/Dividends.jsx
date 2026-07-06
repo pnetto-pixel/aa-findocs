@@ -297,12 +297,12 @@ function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate
 }
 
 // Full history grouped by the chosen granularity, optional date/ticker/assetClass filter.
-function buildChartData(events, groupBy, selectedYears, filterTicker, filterAssetClass) {
+function buildChartData(events, groupBy, selectedYears, selectedTickers, selectedAssetClasses) {
   const filtered = events.filter((e) => {
     if (!e.date) return false;
     if (selectedYears.size > 0 && !selectedYears.has(e.date.slice(0, 4))) return false;
-    if (filterTicker && filterTicker !== "All" && e.ticker !== filterTicker) return false;
-    if (filterAssetClass && filterAssetClass !== "All" && e.assetClass !== filterAssetClass) return false;
+    if (selectedTickers.size > 0 && !selectedTickers.has(e.ticker)) return false;
+    if (selectedAssetClasses.size > 0 && !selectedAssetClasses.has(e.assetClass)) return false;
     return true;
   });
   if (!filtered.length) return [];
@@ -530,6 +530,134 @@ function BarTooltip({ active, payload, label, hidden }) {
     >
       <div style={{ color: T.textDim, marginBottom: 4 }}>{label}</div>
       <div style={{ color: T.gold }}>{fmtUSD(payload[0].value, hidden)}</div>
+    </div>
+  );
+}
+
+// Multi-select filter chip: trigger button + own popover (checkboxes, Clear + × header).
+// Avoids native <select multiple>, whose iOS picker sheet can't be customized.
+function FilterMultiSelect({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [open]);
+
+  const active = selected.size > 0;
+  const triggerText = active ? [...selected].sort().join(", ") : label;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          background: T.cardElev,
+          border: `1px solid ${active ? T.gold : T.border}`,
+          borderRadius: 4,
+          color: T.text,
+          fontFamily: FONT_MONO,
+          fontSize: 12,
+          padding: "5px 10px",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: 160,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{triggerText}</span>
+        <span style={{ color: T.textDim, fontSize: 9 }}>▾</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            zIndex: 50,
+            width: 200,
+            maxHeight: 280,
+            overflowY: "auto",
+            background: T.cardElev,
+            border: `1px solid ${T.border}`,
+            borderRadius: 4,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "8px 10px",
+              borderBottom: `1px solid ${T.border}`,
+              position: "sticky",
+              top: 0,
+              background: T.cardElev,
+            }}
+          >
+            <button
+              onClick={() => onChange(new Set())}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.gold,
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => setOpen(false)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.textDim,
+                fontSize: 16,
+                lineHeight: 1,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+          {options.map((opt) => (
+            <label
+              key={opt}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", borderBottom: `1px solid ${T.border}` }}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt)}
+                onChange={() => {
+                  const next = new Set(selected);
+                  if (next.has(opt)) next.delete(opt);
+                  else next.add(opt);
+                  onChange(next);
+                }}
+                style={{ accentColor: T.gold }}
+              />
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>{opt}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1675,8 +1803,8 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
   const [groupBy, setGroupBy] = useState("Month");
   const [selectedYears, setSelectedYears] = useState(new Set());
-  const [selectedTicker, setSelectedTicker] = useState("All");
-  const [selectedAssetClass, setSelectedAssetClass] = useState("All");
+  const [selectedTickers, setSelectedTickers] = useState(new Set());
+  const [selectedAssetClasses, setSelectedAssetClasses] = useState(new Set());
 
   const [incomeOpen, setIncomeOpen] = useState(true);
   const [posOpen, setPosOpen] = useState(false);
@@ -1808,16 +1936,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   }, [allEvents]);
 
   const availableTickers = useMemo(() => {
-    return ["All", ...[...new Set(allEvents.map((e) => e.ticker))].sort()];
+    return [...new Set(allEvents.map((e) => e.ticker))].sort();
   }, [allEvents]);
 
   const availableAssetClasses = useMemo(() => {
-    return ["All", ...[...new Set(allEvents.map((e) => e.assetClass).filter(Boolean))].sort()];
+    return [...new Set(allEvents.map((e) => e.assetClass).filter(Boolean))].sort();
   }, [allEvents]);
 
   const chartData = useMemo(
-    () => buildChartData(allEvents, groupBy, selectedYears, selectedTicker, selectedAssetClass),
-    [allEvents, groupBy, selectedYears, selectedTicker, selectedAssetClass]
+    () => buildChartData(allEvents, groupBy, selectedYears, selectedTickers, selectedAssetClasses),
+    [allEvents, groupBy, selectedYears, selectedTickers, selectedAssetClasses]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
@@ -2033,146 +2161,9 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
                 {/* Year, Ticker and Asset Class selectors */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-                  <div style={{ position: "relative" }}>
-                    <select
-                      multiple
-                      size={Math.min(4, Math.max(1, availableYears.length))}
-                      value={[...selectedYears]}
-                      onChange={(e) => {
-                        const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
-                        setSelectedYears(new Set(opts));
-                      }}
-                      style={{
-                        background: T.cardElev,
-                        border: `1px solid ${selectedYears.size > 0 ? T.gold : T.border}`,
-                        borderRadius: 4,
-                        color: T.text,
-                        fontFamily: FONT_MONO,
-                        fontSize: 12,
-                        padding: "5px 22px 5px 10px",
-                        cursor: "pointer",
-                        outline: "none",
-                      }}
-                    >
-                      {availableYears.map((y) => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
-                    {selectedYears.size > 0 && (
-                      <button
-                        onClick={() => setSelectedYears(new Set())}
-                        title="Clear years"
-                        style={{
-                          position: "absolute",
-                          top: 4,
-                          right: 4,
-                          width: 16,
-                          height: 16,
-                          lineHeight: "14px",
-                          background: T.bg,
-                          border: `1px solid ${T.border}`,
-                          borderRadius: "50%",
-                          color: T.textDim,
-                          fontFamily: FONT_MONO,
-                          fontSize: 10,
-                          padding: 0,
-                          cursor: "pointer",
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                  <div style={{ position: "relative" }}>
-                    <select
-                      value={selectedTicker}
-                      onChange={(e) => setSelectedTicker(e.target.value)}
-                      style={{
-                        background: T.cardElev,
-                        border: `1px solid ${selectedTicker !== "All" ? T.gold : T.border}`,
-                        borderRadius: 4,
-                        color: T.text,
-                        fontFamily: FONT_MONO,
-                        fontSize: 12,
-                        padding: selectedTicker !== "All" ? "5px 22px 5px 10px" : "5px 10px",
-                        cursor: "pointer",
-                        outline: "none",
-                      }}
-                    >
-                      {availableTickers.map((t) => (
-                        <option key={t} value={t}>{t === "All" ? "All tickers" : t}</option>
-                      ))}
-                    </select>
-                    {selectedTicker !== "All" && (
-                      <button
-                        onClick={() => setSelectedTicker("All")}
-                        title="Clear ticker"
-                        style={{
-                          position: "absolute",
-                          top: 4,
-                          right: 4,
-                          width: 16,
-                          height: 16,
-                          lineHeight: "14px",
-                          background: T.bg,
-                          border: `1px solid ${T.border}`,
-                          borderRadius: "50%",
-                          color: T.textDim,
-                          fontFamily: FONT_MONO,
-                          fontSize: 10,
-                          padding: 0,
-                          cursor: "pointer",
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                  <div style={{ position: "relative" }}>
-                    <select
-                      value={selectedAssetClass}
-                      onChange={(e) => setSelectedAssetClass(e.target.value)}
-                      style={{
-                        background: T.cardElev,
-                        border: `1px solid ${selectedAssetClass !== "All" ? T.gold : T.border}`,
-                        borderRadius: 4,
-                        color: T.text,
-                        fontFamily: FONT_MONO,
-                        fontSize: 12,
-                        padding: selectedAssetClass !== "All" ? "5px 22px 5px 10px" : "5px 10px",
-                        cursor: "pointer",
-                        outline: "none",
-                      }}
-                    >
-                      {availableAssetClasses.map((c) => (
-                        <option key={c} value={c}>{c === "All" ? "All asset classes" : c}</option>
-                      ))}
-                    </select>
-                    {selectedAssetClass !== "All" && (
-                      <button
-                        onClick={() => setSelectedAssetClass("All")}
-                        title="Clear asset class"
-                        style={{
-                          position: "absolute",
-                          top: 4,
-                          right: 4,
-                          width: 16,
-                          height: 16,
-                          lineHeight: "14px",
-                          background: T.bg,
-                          border: `1px solid ${T.border}`,
-                          borderRadius: "50%",
-                          color: T.textDim,
-                          fontFamily: FONT_MONO,
-                          fontSize: 10,
-                          padding: 0,
-                          cursor: "pointer",
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
+                  <FilterMultiSelect label="Years" options={availableYears} selected={selectedYears} onChange={setSelectedYears} />
+                  <FilterMultiSelect label="Tickers" options={availableTickers} selected={selectedTickers} onChange={setSelectedTickers} />
+                  <FilterMultiSelect label="Classes" options={availableAssetClasses} selected={selectedAssetClasses} onChange={setSelectedAssetClasses} />
                 </div>
 
                 {/* Group-by selector */}
