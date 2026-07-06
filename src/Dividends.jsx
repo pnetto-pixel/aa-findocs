@@ -2031,47 +2031,38 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   />
                 </div>
 
-                {/* Year filter */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                  {["All", ...availableYears].map((y) => {
-                    const isAll = y === "All";
-                    const active = isAll ? selectedYears.size === 0 : selectedYears.has(y);
-                    return (
-                      <button
-                        key={y}
-                        onClick={() => {
-                          if (isAll) {
-                            setSelectedYears(new Set());
-                          } else {
-                            setSelectedYears((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(y)) next.delete(y);
-                              else next.add(y);
-                              return next;
-                            });
-                          }
-                        }}
-                        style={{
-                          background: active ? T.gold : T.cardElev,
-                          border: `1px solid ${active ? T.gold : T.border}`,
-                          borderRadius: 4,
-                          color: active ? T.bg : T.textDim,
-                          fontFamily: FONT_MONO,
-                          fontSize: 11,
-                          letterSpacing: "0.08em",
-                          padding: "5px 12px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        {y}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Ticker and Asset Class filters */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>Filter:</span>
+                {/* Year, Ticker and Asset Class selectors */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <select
+                    multiple
+                    size={Math.min(4, availableYears.length + 1)}
+                    value={selectedYears.size === 0 ? ["All"] : [...selectedYears]}
+                    onChange={(e) => {
+                      const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
+                      const allJustAdded = opts.includes("All") && selectedYears.size > 0;
+                      if (allJustAdded) {
+                        setSelectedYears(new Set());
+                      } else {
+                        setSelectedYears(new Set(opts.filter((o) => o !== "All")));
+                      }
+                    }}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${selectedYears.size > 0 ? T.gold : T.border}`,
+                      borderRadius: 4,
+                      color: T.text,
+                      fontFamily: FONT_MONO,
+                      fontSize: 12,
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                      outline: "none",
+                    }}
+                  >
+                    <option value="All">All years</option>
+                    {availableYears.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
                   <select
                     value={selectedTicker}
                     onChange={(e) => setSelectedTicker(e.target.value)}
