@@ -2031,32 +2031,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   />
                 </div>
 
-                {/* Group-by selector */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-                  {PERIOD_OPTIONS.map((p) => {
-                    const active = groupBy === p;
-                    return (
-                      <button
-                        key={p}
-                        onClick={() => setGroupBy(p)}
-                        style={{
-                          background: active ? T.gold : T.cardElev,
-                          border: `1px solid ${active ? T.gold : T.border}`,
-                          borderRadius: 4,
-                          color: active ? T.bg : T.textDim,
-                          fontFamily: FONT_MONO,
-                          fontSize: 11,
-                          letterSpacing: "0.08em",
-                          padding: "5px 12px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        {p}
-                      </button>
-                    );
-                  })}
-                </div>
-
                 {/* Year filter */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
                   {["All", ...availableYears].map((y) => {
@@ -2138,6 +2112,33 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   </select>
                 </div>
 
+                {/* Group-by selector */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                  {PERIOD_OPTIONS.map((p) => {
+                    const active = groupBy === p;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setGroupBy(p)}
+                        title={p}
+                        style={{
+                          background: active ? T.gold : T.cardElev,
+                          border: `1px solid ${active ? T.gold : T.border}`,
+                          borderRadius: 4,
+                          color: active ? T.bg : T.textDim,
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          padding: "5px 12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {p[0]}
+                      </button>
+                    );
+                  })}
+                </div>
+
                 {!hasChartData ? (
                   <div style={{ textAlign: "center", padding: "40px 0", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                     No dividends recorded in this range
@@ -2168,10 +2169,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                     </BarChart>
                   </ResponsiveContainer>
                 )}
-
-                <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                  US dividends only (Yahoo Finance amounts + Polygon.io pay dates). Bucketed by pay date; falls back to ex-date when the pay date is unavailable. Updated daily after US market close.
-                </div>
               </>
             )}
           </div>
