@@ -2033,85 +2033,146 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
 
                 {/* Year, Ticker and Asset Class selectors */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-                  <select
-                    multiple
-                    size={Math.min(4, Math.max(1, availableYears.length))}
-                    value={[...selectedYears]}
-                    onChange={(e) => {
-                      const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
-                      setSelectedYears(new Set(opts));
-                    }}
-                    style={{
-                      background: T.cardElev,
-                      border: `1px solid ${selectedYears.size > 0 ? T.gold : T.border}`,
-                      borderRadius: 4,
-                      color: T.text,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      padding: "5px 10px",
-                      cursor: "pointer",
-                      outline: "none",
-                    }}
-                  >
-                    {availableYears.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => setSelectedYears(new Set())}
-                    style={{
-                      background: T.cardElev,
-                      border: `1px solid ${T.border}`,
-                      borderRadius: 4,
-                      color: T.textDim,
-                      fontFamily: FONT_MONO,
-                      fontSize: 11,
-                      letterSpacing: "0.08em",
-                      padding: "5px 12px",
-                      cursor: "pointer",
-                      alignSelf: "flex-start",
-                    }}
-                  >
-                    Clear
-                  </button>
-                  <select
-                    value={selectedTicker}
-                    onChange={(e) => setSelectedTicker(e.target.value)}
-                    style={{
-                      background: T.cardElev,
-                      border: `1px solid ${selectedTicker !== "All" ? T.gold : T.border}`,
-                      borderRadius: 4,
-                      color: T.text,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      padding: "5px 10px",
-                      cursor: "pointer",
-                      outline: "none",
-                    }}
-                  >
-                    {availableTickers.map((t) => (
-                      <option key={t} value={t}>{t === "All" ? "All tickers" : t}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={selectedAssetClass}
-                    onChange={(e) => setSelectedAssetClass(e.target.value)}
-                    style={{
-                      background: T.cardElev,
-                      border: `1px solid ${selectedAssetClass !== "All" ? T.gold : T.border}`,
-                      borderRadius: 4,
-                      color: T.text,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12,
-                      padding: "5px 10px",
-                      cursor: "pointer",
-                      outline: "none",
-                    }}
-                  >
-                    {availableAssetClasses.map((c) => (
-                      <option key={c} value={c}>{c === "All" ? "All asset classes" : c}</option>
-                    ))}
-                  </select>
+                  <div style={{ position: "relative" }}>
+                    <select
+                      multiple
+                      size={Math.min(4, Math.max(1, availableYears.length))}
+                      value={[...selectedYears]}
+                      onChange={(e) => {
+                        const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
+                        setSelectedYears(new Set(opts));
+                      }}
+                      style={{
+                        background: T.cardElev,
+                        border: `1px solid ${selectedYears.size > 0 ? T.gold : T.border}`,
+                        borderRadius: 4,
+                        color: T.text,
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                        padding: "5px 22px 5px 10px",
+                        cursor: "pointer",
+                        outline: "none",
+                      }}
+                    >
+                      {availableYears.map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                    {selectedYears.size > 0 && (
+                      <button
+                        onClick={() => setSelectedYears(new Set())}
+                        title="Clear years"
+                        style={{
+                          position: "absolute",
+                          top: 4,
+                          right: 4,
+                          width: 16,
+                          height: 16,
+                          lineHeight: "14px",
+                          background: T.bg,
+                          border: `1px solid ${T.border}`,
+                          borderRadius: "50%",
+                          color: T.textDim,
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          padding: 0,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <select
+                      value={selectedTicker}
+                      onChange={(e) => setSelectedTicker(e.target.value)}
+                      style={{
+                        background: T.cardElev,
+                        border: `1px solid ${selectedTicker !== "All" ? T.gold : T.border}`,
+                        borderRadius: 4,
+                        color: T.text,
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                        padding: selectedTicker !== "All" ? "5px 22px 5px 10px" : "5px 10px",
+                        cursor: "pointer",
+                        outline: "none",
+                      }}
+                    >
+                      {availableTickers.map((t) => (
+                        <option key={t} value={t}>{t === "All" ? "All tickers" : t}</option>
+                      ))}
+                    </select>
+                    {selectedTicker !== "All" && (
+                      <button
+                        onClick={() => setSelectedTicker("All")}
+                        title="Clear ticker"
+                        style={{
+                          position: "absolute",
+                          top: 4,
+                          right: 4,
+                          width: 16,
+                          height: 16,
+                          lineHeight: "14px",
+                          background: T.bg,
+                          border: `1px solid ${T.border}`,
+                          borderRadius: "50%",
+                          color: T.textDim,
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          padding: 0,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <select
+                      value={selectedAssetClass}
+                      onChange={(e) => setSelectedAssetClass(e.target.value)}
+                      style={{
+                        background: T.cardElev,
+                        border: `1px solid ${selectedAssetClass !== "All" ? T.gold : T.border}`,
+                        borderRadius: 4,
+                        color: T.text,
+                        fontFamily: FONT_MONO,
+                        fontSize: 12,
+                        padding: selectedAssetClass !== "All" ? "5px 22px 5px 10px" : "5px 10px",
+                        cursor: "pointer",
+                        outline: "none",
+                      }}
+                    >
+                      {availableAssetClasses.map((c) => (
+                        <option key={c} value={c}>{c === "All" ? "All asset classes" : c}</option>
+                      ))}
+                    </select>
+                    {selectedAssetClass !== "All" && (
+                      <button
+                        onClick={() => setSelectedAssetClass("All")}
+                        title="Clear asset class"
+                        style={{
+                          position: "absolute",
+                          top: 4,
+                          right: 4,
+                          width: 16,
+                          height: 16,
+                          lineHeight: "14px",
+                          background: T.bg,
+                          border: `1px solid ${T.border}`,
+                          borderRadius: "50%",
+                          color: T.textDim,
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          padding: 0,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Group-by selector */}
