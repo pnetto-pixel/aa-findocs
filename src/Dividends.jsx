@@ -2035,16 +2035,11 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                 <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
                   <select
                     multiple
-                    size={Math.min(4, availableYears.length + 1)}
-                    value={selectedYears.size === 0 ? ["All"] : [...selectedYears]}
+                    size={Math.min(4, Math.max(1, availableYears.length))}
+                    value={[...selectedYears]}
                     onChange={(e) => {
                       const opts = Array.from(e.target.selectedOptions).map((o) => o.value);
-                      const allJustAdded = opts.includes("All") && selectedYears.size > 0;
-                      if (allJustAdded) {
-                        setSelectedYears(new Set());
-                      } else {
-                        setSelectedYears(new Set(opts.filter((o) => o !== "All")));
-                      }
+                      setSelectedYears(new Set(opts));
                     }}
                     style={{
                       background: T.cardElev,
@@ -2058,11 +2053,27 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                       outline: "none",
                     }}
                   >
-                    <option value="All">All years</option>
                     {availableYears.map((y) => (
                       <option key={y} value={y}>{y}</option>
                     ))}
                   </select>
+                  <button
+                    onClick={() => setSelectedYears(new Set())}
+                    style={{
+                      background: T.cardElev,
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 4,
+                      color: T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      padding: "5px 12px",
+                      cursor: "pointer",
+                      alignSelf: "flex-start",
+                    }}
+                  >
+                    Clear
+                  </button>
                   <select
                     value={selectedTicker}
                     onChange={(e) => setSelectedTicker(e.target.value)}
