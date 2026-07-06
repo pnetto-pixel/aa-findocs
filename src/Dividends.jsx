@@ -7,7 +7,7 @@
 // Dividend History: full audit table of every payment.
 
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
-import { ChevronDown, TrendingUp, BarChart2, Receipt } from "lucide-react";
+import { ChevronDown, TrendingUp, BarChart2, Receipt, Filter } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -698,6 +698,84 @@ function buildClassGroups(rows, transactions) {
   }));
 }
 
+// Filter-only popover for the Ticker column header. Anchored to the clicked
+// filter icon (position: fixed, clamped to viewport). Independent of sort,
+// which stays on the header text click (handleSort).
+function TickerFilterPopover({ anchor, onClose, options, selected, onChange }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target) && !(anchor && anchor.contains(e.target))) {
+        onClose();
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [onClose, anchor]);
+
+  const rect = anchor?.getBoundingClientRect();
+  const POPOVER_W = 180;
+  const posStyle = rect
+    ? {
+        position: "fixed",
+        top: rect.bottom + 4,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8)),
+        zIndex: 50,
+        width: POPOVER_W,
+      }
+    : { display: "none" };
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        ...posStyle,
+        background: T.cardElev,
+        border: `1px solid ${T.border}`,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+        padding: 10,
+        maxHeight: 280,
+        overflowY: "auto",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <button
+          onClick={() => onChange(new Set(options))}
+          style={{ background: "transparent", border: "none", color: T.gold, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 }}
+        >
+          All
+        </button>
+        <button
+          onClick={() => onChange(new Set())}
+          style={{ background: "transparent", border: "none", color: T.textDim, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 }}
+        >
+          Clear
+        </button>
+      </div>
+      {options.map((opt) => (
+        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={selected.has(opt)}
+            onChange={() => {
+              const next = new Set(selected);
+              next.has(opt) ? next.delete(opt) : next.add(opt);
+              onChange(next);
+            }}
+            style={{ accentColor: T.gold }}
+          />
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>{opt}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 // ── Position Dividends table ──────────────────────────────────────────────────
 
 function PositionDividendsTable({ rows, transactions, valuesHidden, open, onToggle }) {
@@ -705,11 +783,23 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   const [sortDir, setSortDir] = useState("desc");
   const [groupMode, setGroupMode] = useState("class");
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+  const [tickerFilter, setTickerFilter] = useState(() => new Set());
+  const [tickerFilterOpen, setTickerFilterOpen] = useState(false);
+  const tickerFilterIconRef = useRef(null);
+
+  // Ticker universe for the filter popover - always derived from the
+  // unfiltered rows so the popover lists every ticker, not just visible ones.
+  const allTickers = useMemo(() => [...new Set(rows.map((r) => r.ticker))].sort(), [rows]);
+
+  const filteredRows = useMemo(
+    () => (tickerFilter.size === 0 ? rows : rows.filter((r) => tickerFilter.has(r.ticker))),
+    [rows, tickerFilter]
+  );
 
   // On initial mount in class mode, collapse all groups by default.
   useEffect(() => {
-    if (groupMode === "class" && rows.length > 0 && transactions.length > 0) {
-      const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
+    if (groupMode === "class" && filteredRows.length > 0 && transactions.length > 0) {
+      const allClasses = new Set(buildClassGroups(filteredRows, transactions).map((g) => g.label));
       setCollapsedClasses(allClasses);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -730,9 +820,9 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   // In class mode, displayRows is the array of group objects (not flat ticker rows).
   // In ticker mode, displayRows is the flat rows array.
   const displayRows = useMemo(() => {
-    if (groupMode === "class") return buildClassGroups(rows, transactions);
-    return rows;
-  }, [rows, transactions, groupMode]);
+    if (groupMode === "class") return buildClassGroups(filteredRows, transactions);
+    return filteredRows;
+  }, [filteredRows, transactions, groupMode]);
 
   // sortedRows only applies when groupMode === "ticker".
   // In class mode we sort groups directly.
@@ -757,7 +847,7 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
 
   // Totals always aggregate from the base ticker rows, not from displayRows
   // (which in class mode contains group objects, not flat ticker rows).
-  const totals = useMemo(() => aggPositions(rows), [rows]);
+  const totals = useMemo(() => aggPositions(filteredRows), [filteredRows]);
 
   const COLS = [
     { key: "ticker", label: "Ticker", align: "left" },
@@ -899,7 +989,7 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
                     onClick={() => {
                       if (mode === "class") {
                         setGroupMode("class");
-                        const allClasses = new Set(buildClassGroups(rows, transactions).map((g) => g.label));
+                        const allClasses = new Set(buildClassGroups(filteredRows, transactions).map((g) => g.label));
                         setCollapsedClasses(allClasses);
                       } else {
                         setGroupMode("ticker");
@@ -939,62 +1029,80 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
             overflow: "hidden",
           }}
         >
-          {displayRows.length === 0 ? (
-            <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
-              No dividends recorded yet.
-            </div>
-          ) : (
-            <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-              <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
-                <thead>
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {COLS.map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      style={{
+                        ...thBase,
+                        ...(col.key === "ticker" ? stickyCol(T.card, 3) : null),
+                        textAlign: col.align,
+                        color: col.key === sortCol ? T.textDim : T.textFaint,
+                      }}
+                    >
+                      {col.label}
+                      <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
+                      {col.key === "ticker" && (
+                        <span
+                          ref={tickerFilterIconRef}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTickerFilterOpen((v) => !v);
+                          }}
+                          style={{ display: "inline-flex", marginLeft: 6, verticalAlign: "middle", cursor: "pointer" }}
+                        >
+                          <Filter size={11} color={tickerFilter.size > 0 ? T.gold : T.textFaint} />
+                        </span>
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {displayRows.length === 0 ? (
                   <tr>
-                    {COLS.map((col) => (
-                      <th
-                        key={col.key}
-                        onClick={() => handleSort(col.key)}
-                        style={{
-                          ...thBase,
-                          ...(col.key === "ticker" ? stickyCol(T.card, 3) : null),
-                          textAlign: col.align,
-                          color: col.key === sortCol ? T.textDim : T.textFaint,
-                        }}
-                      >
-                        {col.label}
-                        <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
-                      </th>
-                    ))}
+                    <td colSpan={COLS.length} style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
+                      {rows.length > 0 && tickerFilter.size > 0
+                        ? "No tickers match the selected filter."
+                        : "No dividends recorded yet."}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  <tr>{renderTotalRow()}</tr>
-                  {groupMode === "class"
-                    ? sortedRows.map((group) => (
-                        <Fragment key={group.label}>
-                          {renderGroupHeaderRow(group)}
-                          {!collapsedClasses.has(group.label) &&
-                            group.tickers
-                              .slice()
-                              .sort((a, b) => {
-                                const av = a[sortCol], bv = b[sortCol];
-                                if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-                                const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
-                                const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
-                                return sortDir === "asc" ? an - bn : bn - an;
-                              })
-                              .map((row) => (
-                                <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                              ))
-                          }
-                        </Fragment>
-                      ))
-                    : sortedRows.map((row) => (
-                        <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                      ))
-                  }
-                </tbody>
-              </table>
-            </div>
-          )}
+                ) : (
+                  <>
+                    <tr>{renderTotalRow()}</tr>
+                    {groupMode === "class"
+                      ? sortedRows.map((group) => (
+                          <Fragment key={group.label}>
+                            {renderGroupHeaderRow(group)}
+                            {!collapsedClasses.has(group.label) &&
+                              group.tickers
+                                .slice()
+                                .sort((a, b) => {
+                                  const av = a[sortCol], bv = b[sortCol];
+                                  if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+                                  const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
+                                  const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
+                                  return sortDir === "asc" ? an - bn : bn - an;
+                                })
+                                .map((row) => (
+                                  <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                                ))
+                            }
+                          </Fragment>
+                        ))
+                      : sortedRows.map((row) => (
+                          <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                        ))
+                    }
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
           <div
             style={{
               fontFamily: FONT_MONO,
@@ -1007,6 +1115,16 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
             YoC = trailing-12-month dividends ÷ cost basis. Recovered = all-time dividends ÷ cost basis. Y/Y YTD compares this year to the same period last year.
           </div>
         </div>
+      )}
+
+      {tickerFilterOpen && (
+        <TickerFilterPopover
+          anchor={tickerFilterIconRef.current}
+          onClose={() => setTickerFilterOpen(false)}
+          options={allTickers}
+          selected={tickerFilter}
+          onChange={setTickerFilter}
+        />
       )}
     </div>
   );

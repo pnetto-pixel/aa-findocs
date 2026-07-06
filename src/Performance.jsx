@@ -2,8 +2,8 @@
 // Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
 // switches to a TWR % comparison chart.
 
-import { useEffect, useState, useMemo, Fragment } from "react";
-import { ChevronDown, TrendingUp, BarChart2 } from "lucide-react";
+import { useEffect, useState, useMemo, useRef, Fragment } from "react";
+import { ChevronDown, TrendingUp, BarChart2, Filter } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -497,11 +497,101 @@ function aggFromRows(rows) {
   return { totalCost, totalValue, totalGainLoss, gainLossPct, divTtmSum, totalDiv, yoc };
 }
 
+// Filter-only popover for the Ticker column header. Anchored to the clicked
+// filter icon (position: fixed, clamped to viewport). Independent of sort,
+// which stays on the header text click (handleSort).
+function TickerFilterPopover({ anchor, onClose, options, selected, onChange }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target) && !(anchor && anchor.contains(e.target))) {
+        onClose();
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [onClose, anchor]);
+
+  const rect = anchor?.getBoundingClientRect();
+  const POPOVER_W = 180;
+  const posStyle = rect
+    ? {
+        position: "fixed",
+        top: rect.bottom + 4,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8)),
+        zIndex: 50,
+        width: POPOVER_W,
+      }
+    : { display: "none" };
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        ...posStyle,
+        background: T.cardElev,
+        border: `1px solid ${T.border}`,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+        padding: 10,
+        maxHeight: 280,
+        overflowY: "auto",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <button
+          onClick={() => onChange(new Set(options))}
+          style={{ background: "transparent", border: "none", color: T.gold, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 }}
+        >
+          All
+        </button>
+        <button
+          onClick={() => onChange(new Set())}
+          style={{ background: "transparent", border: "none", color: T.textDim, fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", padding: 0 }}
+        >
+          Clear
+        </button>
+      </div>
+      {options.map((opt) => (
+        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={selected.has(opt)}
+            onChange={() => {
+              const next = new Set(selected);
+              next.has(opt) ? next.delete(opt) : next.add(opt);
+              onChange(next);
+            }}
+            style={{ accentColor: T.gold }}
+          />
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>{opt}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   const [sortCol, setSortCol] = useState("ticker");
   const [sortDir, setSortDir] = useState("asc");
   const [grouped, setGrouped] = useState(true);
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+  const [tickerFilter, setTickerFilter] = useState(() => new Set());
+  const [tickerFilterOpen, setTickerFilterOpen] = useState(false);
+  const tickerFilterIconRef = useRef(null);
+
+  // Ticker universe for the filter popover - always derived from the
+  // unfiltered rows so the popover lists every ticker, not just visible ones.
+  const allTickers = useMemo(() => [...new Set(rows.map((r) => r.ticker))].sort(), [rows]);
+
+  const filteredRows = useMemo(
+    () => (tickerFilter.size === 0 ? rows : rows.filter((r) => tickerFilter.has(r.ticker))),
+    [rows, tickerFilter]
+  );
 
   // Auto-collapse all groups when switching to grouped mode or on mount (default grouped=true).
   useEffect(() => {
@@ -534,15 +624,15 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     });
   }
 
-  const sortedRows = useMemo(() => sortRows(rows), [rows, sortCol, sortDir]);
+  const sortedRows = useMemo(() => sortRows(filteredRows), [filteredRows, sortCol, sortDir]);
 
-  const totals = useMemo(() => aggFromRows(rows), [rows]);
+  const totals = useMemo(() => aggFromRows(filteredRows), [filteredRows]);
 
   // Group rows by assetClass, each group sorted by sortCol.
   const classGroups = useMemo(() => {
     if (!grouped) return null;
     const map = {};
-    for (const row of rows) {
+    for (const row of filteredRows) {
       const cls = row.assetClass || "Uncategorized";
       if (!map[cls]) map[cls] = [];
       map[cls].push(row);
@@ -550,7 +640,7 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
     return Object.entries(map)
       .map(([cls, clsRows]) => ({ cls, rows: sortRows(clsRows), ...aggFromRows(clsRows) }))
       .sort((a, b) => b.totalValue - a.totalValue);
-  }, [rows, grouped, sortCol, sortDir]);
+  }, [filteredRows, grouped, sortCol, sortDir]);
 
   function handleSort(col) {
     if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -779,37 +869,69 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
                     >
                       {col.label}
                       <span style={{ opacity: col.key === sortCol ? 0.9 : 0.35 }}>{sortIndicator(col.key)}</span>
+                      {col.key === "ticker" && (
+                        <span
+                          ref={tickerFilterIconRef}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTickerFilterOpen((v) => !v);
+                          }}
+                          style={{ display: "inline-flex", marginLeft: 6, verticalAlign: "middle", cursor: "pointer" }}
+                        >
+                          <Filter size={11} color={tickerFilter.size > 0 ? T.gold : T.textFaint} />
+                        </span>
+                      )}
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {/* Always-visible TOTAL row */}
-                <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
-
-                {grouped && classGroups ? (
-                  classGroups.map(({ cls, rows: clsRows, ...agg }) => {
-                    const isCollapsed = collapsedClasses.has(cls);
-                    return (
-                      <Fragment key={`cls-${cls}`}>
-                        <tr onClick={() => toggleClass(cls)} style={{ cursor: "pointer" }}>
-                          {renderSummaryRow(cls, agg, T.bg, 2, true, isCollapsed)}
-                        </tr>
-                        {!isCollapsed && clsRows.map((row) => (
-                          <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                        ))}
-                      </Fragment>
-                    );
-                  })
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={COLS.length} style={{ padding: "20px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                      No tickers match the selected filter.
+                    </td>
+                  </tr>
                 ) : (
-                  sortedRows.map((row) => (
-                    <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
-                  ))
+                  <>
+                    {/* Always-visible TOTAL row */}
+                    <tr>{renderSummaryRow("TOTAL", totals, T.cardElev, 2)}</tr>
+
+                    {grouped && classGroups ? (
+                      classGroups.map(({ cls, rows: clsRows, ...agg }) => {
+                        const isCollapsed = collapsedClasses.has(cls);
+                        return (
+                          <Fragment key={`cls-${cls}`}>
+                            <tr onClick={() => toggleClass(cls)} style={{ cursor: "pointer" }}>
+                              {renderSummaryRow(cls, agg, T.bg, 2, true, isCollapsed)}
+                            </tr>
+                            {!isCollapsed && clsRows.map((row) => (
+                              <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                            ))}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      sortedRows.map((row) => (
+                        <tr key={row.ticker}>{COLS.map((col) => renderCell(row, col))}</tr>
+                      ))
+                    )}
+                  </>
                 )}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {tickerFilterOpen && (
+        <TickerFilterPopover
+          anchor={tickerFilterIconRef.current}
+          onClose={() => setTickerFilterOpen(false)}
+          options={allTickers}
+          selected={tickerFilter}
+          onChange={setTickerFilter}
+        />
       )}
     </div>
   );
