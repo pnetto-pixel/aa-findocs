@@ -135,6 +135,13 @@ function authHeaders(auth) {
   return h;
 }
 
+// Local (not UTC) "today" as YYYY-MM-DD — avoids off-by-one-day issues for
+// users in negative UTC offsets (e.g. Brazil, UTC-3).
+function localTodayISO(d = new Date()) {
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
 async function fetchPrice(ticker, auth, quoteOnly = false) {
   const params = new URLSearchParams({ ticker });
   if (quoteOnly) params.set("quoteOnly", "1");
@@ -221,6 +228,32 @@ async function fetchHoldingsFromServer(auth) {
     throw new Error(msg);
   }
   return await res.json();
+}
+
+// Cross-device sync for the Bell alert log's "read" state (item 128).
+// Fetches the set of alert ids the user has marked as read on any device.
+// Best-effort: returns an empty array on any failure so callers never block
+// the UI or throw.
+async function fetchAlertsReadFromServer(auth) {
+  try {
+    const res = await fetch("/api/alerts-read", { headers: authHeaders(auth) });
+    if (!res.ok) return [];
+    const d = await res.json();
+    return Array.isArray(d.readIds) ? d.readIds : [];
+  } catch {
+    return [];
+  }
+}
+
+// Fire-and-forget PUT of newly-read alert ids. Never throws; silent on failure
+// since this is just cross-device sync, not the source of truth for the UI.
+function saveAlertsReadToServer(auth, ids) {
+  if (!ids || !ids.length) return;
+  fetch("/api/alerts-read", {
+    method: "PUT",
+    headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+    body: JSON.stringify({ add: ids }),
+  }).catch(() => {});
 }
 
 // Returns the transactions array (or null on failure). When `withMeta` is true,
@@ -1204,6 +1237,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     } catch {}
     return [];
   });
+  // Alert ids the server says are already read on some other device. Populated
+  // once by the load effect (fetchAlertsReadFromServer) and consulted by
+  // mergeAlerts so a newly-detected alert that was already read elsewhere
+  // doesn't show up as unread on this device.
+  const serverReadIdsRef = useRef(new Set());
 
   const [showCSVImport, setShowCSVImport] = useState(false);
   const [csvImportRows, setCsvImportRows] = useState([]);
@@ -1424,6 +1462,18 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           setSplitEvents(loadedSplitEvents);
           // Non-blocking: surface any unreflected splits via the Bell badge.
           refreshPendingSplits(txs, loadedSplitEvents);
+          // Cross-device "read" sync: fetch which alert ids were marked read
+          // on any device, stash them for mergeAlerts, and overlay them onto
+          // the alert log already loaded from localStorage so a device that
+          // was marked read elsewhere shows up as read here too.
+          fetchAlertsReadFromServer(auth).then((readIds) => {
+            if (cancelled || !readIds.length) return;
+            const readSet = new Set(readIds);
+            serverReadIdsRef.current = readSet;
+            setAlertLog((prev) =>
+              prev.map((a) => (!a.read && readSet.has(a.id) ? { ...a, read: true } : a))
+            );
+          });
           refreshAlerts(txs);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
@@ -1794,7 +1844,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       const known = new Set(prev.map((a) => a.id));
       const additions = detected
         .filter((a) => !known.has(a.id))
-        .map((a) => ({ ...a, sentDate: todayISO, read: false }));
+        .map((a) => ({
+          ...a,
+          sentDate: todayISO,
+          // If another device already marked this alert as read (per the
+          // server's readIds snapshot), don't surface it as unread here.
+          read: serverReadIdsRef.current.has(a.id),
+        }));
       if (!additions.length) return prev;
       return [...additions, ...prev].slice(0, MAX_ALERT_LOG);
     });
@@ -1802,17 +1858,20 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   function markAlertRead(id) {
     setAlertLog((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
+    saveAlertsReadToServer(auth, [id]);
   }
 
   function markAllAlertsRead() {
+    const newlyRead = alertLog.filter((a) => !a.read).map((a) => a.id);
     setAlertLog((prev) => prev.map((a) => (a.read ? a : { ...a, read: true })));
+    saveAlertsReadToServer(auth, newlyRead);
   }
 
   // Detect today's dividend payouts, earnings, and bond maturities and merge them
   // into the alert log. Non-blocking; uses the same events Redis cache as the
   // Events tab. Dividend alerts compute the amount paid (qty held × $/share).
   async function refreshAlerts(txs) {
-    const todayISO = new Date().toISOString().slice(0, 10);
+    const todayISO = localTodayISO();
     const netQty = computeNetQty(txs);
     // Bond maturity within 7 days — derived from transactions, no API needed.
     const CUSIP_RX = /^[0-9A-Z]{9}$/;
@@ -2537,7 +2596,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 }}
               >
                 {(() => {
-                  const todayISO = new Date().toISOString().slice(0, 10);
+                  const todayISO = localTodayISO();
                   const displayed = alertLog.slice(0, ALERT_DISPLAY_COUNT);
                   const groups = groupAlertsByDate(displayed);
                   const hasUnread = alertLog.some((a) => !a.read);
