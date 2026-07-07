@@ -3070,6 +3070,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   const [mode, setMode] = useState("append"); // append | replace
   const [fileError, setFileError] = useState("");
   const [checkedRows, setCheckedRows] = useState(new Set());
+  const [dupFilter, setDupFilter] = useState("all"); // "all" | "non-dup" | "dup"
   const [editingIdx, setEditingIdx] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const fileInputRef = useRef(null);
@@ -3119,6 +3120,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       setFileError("");
       setTab("fidelity");
       setCheckedRows(new Set());
+      setDupFilter("all");
       setEditingIdx(null);
       setEditDraft(null);
     }
@@ -3138,6 +3140,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       const results = annotateDuplicates(out.rows.map((r) => parseRow(r, "USD", knownClassByTicker, opts)));
       setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
       initAllChecked(results);
+      setDupFilter("all");
       setEditingIdx(null);
       setEditDraft(null);
       setStructuralPrompt(true);
@@ -3149,6 +3152,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     const ambiguousCount = results.filter((r) => r.ambiguous).length;
     setParsed({ results, hadHeader: out.hadHeader, rawRows: out.rows, sourceText: rawText, dateFormat: fmt });
     initAllChecked(results);
+    setDupFilter("all");
     setEditingIdx(null);
     setEditDraft(null);
     setDecimalPrompt(ambiguousCount > 0);
@@ -3182,6 +3186,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
           : null,
     });
     initAllChecked(results);
+    setDupFilter("all");
     setEditingIdx(null);
     setEditDraft(null);
     setDecimalPrompt(ambiguousCount > 0);
@@ -3288,6 +3293,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
         sourceLabel: "Fidelity",
       });
       initAllChecked(annotated);
+      setDupFilter("all");
       setEditingIdx(null);
       setEditDraft(null);
       setDecimalPrompt(false);
@@ -3885,6 +3891,38 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                 );
               })()}
 
+              {duplicateCount > 0 && (
+                <div style={{ display: "flex", gap: 4, marginBottom: 14 }}>
+                  {[
+                    { id: "all", label: "All", count: totalCount },
+                    { id: "non-dup", label: "Non-dup", count: totalCount - duplicateCount },
+                    { id: "dup", label: "Dup", count: duplicateCount },
+                  ].map((f) => {
+                    const active = dupFilter === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => setDupFilter(f.id)}
+                        style={{
+                          background: active ? T.gold : "transparent",
+                          border: `1px solid ${active ? T.gold : T.border}`,
+                          color: active ? "#0b0d10" : T.textDim,
+                          padding: "4px 10px",
+                          cursor: "pointer",
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          letterSpacing: "0.12em",
+                          textTransform: "uppercase",
+                          borderRadius: 4,
+                        }}
+                      >
+                        {f.label} ({f.count})
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Preview table */}
               <div
                 style={{
@@ -3951,6 +3989,8 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                   </thead>
                   <tbody>
                     {parsed.results.map((r, idx) => {
+                      if (dupFilter === "non-dup" && r.duplicate) return null;
+                      if (dupFilter === "dup" && !r.duplicate) return null;
                       const isChecked = checkedRows.has(idx);
                       const isEditingThis = editingIdx === idx;
 
