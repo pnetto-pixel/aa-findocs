@@ -210,6 +210,7 @@ Modal `ImportModal` com 2 tabs — abre por default na aba **Fidelity** (mudado 
 **Import inteligente (item 34):**
 - **Reuso de classe conhecida:** `parseRow` e `parseFidelityCSV` recebem `knownClassByTicker` (Map ticker→assetClass das transações salvas). Prioridade de classe: coluna explícita → histórico → `inferAssetClass()` → manual. Flag `classFromHistory` + chip "N class reused".
 - **Detecção de duplicata:** `dupKey(tx)` = `ticker|side|qty|date`; linhas que batem com transações salvas ganham `r.duplicate = true`, vêm **desmarcadas por default**, fundo vermelho + label "Duplicate". `r.ok` continua true — usuário pode re-marcar pra forçar import. Chip "N duplicate".
+- **Toggle ALL / NON-DUP / DUP no preview (PR #127 — jul/2026):** segmented control, so visivel quando `duplicateCount > 0`. State `dupFilter` ("all" | "non-dup" | "dup", default "all"). Filtro puramente visual (early-return no `.map` da tabela de preview) — nao muda os indices usados por `checkedRows`/`editingIdx`, e nao afeta o que e realmente importado (`handleConfirm` segue os checkboxes marcados, nao o filtro visual selecionado).
 
 **Preview editável:**
 - Checkbox por linha no preview — todas marcadas por default (exceto duplicatas)
