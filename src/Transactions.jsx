@@ -2758,6 +2758,45 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 2024-03-15,buy,AAPL,10,175.50,Stocks,0,
 2024-03-20,buy,BBSE3,100,38.20,BRA Stocks,,monthly buy`;
 
+// Extracts coupon/maturity/issuer metadata from a Fidelity "Symbol Description"
+// bond string (e.g. "WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030").
+// Returns null when the text doesn't match the coupon%+maturity pattern.
+// `descKey` is a stable composite key (issuer|coupon|maturity) used to match
+// a bond across rows even when Fidelity omits the CUSIP in Symbol (jul/2026).
+function extractBondMeta(desc) {
+  const d = String(desc || "");
+  const couponM = d.match(/(\d+(?:\.\d+)?)%/);
+  const maturityM = d.match(/(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!couponM || !maturityM) return null;
+  const couponRate = parseFloat(couponM[1]);
+  const [, mm, dd, yyyy] = maturityM;
+  const maturityDate = `${yyyy}-${mm}-${dd}`;
+  const nameEnd = d.search(/\d+(?:\.\d+)?%/);
+  const shortName = nameEnd > 0 ? d.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null : null;
+  const u = d.toUpperCase();
+  let bondType;
+  if (u.includes("TREASURY") || u.includes("US TREAS")) {
+    bondType = "Treasury";
+  } else if (
+    u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
+    u.includes("FEDERAL FARM") || u.includes("FFCB") ||
+    u.includes("FNMA") || u.includes("FHLMC") ||
+    u.includes("FREDDIE") || u.includes("FANNIE")
+  ) {
+    bondType = "Agency";
+  } else if (
+    u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
+    u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
+  ) {
+    bondType = "Corporate";
+  } else {
+    bondType = "CD";
+  }
+  const notes = `${couponRate.toFixed(2)}% | ${mm}/${dd}/${yyyy}`;
+  const descKey = `${(shortName || "").toUpperCase()}|${couponRate}|${maturityDate}`;
+  return { couponRate, maturityDate, bondType, shortName, couponFreq: "monthly", notes, descKey };
+}
+
 // Fidelity "Accounts History" CSV parser.
 // - Skips blank lines / BOM at start
 // - Header row contains: Run Date, Action, Symbol, Price ($), Quantity, Fees ($)
@@ -2766,7 +2805,11 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 // - Date format MM/DD/YYYY → ISO
 // - All Fidelity transactions are USD; assetClass defaults to "Stocks"
 //   (user can edit later)
-function parseFidelityCSV(text, knownClassByTicker = null) {
+// `knownBondsByDescKey` (optional Map descKey→CUSIP, built from saved Bank
+// Bonds transactions): recovers the real CUSIP for bond rows where Fidelity
+// left Symbol blank (jul/2026 export change), by matching the row's
+// issuer+coupon+maturity description against bonds already in history.
+function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey = null) {
   console.log("Fidelity parser: processing rows");
   const result = Papa.parse(text, {
     skipEmptyLines: true,
@@ -2795,7 +2838,9 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
   const idxDate = colOf("Run Date");
   const idxAction = colOf("Action");
   const idxSymbol = colOf("Symbol");
-  const idxDesc = colOf("Symbol Description");
+  // Fidelity renamed this column from "Symbol Description" to plain
+  // "Description" in its jul/2026 "Accounts History" export — accept either.
+  const idxDesc = colOf("Symbol Description") >= 0 ? colOf("Symbol Description") : colOf("Description");
   const idxPrice = colOf("Price ($)");
   const idxQty = colOf("Quantity");
   const idxFees = colOf("Fees ($)");
@@ -2849,10 +2894,17 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     // matches CUSIP_RX since it's 9 digits.)
     if (upper.includes("INTEREST") && idxAmount >= 0) {
       const isoDateI = toISO(arr[idxDate]);
-      const symbolI = String(arr[idxSymbol] || "").trim().toUpperCase();
+      let symbolI = String(arr[idxSymbol] || "").trim().toUpperCase();
       const descI = idxDesc >= 0 ? String(arr[idxDesc] || "").trim().toUpperCase() : "";
       const isCashSweep = upper.includes("EARNED CASH") || descI === "CASH";
       const amountI = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      // Fidelity sometimes omits Symbol for CD/bond interest rows (jul/2026).
+      // Recover the real CUSIP from a bond already seen in saved transactions.
+      if (!symbolI && !isCashSweep && knownBondsByDescKey) {
+        const metaI = extractBondMeta(idxDesc >= 0 ? String(arr[idxDesc] || "") : "");
+        const knownTicker = metaI && knownBondsByDescKey.get(metaI.descKey);
+        if (knownTicker) symbolI = knownTicker;
+      }
       if (isCashSweep && isoDateI && symbolI && isFinite(amountI) && amountI > 0) {
         // Record core-cash interest for purging — an older parser captured it as
         // bond interest, so re-importing must remove the stale matching record.
@@ -2923,10 +2975,33 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     const isoDate = toISO(arr[idxDate]);
     if (!isoDate) continue; // skip malformed rows silently
 
-    const symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
-    if (!symbol) continue;
+    let symbol = String(arr[idxSymbol] || "").trim().toUpperCase();
+    const descRaw = idxDesc >= 0 ? String(arr[idxDesc] || "") : "";
+    let bondMeta = null;
+    let needsTicker = false;
+    if (!symbol) {
+      // Fidelity sometimes omits Symbol for CD/bond rows (jul/2026 export
+      // change) — no CUSIP anywhere else in the row either. Try to recover
+      // the real CUSIP from a bond already seen in saved transactions.
+      bondMeta = extractBondMeta(descRaw);
+      if (bondMeta && knownBondsByDescKey) {
+        const knownTicker = knownBondsByDescKey.get(bondMeta.descKey);
+        if (knownTicker) symbol = knownTicker;
+      }
+      if (!symbol) {
+        if (bondMeta && side === "buy" && !isRedemption) {
+          // Brand-new bond purchase with no CUSIP anywhere in the CSV —
+          // surface it for manual entry instead of silently dropping it.
+          needsTicker = true;
+        } else {
+          // Interest/redemption rows for a bond we have no history for, or a
+          // non-bond row with a genuinely missing symbol — nothing to do.
+          continue;
+        }
+      }
+    }
     // Redemptions only make sense for CUSIP-symboled bonds/CDs.
-    if (isRedemption && !CUSIP_RX.test(symbol)) continue;
+    if (isRedemption && symbol && !CUSIP_RX.test(symbol)) continue;
 
     const amountAbs = idxAmount >= 0
       ? Math.abs(parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, "")))
@@ -2961,9 +3036,10 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     }
 
     // Reuse a saved asset class for this ticker if known; else infer from the
-    // symbol, falling back to "Stocks" for plain US tickers.
-    const known = knownClassByTicker && knownClassByTicker.get(symbol);
-    const assetClass = known || inferAssetClass(symbol) || "Stocks";
+    // symbol, falling back to "Stocks" for plain US tickers. A row awaiting
+    // manual CUSIP entry is already known to be a bond from its description.
+    const known = symbol ? knownClassByTicker && knownClassByTicker.get(symbol) : null;
+    const assetClass = needsTicker ? "Bank Bonds" : known || inferAssetClass(symbol) || "Stocks";
 
     // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
     // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face for
@@ -2974,61 +3050,24 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
       ? (isRedemption ? priceN * 1000 : priceN * 10)
       : priceN;
 
-    // Extract bond metadata from the Symbol Description field.
-    let notes = "";
-    let couponRate = null;    // numeric %, e.g. 5.45
-    let maturityDate = null;  // ISO date string, e.g. "2027-03-15"
-    let bondType = null;      // "Treasury" | "Agency" | "CD" | "Corporate"
-    let shortName = null;     // issuer name extracted from description
-    let couponFreq = null;    // "monthly" | "quarterly" | "semi-annual" | "at-maturity"
-    if (idxDesc >= 0 && assetClass === "Bank Bonds") {
-      const desc = String(arr[idxDesc] || "");
-      const couponM = desc.match(/(\d+(?:\.\d+)?)%/);
-      const maturityM = desc.match(/(\d{2})\/(\d{2})\/(\d{4})$/);
-      if (couponM) {
-        couponRate = parseFloat(couponM[1]);
-      }
-      if (maturityM) {
-        const [, mm, dd, yyyy] = maturityM;
-        maturityDate = `${yyyy}-${mm}-${dd}`;
-      }
-      // Short name: everything before the coupon rate pattern, trimmed.
-      const nameEnd = desc.search(/\d+(?:\.\d+)?%/);
-      if (nameEnd > 0) {
-        shortName = desc.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null;
-      }
-      // Bond type inferred by issuer keywords (display/metadata only).
-      const u = desc.toUpperCase();
-      if (u.includes("TREASURY") || u.includes("US TREAS")) {
-        bondType = "Treasury";
-      } else if (
-        u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
-        u.includes("FEDERAL FARM") || u.includes("FFCB") ||
-        u.includes("FNMA") || u.includes("FHLMC") ||
-        u.includes("FREDDIE") || u.includes("FANNIE")
-      ) {
-        bondType = "Agency";
-      } else if (
-        u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
-        u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
-      ) {
-        bondType = "Corporate";
-      } else {
-        bondType = "CD";
-      }
-      // Default coupon frequency is monthly; refined later when real interest
-      // payments are detected on Account History import.
-      couponFreq = "monthly";
-      if (couponRate !== null && maturityDate) {
-        notes = `${couponRate.toFixed(2)}% | ${maturityM[1]}/${maturityM[2]}/${maturityM[3]}`;
-      }
+    // Extract bond metadata from the Symbol Description field (reuse the
+    // meta already computed above when this row went through CUSIP recovery).
+    let meta = null;
+    if (assetClass === "Bank Bonds") {
+      meta = bondMeta || (idxDesc >= 0 ? extractBondMeta(descRaw) : null) || {};
     }
+    const notes = meta?.notes || "";
+    const couponRate = meta?.couponRate ?? null;
+    const maturityDate = meta?.maturityDate ?? null;
+    const bondType = meta?.bondType ?? null;
+    const shortName = meta?.shortName ?? null;
+    const couponFreq = meta?.couponFreq ?? null;
 
     const tx = {
       id: newId(),
       date: isoDate,
       side,
-      ticker: symbol,
+      ticker: symbol, // "" when needsTicker — user must fill in the CUSIP
       assetClass,
       qty,
       price,
@@ -3047,10 +3086,11 @@ function parseFidelityCSV(text, knownClassByTicker = null) {
     };
 
     results.push({
-      ok: true,
-      errors: [],
+      ok: !needsTicker,
+      errors: needsTicker ? ["ticker: CUSIP missing — Fidelity didn't report it, enter manually"] : [],
       ambiguous: false,
       needsAssetClass: false,
+      needsTicker,
       classFromHistory: !!known,
       rawNumbers: { qty: qtyRaw, price: priceN, fee },
       tx,
@@ -3082,6 +3122,20 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
     for (const t of existingTransactions || []) {
       const tk = String(t.ticker || "").trim().toUpperCase();
       if (tk && t.assetClass) m.set(tk, t.assetClass);
+    }
+    return m;
+  }, [existingTransactions]);
+
+  // Bond description (issuer|coupon|maturity) → known CUSIP, from saved Bank
+  // Bonds transactions. Recovers the real CUSIP for Fidelity rows that omit
+  // Symbol for CD/bond rows (jul/2026 export change) — see extractBondMeta.
+  const knownBondsByDescKey = useMemo(() => {
+    const m = new Map();
+    for (const t of existingTransactions || []) {
+      if (t.assetClass !== "Bank Bonds" || !t.ticker) continue;
+      if (t.couponRate == null || !t.maturityDate) continue;
+      const key = `${(t.shortName || "").toUpperCase()}|${t.couponRate}|${t.maturityDate}`;
+      m.set(key, String(t.ticker).trim().toUpperCase());
     }
     return m;
   }, [existingTransactions]);
@@ -3250,7 +3304,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       const crossFileKeys = new Set();
 
       for (const content of fileContents) {
-        const out = parseFidelityCSV(content, knownClassByTicker);
+        const out = parseFidelityCSV(content, knownClassByTicker, knownBondsByDescKey);
         if (out.error && mergedResults.length === 0 && mergedIncome.length === 0) {
           setFileError(out.error);
           setParsed(null);
@@ -3377,11 +3431,23 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
       currency: cur,
       fee: feeN,
       notes: editDraft.notes.trim(),
+      // Preserve bond metadata (coupon/maturity/issuer/redemption) already
+      // extracted by the Fidelity parser — editing only the ticker (e.g. to
+      // fill in a CUSIP Fidelity omitted) must not lose it.
+      ...(editDraft.assetClass === "Bank Bonds" && existing?.tx && {
+        couponRate: existing.tx.couponRate ?? null,
+        maturityDate: existing.tx.maturityDate ?? null,
+        bondType: existing.tx.bondType ?? null,
+        shortName: existing.tx.shortName ?? null,
+        couponFreq: existing.tx.couponFreq ?? null,
+      }),
+      ...(existing?.tx?.redemption && { redemption: true }),
       createdAt: existing?.tx?.createdAt || new Date().toISOString(),
     };
     const updatedResult = {
       ok: true,
       needsAssetClass: false,
+      needsTicker: false,
       errors: [],
       ambiguous: false,
       duplicate: dupKeySet.has(dupKey(editedTx)),
@@ -3403,10 +3469,13 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   const incomeCount = parsed?.incomeEvents?.length || 0;
   const totalCount = parsed ? parsed.results.length : 0;
   const errorCount = parsed
-    ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass).length
+    ? parsed.results.filter((r) => !r.ok && !r.needsAssetClass && !r.needsTicker).length
     : 0;
   const needsAssetClassCount = parsed
     ? parsed.results.filter((r) => r.needsAssetClass).length
+    : 0;
+  const needsTickerCount = parsed
+    ? parsed.results.filter((r) => r.needsTicker).length
     : 0;
   const duplicateCount = parsed
     ? parsed.results.filter((r) => r.duplicate).length
@@ -3799,6 +3868,20 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                     {needsAssetClassCount} need class
                   </div>
                 )}
+                {needsTickerCount > 0 && (
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      color: T.gold,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                    }}
+                    title="Fidelity didn't report a CUSIP for these bond purchases — double-click a row to enter it manually."
+                  >
+                    {needsTickerCount} need CUSIP
+                  </div>
+                )}
                 {duplicateCount > 0 && (
                   <div
                     style={{
@@ -4187,8 +4270,8 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                           >
                             {r.ok ? r.tx.side : "—"}
                           </td>
-                          <td style={{ padding: "6px 10px", color: T.text }}>
-                            {r.ok ? r.tx.ticker : "—"}
+                          <td style={{ padding: "6px 10px", color: r.needsTicker ? T.gold : T.text }}>
+                            {r.ok ? r.tx.ticker : r.needsTicker ? "? CUSIP" : "—"}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.text }}>
                             {r.ok ? fmtNum(r.tx.qty) : "—"}
@@ -4228,9 +4311,14 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                             )}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.red, fontSize: 10 }}>
-                            {!r.ok && !r.needsAssetClass && r.errors.join("; ")}
+                            {!r.ok && !r.needsAssetClass && !r.needsTicker && r.errors.join("; ")}
                             {r.needsAssetClass && (
                               <span style={{ color: T.gold }}>pick class</span>
+                            )}
+                            {r.needsTicker && (
+                              <span style={{ color: T.gold }} title="Fidelity omitted the CUSIP for this bond purchase. Double-click the row and paste the CUSIP into the ticker field.">
+                                missing CUSIP — double-click to enter
+                              </span>
                             )}
                             {r.duplicate && (
                               <span
