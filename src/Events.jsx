@@ -72,6 +72,13 @@ function isTesouro(t) {
   return /^tesouro-/i.test(t);
 }
 
+// Local (not UTC) "today" as YYYY-MM-DD — avoids off-by-one-day issues for
+// users in negative UTC offsets (e.g. Brazil, UTC-3).
+function localTodayISO(d = new Date()) {
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
 // Classes eligible for events (same logic as api/dividends.js AUTO_CLASSES)
 const ELIGIBLE_CLASSES = new Set([
   'Stocks', 'Real Estate', 'Alternative', 'Bonds', 'BRA Stocks', 'Unallocated USD',
@@ -377,7 +384,7 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
   // Past buckets start collapsed by default; future groups are expanded.
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(["Last 30 Days", "Last 7 Days"]));
 
-  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayISO = useMemo(() => localTodayISO(), []);
 
   function toggleGroup(label) {
     setCollapsedGroups((prev) => {
