@@ -1334,12 +1334,54 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
   const [selectedMonth, setSelectedMonth] = useState(null);
   const [groupMode, setGroupMode] = useState("class");
   const [collapsedClasses, setCollapsedClasses] = useState(() => new Set());
+  const [sortCol, setSortCol] = useState("cy");
+  const [sortDir, setSortDir] = useState("desc");
 
   function toggleClass(cls) {
     setCollapsedClasses(prev => {
       const next = new Set(prev);
       next.has(cls) ? next.delete(cls) : next.add(cls);
       return next;
+    });
+  }
+
+  function handleSort(col) {
+    if (col === sortCol) setSortDir(d => (d === "asc" ? "desc" : "asc"));
+    else { setSortCol(col); setSortDir("desc"); }
+  }
+
+  function sortIndicator(col) {
+    if (col !== sortCol) return " ↕";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
+
+  // Shared comparator for both class groups and ticker rows.
+  // `nameField` is the object property holding the row label ("ticker" for
+  // flat ticker rows, "label" for class groups) - the header column key
+  // itself is always "ticker" regardless of which list is being sorted.
+  // Adds the derived "delta" / "deltaPct" fields so they can be sorted by key.
+  function sortByCurrentCol(list, nameField) {
+    return [...list].sort((a, b) => {
+      let av, bv;
+      if (sortCol === "delta") {
+        av = a.cy - a.py;
+        bv = b.cy - b.py;
+      } else if (sortCol === "deltaPct") {
+        av = a.py > 0 ? (a.cy / a.py - 1) * 100 : null;
+        bv = b.py > 0 ? (b.cy / b.py - 1) * 100 : null;
+      } else if (sortCol === "ticker") {
+        av = a[nameField];
+        bv = b[nameField];
+      } else {
+        av = a[sortCol];
+        bv = b[sortCol];
+      }
+      if (typeof av === "string" || typeof bv === "string") {
+        return sortDir === "asc" ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+      }
+      const an = av ?? (sortDir === "asc" ? Infinity : -Infinity);
+      const bn = bv ?? (sortDir === "asc" ? Infinity : -Infinity);
+      return sortDir === "asc" ? an - bn : bn - an;
     });
   }
 
@@ -1381,8 +1423,8 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
       byClass[cls].cy += row.cy;
       byClass[cls].tickers.push(row);
     }
-    return Object.values(byClass).sort((a, b) => (b.cy + b.py) - (a.cy + a.py));
-  }, [tickerRows, groupMode, tickerToClass]);
+    return sortByCurrentCol(Object.values(byClass), "label");
+  }, [tickerRows, groupMode, tickerToClass, sortCol, sortDir]);
 
   const totalPY = groupMode === "class" && classGroups
     ? classGroups.reduce((s, g) => s + g.py, 0)
@@ -1629,11 +1671,41 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                   <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
-                        <th style={stickyTh()}>Ticker</th>
-                        <th style={thStyle}>{priorYear}</th>
-                        <th style={thStyle}>{curYear}</th>
-                        <th style={thStyle}>Δ $</th>
-                        <th style={thStyle}>Δ %</th>
+                        <th
+                          onClick={() => handleSort("ticker")}
+                          style={{ ...stickyTh(), cursor: "pointer", userSelect: "none", color: sortCol === "ticker" ? T.textDim : T.textFaint }}
+                        >
+                          {groupMode === "class" ? "Class" : "Ticker"}
+                          <span style={{ opacity: sortCol === "ticker" ? 0.9 : 0.35 }}>{sortIndicator("ticker")}</span>
+                        </th>
+                        <th
+                          onClick={() => handleSort("py")}
+                          style={{ ...thStyle, cursor: "pointer", userSelect: "none", color: sortCol === "py" ? T.textDim : T.textFaint }}
+                        >
+                          {priorYear}
+                          <span style={{ opacity: sortCol === "py" ? 0.9 : 0.35 }}>{sortIndicator("py")}</span>
+                        </th>
+                        <th
+                          onClick={() => handleSort("cy")}
+                          style={{ ...thStyle, cursor: "pointer", userSelect: "none", color: sortCol === "cy" ? T.textDim : T.textFaint }}
+                        >
+                          {curYear}
+                          <span style={{ opacity: sortCol === "cy" ? 0.9 : 0.35 }}>{sortIndicator("cy")}</span>
+                        </th>
+                        <th
+                          onClick={() => handleSort("delta")}
+                          style={{ ...thStyle, cursor: "pointer", userSelect: "none", color: sortCol === "delta" ? T.textDim : T.textFaint }}
+                        >
+                          Δ $
+                          <span style={{ opacity: sortCol === "delta" ? 0.9 : 0.35 }}>{sortIndicator("delta")}</span>
+                        </th>
+                        <th
+                          onClick={() => handleSort("deltaPct")}
+                          style={{ ...thStyle, cursor: "pointer", userSelect: "none", color: sortCol === "deltaPct" ? T.textDim : T.textFaint }}
+                        >
+                          Δ %
+                          <span style={{ opacity: sortCol === "deltaPct" ? 0.9 : 0.35 }}>{sortIndicator("deltaPct")}</span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1642,13 +1714,10 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                         ? classGroups.map(group => (
                             <Fragment key={group.label}>
                               {renderGroupHeaderRow(group.label, group.py, group.cy)}
-                              {!collapsedClasses.has(group.label) && group.tickers.slice().sort((a, b) => (b.cy + b.py) - (a.cy + a.py)).map(r => renderDataRow(r.ticker, r.py, r.cy, false))}
+                              {!collapsedClasses.has(group.label) && sortByCurrentCol(group.tickers, "ticker").map(r => renderDataRow(r.ticker, r.py, r.cy, false))}
                             </Fragment>
                           ))
-                        : tickerRows
-                            .slice()
-                            .sort((a, b) => (b.cy + b.py) - (a.cy + a.py))
-                            .map(r => renderDataRow(r.ticker, r.py, r.cy, false))
+                        : sortByCurrentCol(tickerRows, "ticker").map(r => renderDataRow(r.ticker, r.py, r.cy, false))
                       }
                     </tbody>
                   </table>
