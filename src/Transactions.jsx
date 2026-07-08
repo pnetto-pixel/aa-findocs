@@ -4256,28 +4256,28 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                             {idx + 1}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.text }}>
-                            {r.ok ? r.tx.date : "—"}
+                            {r.tx ? r.tx.date : "—"}
                           </td>
                           <td
                             style={{
                               padding: "6px 10px",
-                              color: r.ok
+                              color: r.tx
                                 ? r.tx.side === "buy"
                                   ? T.green
                                   : T.red
                                 : T.textDim,
                             }}
                           >
-                            {r.ok ? r.tx.side : "—"}
+                            {r.tx ? r.tx.side : "—"}
                           </td>
                           <td style={{ padding: "6px 10px", color: r.needsTicker ? T.gold : T.text }}>
-                            {r.ok ? r.tx.ticker : r.needsTicker ? "? CUSIP" : "—"}
+                            {r.needsTicker ? "? CUSIP" : r.tx ? r.tx.ticker : "—"}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.text }}>
-                            {r.ok ? fmtNum(r.tx.qty) : "—"}
+                            {r.tx ? fmtNum(r.tx.qty) : "—"}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.text }}>
-                            {r.ok ? fmtNum(r.tx.price, 2) : "—"}
+                            {r.tx ? fmtNum(r.tx.price, 2) : "—"}
                           </td>
                           <td style={{ padding: "6px 10px", color: T.textDim }}>
                             {r.needsAssetClass ? (
@@ -4304,7 +4304,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                                   </option>
                                 ))}
                               </select>
-                            ) : r.ok ? (
+                            ) : r.tx ? (
                               r.tx.assetClass || "—"
                             ) : (
                               "—"
@@ -4316,8 +4316,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                               <span style={{ color: T.gold }}>pick class</span>
                             )}
                             {r.needsTicker && (
-                              <span style={{ color: T.gold }} title="Fidelity omitted the CUSIP for this bond purchase. Double-click the row and paste the CUSIP into the ticker field.">
-                                missing CUSIP — double-click to enter
+                              <span
+                                style={{ color: T.gold }}
+                                title="Fidelity omitted the CUSIP for this bond purchase. Double-click the row and paste the CUSIP into the ticker field."
+                              >
+                                missing CUSIP — {r.tx.shortName || "unknown issuer"}
+                                {r.tx.notes ? ` ${r.tx.notes}` : ""} — double-click to enter
                               </span>
                             )}
                             {r.duplicate && (
