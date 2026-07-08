@@ -236,7 +236,7 @@ async function fetchHoldingsFromServer(auth) {
 // the UI or throw.
 async function fetchAlertsReadFromServer(auth) {
   try {
-    const res = await fetch("/api/alerts-read", { headers: authHeaders(auth) });
+    const res = await fetch("/api/contributions-history?resource=alerts-read", { headers: authHeaders(auth) });
     if (!res.ok) return [];
     const d = await res.json();
     return Array.isArray(d.readIds) ? d.readIds : [];
@@ -249,7 +249,7 @@ async function fetchAlertsReadFromServer(auth) {
 // since this is just cross-device sync, not the source of truth for the UI.
 function saveAlertsReadToServer(auth, ids) {
   if (!ids || !ids.length) return;
-  fetch("/api/alerts-read", {
+  fetch("/api/contributions-history?resource=alerts-read", {
     method: "PUT",
     headers: { ...authHeaders(auth), "Content-Type": "application/json" },
     body: JSON.stringify({ add: ids }),
