@@ -372,6 +372,7 @@ Tab para planejamento e acompanhamento de aportes quinzenais. Arquivo `src/Aport
 - Formato do snapshot: `{ monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt }`.
 - **Sem versionamento `vN`:** e um store de upsert proprio, nao um cache de calculo. Snapshots sao permanentes; o mes corrente e sobrescrito a cada load (idempotente).
 - Endpoint: `api/contributions-history.js` (GET + PUT). `authenticate(req)` de `lib/auth.js`. `getRedis()` de `lib/redis.js`. PUT e read-modify-write: le o objeto existente, faz merge do mes corrente, grava de volta — preserva meses passados.
+- **Arquivo tambem serve uma segunda rota nao relacionada a Contributions (PR #128, draft):** `?resource=alerts-read` (funcao `handleAlertsRead`) sincroniza o estado "lido" do painel de Alerts (Bell) — consolidado aqui em vez de um arquivo `api/alerts-read.js` novo por causa do limite de 12 Serverless Functions do Vercel Hobby plan. Ver "Painel de Alerts" e Decisoes Tecnicas.
 
 #### Auto-snapshot
 
@@ -498,6 +499,7 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 - Estados: loading / erro / vazio com mensagens especificas
 - Sem recharts; inline styles com tokens `T` e `FONT_*` (mesmo padrao das outras tabs)
 - **Earnings beat/miss (jun/2026):** `EventDetail` para tipo `earnings` exibe, quando `epsActual` esta disponivel: "Est: $X -> Reported: $Y" com indicador colorido beat (verde) / miss (vermelho) / in-line (neutro). Eventos futuros (so `epsEstimate`) continuam inalterados — sem regressao.
+- **Bug fix — timezone incorreto no agrupamento cronologico (PR #128, jul/2026 — draft):** o calculo de "hoje" usava `new Date().toISOString().slice(0,10)` (UTC), classificando eventos errado no agrupamento Today/Last 7 Days e no `isPast` (opacity de eventos passados) para usuarios em timezone negativo (Brasil, UTC-3) perto da virada do dia UTC. Substituido por `localTodayISO(d)` (ajusta pelo offset de timezone do browser). Mesmo helper duplicado em `src/App.jsx` para o painel de Alerts — ver "Painel de Alerts".
 
 ### Limitacoes conhecidas / pendencias de validacao em producao
 
@@ -553,6 +555,10 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 **alertLog scoped por usuario (PR #109):** a chave do localStorage e derivada por `alertLogKey(auth)` — `alertLog:g:<email>` para Google ou `alertLog:p:<senha[:8]>` para password auth. Migra one-time da chave legada `"alertLog"` no mount para preservar historico existente. Sem scoping, dois usuarios no mesmo browser contaminavam os estados de leitura um do outro.
 
 **Bug fix — dep array do useEffect de persistencia do alertLog (jun/2026):** `auth` adicionado ao dependency array do `useEffect` que escreve `alertLog` no localStorage em `src/App.jsx`. Sem `auth` no array, a closure capturava a chave de armazenamento do mount inicial; se `auth` mudasse (ex: refresh de token Google), a escrita continuava usando a chave antiga enquanto a leitura ja usava a nova, causando alertas re-aparecendo como nao lidos.
+
+**Sincronizacao cross-device do estado "lido" via servidor (PR #128, jul/2026 — draft aguardando revisao humana):** `alertLog` continua a fonte primaria em `localStorage` (scoped por usuario, PR #109), mas o campo `read` agora tambem e sincronizado com o servidor para cobrir o caso de dois devices (ex: marcar como lido no PC, abrir 1h depois no iPhone). Rota `?resource=alerts-read` dentro de `api/contributions-history.js` (GET/PUT), chave Redis `portfolio:email:<hash>:alerts-read`. No load inicial, `fetchAlertsReadFromServer` busca `readIds` do servidor e sobrescreve `read: true` nos alertas ja carregados do localStorage; `markAlertRead`/`markAllAlertsRead` continuam com update local otimista, mas agora tambem disparam `saveAlertsReadToServer` (fire-and-forget) em background.
+
+**Fix de timezone no calculo de "hoje" (PR #128, jul/2026 — draft):** `new Date().toISOString().slice(0,10)` usa UTC, nao a data local do device — a noite de domingo no horario do Brasil (UTC-3) podia marcar um dividendo como "pago hoje" incorretamente. Helper `localTodayISO(d)` (ajusta pelo offset de timezone do browser antes de fatiar a data) substitui as comparacoes de "hoje" no painel de Alerts. Ver tambem "Feature: Events" (mesmo fix aplicado la).
 
 ### Fora do escopo
 
@@ -668,6 +674,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**Auto-hide de holdings zerados via useMemo, nao delete do Redis (PR #117)**|Holdings totalmente vendidos (qty=0, sem target) sao artefatos normais do ciclo de vida — o usuario pode re-comprar o ticker no futuro. Ocultar visualmente via `filteredHoldings` preserva o historico no Redis sem poluir a UI. Holdings com `target > 0` ficam visiveis mesmo zerados porque sao placeholders intencionais de rebalance.|
 |**`FilterMultiSelect` custom (popover proprio) em vez de `<select multiple>` nativo (PR #124)**|`<select multiple>` no iOS/WebKit abre um bottom-sheet controlado pelo SO, sem hooks de customizacao via HTML/CSS/JS — impossivel injetar um botao "Clear" no header nativo (que so tem setas de navegacao + um X que fecha sem resetar a selecao). Componente proprio (chip-trigger + popover com checkboxes + header "Clear"+"x") da controle total do visual. Padrao a reutilizar em qualquer filtro multi-select futuro no app (constraint iPhone-only).|
 |**`TickerFilterPopover` duplicado por arquivo, `<thead>` sempre montado mesmo com resultados vazios (PR #126)**|Novo filtro de ticker em Position Performance/Position Dividends segue a convencao ja estabelecida (`DivHistPopover`, `FilterMultiSelect`) de duplicar componentes visuais por arquivo em vez de importar entre `Performance.jsx`/`Dividends.jsx`. State Set-based, efemero (sessao), independente por tabela. O `<thead>` que ancora o icone de filtro deve permanecer sempre montado mesmo quando o filtro zera todas as linhas — empty-state vive dentro do `<tbody>`, nunca substitui a tabela inteira.|
+|**Novo endpoint consolidado dentro de arquivo existente via query param, nao arquivo novo em `api/` (PR #128)**|`api/` esta no limite de 12 Serverless Functions do Vercel Hobby plan. Criar `api/alerts-read.js` como arquivo separado levou o total a 13 e quebrou o Preview Deployment (`errorCode: exceeded_serverless_functions_per_deployment`). Fix: deletar o arquivo e implementar a rota como uma segunda funcao dentro de `api/contributions-history.js`, dispatched via `?resource=alerts-read` (`handleAlertsRead` ao lado de `handleContributionsHistory`). Estrategia a repetir para qualquer endpoint novo enquanto `api/` estiver no limite: consolidar via query param, ou remover/mergear um endpoint existente antes.|
+|**`localTodayISO(d)` em vez de `new Date().toISOString().slice(0,10)` para "hoje" (PR #128)**|`toISOString()` usa UTC. Para usuarios em timezone negativo (Brasil, UTC-3), a noite de domingo local ja e segunda-feira em UTC — comparacoes de "hoje" (Alerts, agrupamento cronologico da Tab Events) classificavam eventos no dia errado perto da virada UTC. `localTodayISO(d)` ajusta pelo offset de timezone do browser antes de fatiar a data. Duplicado em `src/App.jsx` e `src/Events.jsx` — sem shared module entre arquivos `src/` (padrao ja estabelecido).|
 
 -----
 
@@ -690,6 +698,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - Frontend Events: `src/Events.jsx`
 - Endpoints: `api/holdings.js`, `api/transactions.js`, `api/perf-history.js`, `api/price.js`, `api/index-quote.js`, `api/users.js`, `api/events.js`, `api/split-detect.js`, `api/contributions-history.js`
 - Auth + Redis: `lib/auth.js`, `lib/redis.js`
+- **`api/` esta no limite de 12 arquivos (Vercel Hobby plan, jul/2026 — ver Decisoes Tecnicas).** Antes de criar um endpoint novo, checar `ls api/*.js` — se ja estiver em 12, consolidar a rota nova dentro de um arquivo existente via query param dispatch (padrao usado em `api/contributions-history.js?resource=alerts-read`), nao criar arquivo novo.
 
 **Endpoints (resumo):**
 
@@ -707,6 +716,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 | `POST /api/split-detect` | Recebe `{ tickers }`, retorna TODOS os splits historicos (Yahoo `chart?events=split` range=10y, fallback Polygon) para deteccao de splits nao refletidos no historico; cache Redis GLOBAL `splitdetect:v1:{hash}`, TTL ate proximo fechamento de mercado |
 | `GET /api/contributions-history` | Retorna snapshot do mes corrente + historico de meses anteriores (`{ history: { "YYYY-MM": { monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt } } }`) |
 | `PUT /api/contributions-history` | Upsert idempotente do mes corrente; preserva meses passados (read-modify-write). Body: `{ month, monthlyFixed, dividends, dellSale, extras, planTotal, invested }` |
+| `GET /api/contributions-history?resource=alerts-read` | Rota secundaria (PR #128, draft) dentro do mesmo arquivo — retorna `{ exists, readIds, savedAt }` do log de leitura dos Alerts (Bell), pra sincronizacao cross-device do estado "lido" |
+| `PUT /api/contributions-history?resource=alerts-read` | Body `{ add: string[] }`; read-modify-write com uniao dos ids, capado em 200 |
 
 -----
 
@@ -840,6 +851,8 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - **`HeaderPopover` de data usa seletor de ano+mes derivado dos dados, nao inputs manuais (Item 44, jun/2026)** — Inputs `From`/`To` livres eram propensos a erros de digitacao e nao comunicavam quais anos/meses tinham dados. Substituir por `dateOptions` (Map computado via `useMemo` a partir das transacoes carregadas) e derivar o seletor a partir dos dados reais elimina o erro de input e facilita a navegacao por periodo. Estado `expandedYears` (Set) fica local ao `HeaderPopover` — sem necessidade de elevar ao `TransactionTable` ou ao `App.jsx`.
 - **Um snapshot Redis que so grava (write-only) nao protege contra perda do localStorage (PR #118, jul/2026)** — O auto-snapshot de Contributions ja existia desde o PR #112, mas so era usado para popular a tabela de historico; `config.extras` continuava dependendo 100% de `localStorage["aporteConfig"]`. Quando o Safari iOS limpava o site storage, a extra label do usuario sumia mesmo com o dado ja salvo no Redis. Regra: se um dado tem um snapshot server-side, adicionar tambem um restore one-time no mount (guard por ref, dispara so quando o estado local esta vazio) — nao deixar o snapshot ser so um log historico.
 - **Filtro que pode esvaziar resultados deve manter a UI de controle sempre visivel (PR #126, jul/2026)** — Round 1 do `TickerFilterPopover` (Position Performance/Position Dividends) escondia o `<thead>` inteiro quando o filtro zerava as linhas visiveis — o icone `Filter` que abre o popover ficava junto, travando o usuario sem forma de limpar a selecao. Fix: manter o `<thead>` sempre montado e mover o empty-state ("No tickers match the selected filter.") para uma linha dentro do `<tbody>`. Regra: qualquer controle de filtro (icone, botao, chip) deve viver fora do bloco condicional que esconde o conteudo filtrado.
+- **Vercel Hobby plan limita `api/` a 12 Serverless Functions — checar `ls api/*.js` antes de criar arquivo novo (PR #128, jul/2026)** — Criar `api/alerts-read.js` como 13o arquivo quebrou o Preview Deployment (`errorCode: exceeded_serverless_functions_per_deployment`, confirmado via `mcp__Vercel__get_deployment`). Foi deletado e a rota consolidada dentro de `api/contributions-history.js` via query param `?resource=alerts-read`. Regra: sempre que uma feature precisar de endpoint novo, primeiro checar a contagem atual de arquivos em `api/`; se ja estiver em 12, consolidar via query param dispatch dentro de um arquivo existente relacionado, em vez de criar arquivo novo.
+- **`toISOString()` para "data de hoje" e um bug de timezone silencioso (PR #128, jul/2026)** — `new Date().toISOString().slice(0,10)` sempre usa UTC, nunca a data local do device. Para usuarios em timezone negativo (Brasil, UTC-3), qualquer comparacao de "hoje" feita assim erra perto da virada do dia UTC (ex: domingo a noite local ja e segunda em UTC). Qualquer novo calculo de "hoje"/"data local" no frontend deve usar um helper que ajuste pelo offset de timezone do browser (`localTodayISO`), nunca `toISOString()` puro.
 
 -----
 
