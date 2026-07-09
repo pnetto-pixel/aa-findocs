@@ -1063,6 +1063,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
   const [showTotalReturn, setShowTotalReturn] = useState(false); // independent toggle, adds Total Return line/KPI
   const [transactions, setTransactions] = useState([]);
+  const [transactionsLoaded, setTransactionsLoaded] = useState(false); // true once Effect A has resolved, even if txs=[]
   const [divByTicker, setDivByTicker] = useState({});
   const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
@@ -1079,6 +1080,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setState("loading");
     setError(null);
     setTransactions([]);
+    setTransactionsLoaded(false);
     setRawData([]);
     setMeta(null);
     setDivEvents([]);
@@ -1091,6 +1093,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         const { transactions: txs, bondIncome } = await loadTransactions(auth);
         if (cancelled) return;
         setTransactions(txs);
+        setTransactionsLoaded(true);
 
         let divJson = null;
         try {
@@ -1170,10 +1173,39 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const filtersActive = assetClassFilter.size > 0 || tickerFilter.size > 0;
 
+  // Committing a new Asset Class filter can orphan the current Ticker filter
+  // (e.g. switch from "BRA Stocks" + ticker "BBSE3" to "Stocks" without
+  // touching the ticker chip) — the AND-combined intersection would then be
+  // permanently empty. Prune any tickers that no longer belong to the newly
+  // selected asset classes at commit time.
+  function commitAssetClassFilter(newSet) {
+    setAssetClassFilter(newSet);
+    setTickerFilter((prev) => {
+      if (prev.size === 0) return prev;
+      const allowed = new Set(
+        transactions
+          .filter((tx) => newSet.size === 0 || newSet.has(tx.assetClass))
+          .map((tx) => tx.ticker?.toUpperCase())
+          .filter(Boolean)
+      );
+      const pruned = new Set([...prev].filter((t) => allowed.has(t)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }
+
+  function clearFilters() {
+    setAssetClassFilter(new Set());
+    setTickerFilter(new Set());
+  }
+
   // ── Effect B: refetch the perf-history chart whenever the filtered
-  // transaction set changes. Waits for Effect A to have populated `transactions`.
+  // transaction set changes. Waits for Effect A to finish resolving
+  // `transactions` (tracked via `transactionsLoaded`, not `transactions.length`
+  // — an account with zero eligible transactions must still be able to reach
+  // "done" state with the server's `no-eligible-transactions` empty message,
+  // instead of leaving the spinner stuck on "loading" forever).
   useEffect(() => {
-    if (!transactions.length) return;
+    if (!transactionsLoaded) return;
     let cancelled = false;
     setState("loading");
     setError(null);
@@ -1215,7 +1247,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth, filteredTransactions]);
+  }, [auth, transactionsLoaded, filteredTransactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
@@ -1457,6 +1489,55 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               </div>
             )}
 
+            {/* Asset Class / Ticker filter chips — own line, above the period
+                selector. Rendered whenever there is anything to filter,
+                regardless of whether the current filter combination happens
+                to produce zero results, so a "Clear filters" affordance is
+                always reachable and the user is never stuck staring at the
+                empty state with no way to recover without switching tabs. */}
+            {state === "done" && assetClassOptions.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  marginBottom: 12,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <FilterChip
+                  label="Asset Class"
+                  options={assetClassOptions}
+                  committed={assetClassFilter}
+                  onCommit={commitAssetClassFilter}
+                />
+                <FilterChip
+                  label="Ticker"
+                  options={tickerOptions}
+                  committed={tickerFilter}
+                  onCommit={setTickerFilter}
+                />
+                {filtersActive && (
+                  <button
+                    onClick={clearFilters}
+                    style={{
+                      background: "transparent",
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 4,
+                      color: T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.04em",
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
+
             {state === "done" && rawData.length === 0 && (
               <div
                 style={{
@@ -1480,29 +1561,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
             {state === "done" && rawData.length > 0 && (
               <>
-                {/* Asset Class / Ticker filter chips — own line, above the period selector */}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    marginBottom: 12,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <FilterChip
-                    label="Asset Class"
-                    options={assetClassOptions}
-                    committed={assetClassFilter}
-                    onCommit={setAssetClassFilter}
-                  />
-                  <FilterChip
-                    label="Ticker"
-                    options={tickerOptions}
-                    committed={tickerFilter}
-                    onCommit={setTickerFilter}
-                  />
-                </div>
-
                 {/* Period selector + toggles */}
                 <div
                   style={{
