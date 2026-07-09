@@ -82,10 +82,6 @@ async function postPerfHistory(auth, body) {
   return await res.json();
 }
 
-async function loadPerfHistory(auth, transactions) {
-  return postPerfHistory(auth, { transactions });
-}
-
 function fmt(n, decimals = 2) {
   if (n == null || isNaN(n)) return "—";
   const sign = n > 0 ? "+" : "";
@@ -378,6 +374,31 @@ function kpiColor(n) {
   if (n < 0) return T.red;
   return T.textDim;
 }
+
+// Dynamic chart card title covering every combination of the two independent
+// toggles (Compare vs S&P 500, Show Total Return). Default (both off) keeps
+// the original "Net Worth Growth" copy — zero regression for existing users.
+function chartTitle(pctMode, comparing, showTotalReturn) {
+  if (!pctMode) return "Net Worth Growth";
+  if (comparing && showTotalReturn) return "Portfolio vs Total Return vs S&P 500";
+  if (comparing) return "Portfolio VS S&P 500";
+  if (showTotalReturn) return "Portfolio vs Total Return";
+  return "Portfolio Performance";
+}
+
+// Asset classes eligible for the performance chart. Kept in sync with
+// INCLUDED_CLASSES in api/perf-history.js (duplicated, not imported — the
+// server module isn't reachable from client bundles).
+const PERF_ELIGIBLE_CLASSES = new Set([
+  "Stocks",
+  "BRA Stocks",
+  "Alternative",
+  "Real Estate",
+  "Bonds",
+  "Bank Bonds",
+  "BRA Fixed Income",
+  "Unallocated USD",
+]);
 
 const PERIODS = [
   { label: "1M",  days: 30 },
@@ -974,6 +995,65 @@ function PositionPerformanceTable({ rows, valuesHidden, open, onToggle }) {
   );
 }
 
+// Multi-select filter chip: trigger button + TickerFilterPopover, deferring the
+// commit of the selection (and therefore any downstream refetch) until the
+// popover closes. The popover itself updates a local `draft` Set on every
+// checkbox click for instant visual feedback; `onCommit` only fires once, on
+// close, so callers don't refetch on every individual checkbox toggle.
+function FilterChip({ label, options, committed, onCommit }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(committed);
+  const btnRef = useRef(null);
+
+  function handleOpen() {
+    setDraft(committed);
+    setOpen(true);
+  }
+
+  function handleClose() {
+    setOpen(false);
+    onCommit(draft);
+  }
+
+  const active = committed.size > 0;
+  const triggerText = active ? [...committed].sort().join(", ") : label;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        ref={btnRef}
+        onClick={handleOpen}
+        style={{
+          background: T.cardElev,
+          border: `1px solid ${active ? T.gold : T.border}`,
+          borderRadius: 4,
+          color: T.text,
+          fontFamily: FONT_MONO,
+          fontSize: 12,
+          padding: "5px 10px",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: 170,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{triggerText}</span>
+        <span style={{ color: T.textDim, fontSize: 9 }}>▾</span>
+      </button>
+      {open && (
+        <TickerFilterPopover
+          anchor={btnRef.current}
+          onClose={handleClose}
+          options={options}
+          selected={draft}
+          onChange={setDraft}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdings }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
@@ -981,62 +1061,162 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [meta, setMeta] = useState(null);
   const [period, setPeriod] = useState("1Y");
   const [comparing, setComparing] = useState(false); // false = USD chart, true = % comparison
+  const [showTotalReturn, setShowTotalReturn] = useState(false); // independent toggle, adds Total Return line/KPI
   const [transactions, setTransactions] = useState([]);
+  const [transactionsLoaded, setTransactionsLoaded] = useState(false); // true once Effect A has resolved, even if txs=[]
   const [divByTicker, setDivByTicker] = useState({});
   const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
   const [posTableOpen, setPosTableOpen] = useState(false);
+  const [assetClassFilter, setAssetClassFilter] = useState(() => new Set()); // include-filter, empty = all
+  const [tickerFilter, setTickerFilter] = useState(() => new Set()); // include-filter, empty = all
 
+  // ── Effect A: raw, unfiltered load on auth change ──────────────────────────
+  // Loads transactions + bond income + dividend events. These also feed the
+  // Position Performance table below, which is out of scope for the new
+  // asset-class/ticker filters and must never be filtered.
   useEffect(() => {
+    let cancelled = false;
+    setState("loading");
+    setError(null);
+    setTransactions([]);
+    setTransactionsLoaded(false);
+    setRawData([]);
+    setMeta(null);
+    setDivEvents([]);
+    setDivByTicker({});
+    setAssetClassFilter(new Set());
+    setTickerFilter(new Set());
+
+    (async () => {
+      try {
+        const { transactions: txs, bondIncome } = await loadTransactions(auth);
+        if (cancelled) return;
+        setTransactions(txs);
+        setTransactionsLoaded(true);
+
+        let divJson = null;
+        try {
+          const r = await fetch("/api/dividends", {
+            method: "POST",
+            headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+            body: JSON.stringify({ transactions: txs, bondIncome }),
+          });
+          if (r.ok) divJson = await r.json();
+        } catch {}
+
+        if (cancelled) return;
+
+        const stockEvents = Array.isArray(divJson?.events) ? divJson.events : [];
+        const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
+        const allEvents = [...stockEvents, ...bondEventsArr];
+        setDivEvents(allEvents);
+        const todayMs = Date.now();
+        const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
+        const map = {};
+        for (const e of allEvents) {
+          if (!e.ticker || !e.date) continue;
+          const t = e.ticker;
+          if (!map[t]) map[t] = { ttm: 0, total: 0 };
+          map[t].total += e.totalReceived;
+          if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
+        }
+        setDivByTicker(map);
+      } catch (err) {
+        if (cancelled) return;
+        if (err.code === 401 && onAuthFail) {
+          onAuthFail();
+          return;
+        }
+        setError(err.message || "Failed to load performance data");
+        setState("error");
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [auth]);
+
+  // Asset-class filter options: intersection of PERF_ELIGIBLE_CLASSES and the
+  // classes actually present in the (unfiltered) transactions.
+  const assetClassOptions = useMemo(() => {
+    const present = new Set(transactions.map((tx) => tx.assetClass).filter(Boolean));
+    return [...present].filter((c) => PERF_ELIGIBLE_CLASSES.has(c)).sort();
+  }, [transactions]);
+
+  // Ticker filter options: tickers present after applying the already-selected
+  // asset-class filter (asset class filter narrows ticker options, not vice versa).
+  const tickerOptions = useMemo(() => {
+    const base = assetClassFilter.size === 0
+      ? transactions
+      : transactions.filter((tx) => assetClassFilter.has(tx.assetClass));
+    return [...new Set(base.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean))].sort();
+  }, [transactions, assetClassFilter]);
+
+  // Include-filter semantics: empty set = everything included.
+  const filteredTransactions = useMemo(
+    () => transactions.filter(
+      (tx) =>
+        (assetClassFilter.size === 0 || assetClassFilter.has(tx.assetClass)) &&
+        (tickerFilter.size === 0 || tickerFilter.has(tx.ticker?.toUpperCase()))
+    ),
+    [transactions, assetClassFilter, tickerFilter]
+  );
+
+  const filteredDivEvents = useMemo(
+    () => divEvents.filter(
+      (e) =>
+        (assetClassFilter.size === 0 || assetClassFilter.has(e.assetClass)) &&
+        (tickerFilter.size === 0 || tickerFilter.has(e.ticker?.toUpperCase?.() ?? e.ticker))
+    ),
+    [divEvents, assetClassFilter, tickerFilter]
+  );
+
+  const filtersActive = assetClassFilter.size > 0 || tickerFilter.size > 0;
+
+  // Committing a new Asset Class filter can orphan the current Ticker filter
+  // (e.g. switch from "BRA Stocks" + ticker "BBSE3" to "Stocks" without
+  // touching the ticker chip) — the AND-combined intersection would then be
+  // permanently empty. Prune any tickers that no longer belong to the newly
+  // selected asset classes at commit time.
+  function commitAssetClassFilter(newSet) {
+    setAssetClassFilter(newSet);
+    setTickerFilter((prev) => {
+      if (prev.size === 0) return prev;
+      const allowed = new Set(
+        transactions
+          .filter((tx) => newSet.size === 0 || newSet.has(tx.assetClass))
+          .map((tx) => tx.ticker?.toUpperCase())
+          .filter(Boolean)
+      );
+      const pruned = new Set([...prev].filter((t) => allowed.has(t)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }
+
+  function clearFilters() {
+    setAssetClassFilter(new Set());
+    setTickerFilter(new Set());
+  }
+
+  // ── Effect B: refetch the perf-history chart whenever the filtered
+  // transaction set changes. Waits for Effect A to finish resolving
+  // `transactions` (tracked via `transactionsLoaded`, not `transactions.length`
+  // — an account with zero eligible transactions must still be able to reach
+  // "done" state with the server's `no-eligible-transactions` empty message,
+  // instead of leaving the spinner stuck on "loading" forever).
+  useEffect(() => {
+    if (!transactionsLoaded) return;
     let cancelled = false;
     setState("loading");
     setError(null);
 
     (async () => {
       try {
-        const { transactions: txs, bondIncome } = await loadTransactions(auth);
-        if (!cancelled) setTransactions(txs);
-
-        const [perfResult, divResult] = await Promise.allSettled([
-          loadPerfHistory(auth, txs),
-          fetch("/api/dividends", {
-            method: "POST",
-            headers: { ...authHeaders(auth), "Content-Type": "application/json" },
-            body: JSON.stringify({ transactions: txs, bondIncome }),
-          }).then((r) => (r.ok ? r.json() : Promise.reject())),
-        ]);
+        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = await postPerfHistory(auth, {
+          transactions: filteredTransactions,
+        });
 
         if (cancelled) return;
-
-        {
-          const stockEvents = (divResult.status === "fulfilled" && Array.isArray(divResult.value?.events))
-            ? divResult.value.events
-            : [];
-          const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
-          const allEvents = [...stockEvents, ...bondEventsArr];
-          setDivEvents(allEvents);
-          const todayMs = Date.now();
-          const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
-          const map = {};
-          for (const e of allEvents) {
-            if (!e.ticker || !e.date) continue;
-            const t = e.ticker;
-            if (!map[t]) map[t] = { ttm: 0, total: 0 };
-            map[t].total += e.totalReceived;
-            if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
-          }
-          setDivByTicker(map);
-        }
-
-        if (perfResult.status === "rejected") {
-          const err = perfResult.reason;
-          if (err?.code === 401 && onAuthFail) { onAuthFail(); return; }
-          setError(err?.message || "Failed to load performance data");
-          setState("error");
-          return;
-        }
-
-        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = perfResult.value;
 
         setMeta(respMeta || null);
 
@@ -1067,17 +1247,18 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth]);
+  }, [auth, transactionsLoaded, filteredTransactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
   const { data: chartData, lastPortfolio, lastSpy, lastUSD, lastTotalReturn } = useMemo(
-    () => getWindowData(rawData, period, divEvents),
-    [rawData, period, divEvents]
+    () => getWindowData(rawData, period, filteredDivEvents),
+    [rawData, period, filteredDivEvents]
   );
 
-  // If API response has no USD values (old cache), force comparison mode.
-  const effectiveComparing = comparing || !hasUSD;
+  // pctMode decides between the USD-value chart and the %-return chart.
+  // Forced true when the cached response predates portfolioUSD (old cache).
+  const pctMode = comparing || showTotalReturn || !hasUSD;
 
   const priceMap = useMemo(() => {
     const map = {};
@@ -1197,6 +1378,20 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     [positionRows]
   );
 
+  // When the asset-class or ticker filter is active, the Net Worth KPI should
+  // reflect only the filtered positions (positionRows already carry ticker +
+  // assetClass). PositionPerformanceTable itself stays unfiltered (out of scope).
+  const filteredNetWorth = useMemo(() => {
+    if (!filtersActive) return null;
+    return positionRows
+      .filter(
+        (r) =>
+          (assetClassFilter.size === 0 || assetClassFilter.has(r.assetClass)) &&
+          (tickerFilter.size === 0 || tickerFilter.has(r.ticker))
+      )
+      .reduce((s, r) => s + r.totalValue, 0);
+  }, [positionRows, assetClassFilter, tickerFilter, filtersActive]);
+
   // Shared card header button style (matches Rebalance Suggestions in Holdings tab).
   function cardHeaderStyle(open) {
     return {
@@ -1294,6 +1489,55 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               </div>
             )}
 
+            {/* Asset Class / Ticker filter chips — own line, above the period
+                selector. Rendered whenever there is anything to filter,
+                regardless of whether the current filter combination happens
+                to produce zero results, so a "Clear filters" affordance is
+                always reachable and the user is never stuck staring at the
+                empty state with no way to recover without switching tabs. */}
+            {state === "done" && assetClassOptions.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  marginBottom: 12,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <FilterChip
+                  label="Asset Class"
+                  options={assetClassOptions}
+                  committed={assetClassFilter}
+                  onCommit={commitAssetClassFilter}
+                />
+                <FilterChip
+                  label="Ticker"
+                  options={tickerOptions}
+                  committed={tickerFilter}
+                  onCommit={setTickerFilter}
+                />
+                {filtersActive && (
+                  <button
+                    onClick={clearFilters}
+                    style={{
+                      background: "transparent",
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 4,
+                      color: T.textDim,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.04em",
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
+
             {state === "done" && rawData.length === 0 && (
               <div
                 style={{
@@ -1305,7 +1549,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   color: T.textDim,
                 }}
               >
-                {meta?.reason === "no-eligible-transactions"
+                {filtersActive
+                  ? "No transactions match the selected filters."
+                  : meta?.reason === "no-eligible-transactions"
                   ? "No transactions in eligible asset classes (Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, BRA Fixed Income, Unallocated USD)."
                   : meta?.reason === "no-priced-days"
                   ? "Could not fetch enough historical price data to build a chart."
@@ -1315,7 +1561,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
             {state === "done" && rawData.length > 0 && (
               <>
-                {/* Period selector + compare toggle */}
+                {/* Period selector + toggles */}
                 <div
                   style={{
                     display: "flex",
@@ -1352,23 +1598,42 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     })}
                   </div>
 
-                  <button
-                    onClick={() => setComparing((c) => !c)}
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 11,
-                      letterSpacing: "0.08em",
-                      padding: "5px 12px",
-                      border: `1px solid ${effectiveComparing ? T.orange + "66" : T.border}`,
-                      borderRadius: 3,
-                      background: effectiveComparing ? T.orange + "18" : "transparent",
-                      color: effectiveComparing ? T.orange : T.textDim,
-                      cursor: "pointer",
-                      transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                    }}
-                  >
-                    {effectiveComparing ? "← Net Worth" : "Compare vs S&P 500"}
-                  </button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => setShowTotalReturn((v) => !v)}
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        letterSpacing: "0.08em",
+                        padding: "5px 12px",
+                        border: `1px solid ${showTotalReturn ? T.green + "66" : T.border}`,
+                        borderRadius: 3,
+                        background: showTotalReturn ? T.green + "18" : "transparent",
+                        color: showTotalReturn ? T.green : T.textDim,
+                        cursor: "pointer",
+                        transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                      }}
+                    >
+                      {showTotalReturn ? "✓ Total Return" : "Show Total Return"}
+                    </button>
+                    <button
+                      onClick={() => setComparing((c) => !c)}
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        letterSpacing: "0.08em",
+                        padding: "5px 12px",
+                        border: `1px solid ${comparing ? T.orange + "66" : T.border}`,
+                        borderRadius: 3,
+                        background: comparing ? T.orange + "18" : "transparent",
+                        color: comparing ? T.orange : T.textDim,
+                        cursor: "pointer",
+                        transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                      }}
+                    >
+                      {comparing ? "← Net Worth" : "Compare vs S&P 500"}
+                    </button>
+                  </div>
                 </div>
 
                 {/* KPI cards */}
@@ -1381,8 +1646,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   }}
                 >
                   <KpiCard
-                    label="Net Worth"
-                    value={valuesHidden ? "$ ••••" : fmtUSD(liveNetWorth ?? lastUSD)}
+                    label={filtersActive ? "Net Worth (filtered)" : "Net Worth"}
+                    value={valuesHidden ? "$ ••••" : fmtUSD(filtersActive ? filteredNetWorth : (liveNetWorth ?? lastUSD))}
                     color={T.text}
                   />
                   <KpiCard
@@ -1390,13 +1655,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     value={fmt(lastPortfolio)}
                     color={kpiColor(lastPortfolio)}
                   />
-                  {effectiveComparing && (
+                  {showTotalReturn && (
+                    <KpiCard
+                      label={`Total Return ${period}`}
+                      value={fmt(lastTotalReturn)}
+                      color={kpiColor(lastTotalReturn)}
+                    />
+                  )}
+                  {comparing && (
                     <>
-                      <KpiCard
-                        label={`Total Return ${period}`}
-                        value={fmt(lastTotalReturn)}
-                        color={kpiColor(lastTotalReturn)}
-                      />
                       <KpiCard
                         label={`S&P 500 ${period}`}
                         value={fmt(lastSpy)}
@@ -1431,7 +1698,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                       paddingLeft: 8,
                     }}
                   >
-                    {effectiveComparing ? "Portfolio VS S&P 500" : "Net Worth Growth"}
+                    {chartTitle(pctMode, comparing, showTotalReturn)}
                   </div>
                   <ResponsiveContainer width="100%" height={320}>
                     <LineChart data={chartData} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
@@ -1450,7 +1717,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                         textAnchor="end"
                         height={60}
                       />
-                      {effectiveComparing ? (
+                      {pctMode ? (
                         <YAxis
                           tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`}
                           tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
@@ -1468,7 +1735,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                         />
                       )}
                       <Tooltip content={(props) => <CustomTooltip {...props} valuesHidden={valuesHidden} />} />
-                      {effectiveComparing && (
+                      {pctMode && (
                         <Legend
                           wrapperStyle={{
                             fontFamily: FONT_MONO,
@@ -1478,7 +1745,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                           }}
                         />
                       )}
-                      {effectiveComparing ? (
+                      {pctMode ? (
                         <>
                           <Line
                             type="monotone"
@@ -1489,24 +1756,28 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                             dot={false}
                             activeDot={{ r: 4, fill: T.blue }}
                           />
-                          <Line
-                            type="monotone"
-                            dataKey="totalReturn"
-                            name="Total Return"
-                            stroke={T.green}
-                            strokeWidth={2}
-                            dot={false}
-                            activeDot={{ r: 4, fill: T.green }}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="spy"
-                            name="S&P 500"
-                            stroke={T.orange}
-                            strokeWidth={2}
-                            dot={false}
-                            activeDot={{ r: 4, fill: T.orange }}
-                          />
+                          {showTotalReturn && (
+                            <Line
+                              type="monotone"
+                              dataKey="totalReturn"
+                              name="Total Return"
+                              stroke={T.green}
+                              strokeWidth={2}
+                              dot={false}
+                              activeDot={{ r: 4, fill: T.green }}
+                            />
+                          )}
+                          {comparing && (
+                            <Line
+                              type="monotone"
+                              dataKey="spy"
+                              name="S&P 500"
+                              stroke={T.orange}
+                              strokeWidth={2}
+                              dot={false}
+                              activeDot={{ r: 4, fill: T.orange }}
+                            />
+                          )}
                         </>
                       ) : (
                         <Line
