@@ -212,22 +212,46 @@ function freqFromDays(d) {
   return "annual";
 }
 
-function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate, today) {
-  let cursor = startISO;
-  while (cursor < endISO) {
-    const [y, m] = cursor.split("-");
-    const yi = parseInt(y, 10);
-    const mi = parseInt(m, 10);
-    const nextMonth = mi === 12 ? `${yi + 1}-01-01` : `${yi}-${String(mi + 1).padStart(2, "0")}-01`;
-    const chunkEnd = minISO(nextMonth, endISO);
-    const days = daysBetweenISO(cursor, chunkEnd);
-    if (days > 0) {
-      const amt = principal * rate * (days / 365);
-      const d = new Date(chunkEnd + "T00:00:00Z");
-      d.setUTCDate(d.getUTCDate() - 1);
-      const eventDate = minISO(d.toISOString().slice(0, 10), today);
+// Frequency label -> coupon interval in days. Kept in sync with the copy in
+// src/Dividends.jsx (no shared module between the two files, per project convention).
+const FREQ_DAYS = {
+  "monthly": 30,
+  "quarterly": 91,
+  "semi-annual": 182,
+  "annual": 365,
+};
+
+function addDaysISO(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Generates one estimated-interest event per fully-elapsed coupon period of
+// length intervalDays within [startISO, endISO). A period is only emitted when
+// it is entirely within the window (periodEnd <= endISO) — the still-running
+// partial period at the tail is dropped, since no money has actually been paid
+// for it yet. Principal can change mid-period (buy/sell); the accrual for each
+// period sums principal x days across the overlapping constant-principal
+// segments, ACT/365 convention.
+function accrueByFreqAsEvents(events, ticker, startISO, endISO, segments, rate, intervalDays) {
+  let periodStart = startISO;
+  while (true) {
+    const periodEnd = addDaysISO(periodStart, intervalDays);
+    if (periodEnd > endISO) break; // incomplete trailing period — not "paid" yet
+    let amt = 0;
+    for (const seg of segments) {
+      if (seg.principal <= 0) continue;
+      const overlapStart = seg.start > periodStart ? seg.start : periodStart;
+      const overlapEnd = seg.end < periodEnd ? seg.end : periodEnd;
+      if (overlapEnd <= overlapStart) continue;
+      const days = daysBetweenISO(overlapStart, overlapEnd);
+      amt += seg.principal * rate * (days / 365);
+    }
+    if (amt > 0) {
+      const eventDate = addDaysISO(periodEnd, -1); // last day of the elapsed period
       events.push({
-        id: `bond-est-${ticker}-${cursor.slice(0, 7)}`,
+        id: `bond-est-${ticker}-${periodStart}`,
         date: eventDate,
         ticker,
         assetClass: "Bank Bonds",
@@ -239,7 +263,7 @@ function accrueSegmentAsEvents(events, ticker, startISO, endISO, principal, rate
         qtyHeld: null,
       });
     }
-    cursor = chunkEnd;
+    periodStart = periodEnd;
   }
 }
 
@@ -289,30 +313,43 @@ function buildBondEvents(transactions, bondIncome, todayISO) {
     const qty = Number(tx.qty);
     const price = Number(tx.price);
     if (!t || !isFinite(qty) || !isFinite(price)) continue;
-    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO };
+    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO, couponFreq: null };
     byCusip[t].coupon = meta.couponPct;
     byCusip[t].maturityISO = meta.maturityISO;
+    if (!byCusip[t].couponFreq && tx.couponFreq) byCusip[t].couponFreq = tx.couponFreq;
     byCusip[t].txns.push({ date: tx.date, delta: (tx.side === "sell" ? -1 : 1) * qty * price });
   }
 
-  for (const [t, { txns, coupon, maturityISO }] of Object.entries(byCusip)) {
+  for (const [t, { txns, coupon, maturityISO, couponFreq }] of Object.entries(byCusip)) {
     txns.sort(byDate);
     const endISO = minISO(maturityISO, today);
     const rate = coupon / 100;
     const realDates = (realByCusip[t] || []).slice().sort(byDate);
-    const accrueFrom = realDates.length ? realDates[realDates.length - 1].date : null;
+    const lastRealDate = realDates.length ? realDates[realDates.length - 1].date : null;
 
+    // Accrual starts strictly the day after the last known real payment (never
+    // on the same day), or from the first transaction date if there has never
+    // been a real payment for this CUSIP.
+    const accrueFrom = lastRealDate ? addDaysISO(lastRealDate, 1) : (txns.length ? txns[0].date : null);
+    if (!accrueFrom || accrueFrom >= endISO || !txns.length) continue;
+
+    // Constant-principal segments across the full txn history, clamped to endISO.
+    const segments = [];
     let principal = 0;
     for (let i = 0; i < txns.length; i++) {
       principal += txns[i].delta;
       if (principal < 0) principal = 0;
-      let segStart = txns[i].date;
+      const segStart = txns[i].date;
       const segEnd = i + 1 < txns.length ? txns[i + 1].date : endISO;
-      if (accrueFrom && segStart < accrueFrom) segStart = accrueFrom;
-      const clampedEnd = minISO(segEnd, endISO);
-      if (clampedEnd <= segStart || principal <= 0) continue;
-      accrueSegmentAsEvents(events, t, segStart, clampedEnd, principal, rate, today);
+      if (segEnd > segStart) segments.push({ start: segStart, end: segEnd, principal });
     }
+
+    // Prefer calibrated real-payment cadence, then the Fidelity-reported
+    // couponFreq, then "monthly" only when there is no data at all.
+    const freqLabel = freqByCusip[t] || couponFreq || "monthly";
+    const intervalDays = FREQ_DAYS[freqLabel] || 30;
+
+    accrueByFreqAsEvents(events, t, accrueFrom, endISO, segments, rate, intervalDays);
   }
 
   return { events, freqByCusip };
