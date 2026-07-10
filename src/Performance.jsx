@@ -1721,6 +1721,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   // — an account with zero eligible transactions must still be able to reach
   // "done" state with the server's `no-eligible-transactions` empty message,
   // instead of leaving the spinner stuck on "loading" forever).
+  //
+  // Deliberately does NOT depend on `compFilteredTransactions` — this drives
+  // `state`, which gates the rendering of every card on the page (Portfolio
+  // Performance & Net Worth, Position Performance, Composition Evolution).
+  // Composition Evolution's own Asset Class/Ticker filter is handled by
+  // Effect C below, which never touches `state`, so toggling it only updates
+  // that card's chart instead of flashing "loading" and collapsing everything.
   useEffect(() => {
     if (!transactionsLoaded) return;
     let cancelled = false;
@@ -1729,18 +1736,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
     (async () => {
       try {
-        const { dates, portfolio, portfolioUSD, spy, composition: compResp, meta: respMeta } = await postPerfHistory(auth, {
+        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = await postPerfHistory(auth, {
           transactions: filteredTransactions,
-          // Composition Evolution has its own independent Asset Class/Ticker
-          // filter (compAssetClassFilter/compTickerFilter), separate from the
-          // filter chips above that drive `filteredTransactions`.
-          allTransactions: compFilteredTransactions,
         });
 
         if (cancelled) return;
 
         setMeta(respMeta || null);
-        setComposition(compResp && Array.isArray(compResp.dates) ? compResp : { dates: [], classValues: {} });
 
         if (!dates?.length) {
           setState("done");
@@ -1769,7 +1771,32 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth, transactionsLoaded, filteredTransactions, compFilteredTransactions]);
+  }, [auth, transactionsLoaded, filteredTransactions]);
+
+  // ── Effect C: refetch just the Composition Evolution series whenever its
+  // own independent Asset Class/Ticker filter changes. Kept separate from
+  // Effect B on purpose (see comment above) so this card's filter never
+  // triggers the page-wide loading state.
+  useEffect(() => {
+    if (!transactionsLoaded) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { composition: compResp } = await postPerfHistory(auth, {
+          transactions: [],
+          allTransactions: compFilteredTransactions,
+        });
+        if (cancelled) return;
+        setComposition(compResp && Array.isArray(compResp.dates) ? compResp : { dates: [], classValues: {} });
+      } catch {
+        // Silent — Composition Evolution simply keeps its last good series;
+        // the shared error UI is owned by Effect B.
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [auth, transactionsLoaded, compFilteredTransactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
