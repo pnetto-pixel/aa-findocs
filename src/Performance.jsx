@@ -141,7 +141,7 @@ function computeXAxis(data, period) {
     };
   }
 
-  if (period === "5Y" || period === "MAX") {
+  if (period === "5Y" || period === "MAX" || period === "All") {
     const spanYears = (lastTs - firstTs) / (365.25 * 86400000);
     const step = spanYears > 8 ? 2 : 1;
     for (let y = first.getUTCFullYear() + 1; y <= last.getUTCFullYear(); y++) {
@@ -153,8 +153,10 @@ function computeXAxis(data, period) {
     };
   }
 
-  // 6M, YTD, 1Y — first-of-month ticks; 1Y skips every other month (~6 labels)
-  const monthStep = period === "1Y" ? 2 : 1;
+  // 6M, YTD, 1Y, 2Y — first-of-month ticks, thinned out as the span grows so
+  // labels stay ~6-8 wide regardless of period (1Y: every other month, 2Y:
+  // quarterly).
+  const monthStep = period === "2Y" ? 3 : period === "1Y" ? 2 : 1;
   const d = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 1));
   let count = 0;
   while (d.getTime() <= lastTs) {
@@ -588,19 +590,6 @@ function getCompositionWindow(merged, period) {
     classValues[cls] = arr.slice(startIdx);
   }
   return { dates: slicedDates, classValues };
-}
-
-// Ticks land exactly on real transaction dates (never a synthetic calendar
-// grid) — thinned to a readable count when there are many distinct dates.
-function computeCompXAxisTicks(rows, maxTicks = 8) {
-  if (!rows.length) return [];
-  if (rows.length <= maxTicks) return rows.map((r) => r.dateTs);
-  const step = Math.ceil(rows.length / maxTicks);
-  const ticks = [];
-  for (let i = 0; i < rows.length; i += step) ticks.push(rows[i].dateTs);
-  const lastTs = rows[rows.length - 1].dateTs;
-  if (ticks[ticks.length - 1] !== lastTs) ticks.push(lastTs);
-  return ticks;
 }
 
 function KpiCard({ label, value, color }) {
@@ -1222,7 +1211,7 @@ function CompositionTooltip({ active, payload, label, valuesHidden }) {
 
 // Custom paginated legend — the native recharts <Legend> doesn't paginate,
 // and ~7 asset classes don't fit on one line on iPhone-width screens.
-function CompositionLegend({ classList, colors, hiddenSet, page, setPage, pageSize = 4 }) {
+function CompositionLegend({ classList, colors, page, setPage, pageSize = 4 }) {
   if (!classList.length) return null;
   const totalPages = Math.max(1, Math.ceil(classList.length / pageSize));
   const clampedPage = Math.min(page, totalPages - 1);
@@ -1247,7 +1236,7 @@ function CompositionLegend({ classList, colors, hiddenSet, page, setPage, pageSi
       </button>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", minWidth: 0 }}>
         {pageItems.map((cls) => (
-          <div key={cls} style={{ display: "flex", alignItems: "center", gap: 6, opacity: hiddenSet.has(cls) ? 0.4 : 1 }}>
+          <div key={cls} style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[cls] || T.textDim, flexShrink: 0 }} />
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>{cls}</span>
           </div>
@@ -1272,13 +1261,25 @@ function CompositionLegend({ classList, colors, hiddenSet, page, setPage, pageSi
 }
 
 // "Composition Evolution" card — stacked-area chart of asset-class weight
-// over time, normalized to 100% (recharts stackOffset="expand"). Always uses
-// the FULL portfolio (ignores the Asset Class/Ticker filter chips above),
-// per product decision — it has its own independent class toggle instead.
-function CompositionCard({ mergedComposition, valuesHidden }) {
+// over time, normalized to 100% (recharts stackOffset="expand"). Has its own
+// independent Asset Class / Ticker filter (same FilterChip dropdown used by
+// the Portfolio Performance & Net Worth card above), separate from that
+// card's filter chips — hiding a class here removes it from the underlying
+// data, so the stack renormalizes to 100% among whatever remains.
+function CompositionCard({
+  mergedComposition,
+  valuesHidden,
+  assetClassOptions,
+  assetClassFilter,
+  onCommitAssetClassFilter,
+  tickerOptions,
+  tickerFilter,
+  onCommitTickerFilter,
+  filtersActive,
+  onClearFilters,
+}) {
   const [open, setOpen] = useState(false);
   const [period, setPeriod] = useState("1Y");
-  const [hiddenClasses, setHiddenClasses] = useState(() => new Set());
   const [legendPage, setLegendPage] = useState(0);
 
   const windowed = useMemo(
@@ -1301,17 +1302,11 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
     });
   }, [windowed, classList]);
 
-  const xTicks = useMemo(() => computeCompXAxisTicks(chartRows), [chartRows]);
+  // Same calendar-boundary tick logic as the Portfolio Performance & Net
+  // Worth chart above (computeXAxis) — evenly spaced regardless of how
+  // transaction dates happen to cluster.
+  const xAxis = useMemo(() => computeXAxis(chartRows, period), [chartRows, period]);
 
-  function toggleClass(cls) {
-    setHiddenClasses((prev) => {
-      const next = new Set(prev);
-      next.has(cls) ? next.delete(cls) : next.add(cls);
-      return next;
-    });
-  }
-
-  const visibleClasses = classList.filter((cls) => !hiddenClasses.has(cls));
   const isEmpty = chartRows.length === 0;
 
   return (
@@ -1382,8 +1377,8 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
             </div>
           ) : (
             <>
-              {/* Period pills + asset class toggle pills — no icons, plain text */}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
+              {/* Period pills, no icons */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
                 <div style={{ display: "flex", gap: 2 }}>
                   {COMPOSITION_PERIODS.map(({ label }) => {
                     const active = period === label;
@@ -1408,33 +1403,43 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
                     );
                   })}
                 </div>
-
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {classList.map((cls) => {
-                    const hidden = hiddenClasses.has(cls);
-                    const color = COMPOSITION_COLORS[cls] || T.textDim;
-                    return (
-                      <button
-                        key={cls}
-                        onClick={() => toggleClass(cls)}
-                        style={{
-                          fontFamily: FONT_MONO,
-                          fontSize: 11,
-                          letterSpacing: "0.04em",
-                          padding: "5px 10px",
-                          border: `1px solid ${hidden ? T.border : color}`,
-                          borderRadius: 3,
-                          background: hidden ? "transparent" : color + "18",
-                          color: hidden ? T.textFaint : color,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {cls}
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
+
+              {/* Asset Class / Ticker filter chips — same dropdown component
+                  used by the Portfolio Performance & Net Worth card above. */}
+              {assetClassOptions.length > 0 && (
+                <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+                  <FilterChip
+                    label="Asset Class"
+                    options={assetClassOptions}
+                    committed={assetClassFilter}
+                    onCommit={onCommitAssetClassFilter}
+                  />
+                  <FilterChip
+                    label="Ticker"
+                    options={tickerOptions}
+                    committed={tickerFilter}
+                    onCommit={onCommitTickerFilter}
+                  />
+                  {filtersActive && (
+                    <button
+                      onClick={onClearFilters}
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${T.border}`,
+                        borderRadius: 4,
+                        color: T.textDim,
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        padding: "5px 10px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div
                 style={{
@@ -1452,10 +1457,8 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
                       type="number"
                       scale="time"
                       domain={["dataMin", "dataMax"]}
-                      ticks={xTicks}
-                      tickFormatter={(ts) =>
-                        new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" })
-                      }
+                      ticks={xAxis.ticks}
+                      tickFormatter={xAxis.tickFormatter}
                       tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                       tickLine={false}
                       axisLine={{ stroke: T.border }}
@@ -1472,7 +1475,7 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
                       width={40}
                     />
                     <Tooltip content={(props) => <CompositionTooltip {...props} valuesHidden={valuesHidden} />} />
-                    {visibleClasses.map((cls) => (
+                    {classList.map((cls) => (
                       <Area
                         key={cls}
                         type="monotone"
@@ -1489,7 +1492,6 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
                 <CompositionLegend
                   classList={classList}
                   colors={COMPOSITION_COLORS}
-                  hiddenSet={hiddenClasses}
                   page={legendPage}
                   setPage={setLegendPage}
                 />
@@ -1504,8 +1506,7 @@ function CompositionCard({ mergedComposition, valuesHidden }) {
                   letterSpacing: "0.04em",
                 }}
               >
-                Uses the full portfolio (ignores the Asset Class/Ticker filters above). Excludes BRA Fixed Income
-                (no market price source). Percentages renormalize among the visible classes only.
+                Excludes BRA Fixed Income
               </div>
             </>
           )}
@@ -1531,7 +1532,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [posTableOpen, setPosTableOpen] = useState(false);
   const [assetClassFilter, setAssetClassFilter] = useState(() => new Set()); // include-filter, empty = all
   const [tickerFilter, setTickerFilter] = useState(() => new Set()); // include-filter, empty = all
-  const [composition, setComposition] = useState({ dates: [], classValues: {} }); // full-portfolio series from the backend
+  // Composition Evolution's own Asset Class/Ticker filter — independent of
+  // assetClassFilter/tickerFilter above (that pair drives the TWR chart).
+  const [compAssetClassFilter, setCompAssetClassFilter] = useState(() => new Set());
+  const [compTickerFilter, setCompTickerFilter] = useState(() => new Set());
+  const [composition, setComposition] = useState({ dates: [], classValues: {} }); // series from the backend, scoped by the filters above
 
   // ── Effect A: raw, unfiltered load on auth change ──────────────────────────
   // Loads transactions + bond income + dividend events. These also feed the
@@ -1549,6 +1554,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setDivByTicker({});
     setAssetClassFilter(new Set());
     setTickerFilter(new Set());
+    setCompAssetClassFilter(new Set());
+    setCompTickerFilter(new Set());
     setComposition({ dates: [], classValues: {} });
 
     (async () => {
@@ -1661,6 +1668,53 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setTickerFilter(new Set());
   }
 
+  // Composition Evolution's own Asset Class/Ticker filter options — scoped to
+  // COMPOSITION_CLASS_ORDER (excludes BRA Fixed Income, unlike the TWR
+  // filter above which uses PERF_ELIGIBLE_CLASSES).
+  const compAssetClassOptions = useMemo(() => {
+    const present = new Set(transactions.map((tx) => tx.assetClass).filter(Boolean));
+    return COMPOSITION_CLASS_ORDER.filter((c) => present.has(c));
+  }, [transactions]);
+
+  const compTickerOptions = useMemo(() => {
+    const base = transactions.filter((tx) => COMPOSITION_CLASS_ORDER.includes(tx.assetClass));
+    const scoped = compAssetClassFilter.size === 0
+      ? base
+      : base.filter((tx) => compAssetClassFilter.has(tx.assetClass));
+    return [...new Set(scoped.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean))].sort();
+  }, [transactions, compAssetClassFilter]);
+
+  const compFilteredTransactions = useMemo(
+    () => transactions.filter(
+      (tx) =>
+        (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tx.assetClass)) &&
+        (compTickerFilter.size === 0 || compTickerFilter.has(tx.ticker?.toUpperCase()))
+    ),
+    [transactions, compAssetClassFilter, compTickerFilter]
+  );
+
+  const compFiltersActive = compAssetClassFilter.size > 0 || compTickerFilter.size > 0;
+
+  function commitCompAssetClassFilter(newSet) {
+    setCompAssetClassFilter(newSet);
+    setCompTickerFilter((prev) => {
+      if (prev.size === 0) return prev;
+      const allowed = new Set(
+        transactions
+          .filter((tx) => newSet.size === 0 || newSet.has(tx.assetClass))
+          .map((tx) => tx.ticker?.toUpperCase())
+          .filter(Boolean)
+      );
+      const pruned = new Set([...prev].filter((t) => allowed.has(t)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }
+
+  function clearCompFilters() {
+    setCompAssetClassFilter(new Set());
+    setCompTickerFilter(new Set());
+  }
+
   // ── Effect B: refetch the perf-history chart whenever the filtered
   // transaction set changes. Waits for Effect A to finish resolving
   // `transactions` (tracked via `transactionsLoaded`, not `transactions.length`
@@ -1677,9 +1731,10 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       try {
         const { dates, portfolio, portfolioUSD, spy, composition: compResp, meta: respMeta } = await postPerfHistory(auth, {
           transactions: filteredTransactions,
-          // Composition Evolution always reflects the full portfolio,
-          // independent of the Asset Class/Ticker filter chips above.
-          allTransactions: transactions,
+          // Composition Evolution has its own independent Asset Class/Ticker
+          // filter (compAssetClassFilter/compTickerFilter), separate from the
+          // filter chips above that drive `filteredTransactions`.
+          allTransactions: compFilteredTransactions,
         });
 
         if (cancelled) return;
@@ -1714,7 +1769,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth, transactionsLoaded, filteredTransactions, transactions]);
+  }, [auth, transactionsLoaded, filteredTransactions, compFilteredTransactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
@@ -1828,11 +1883,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     const dates = composition.dates || [];
     if (!dates.length) return { dates: [], classValues: {} };
     const classValues = { ...composition.classValues };
-    if (transactions.some((tx) => tx.assetClass === "Bank Bonds")) {
-      classValues["Bank Bonds"] = dates.map((d) => computeBankBondsValueAt(transactions, d).total);
+    if (compFilteredTransactions.some((tx) => tx.assetClass === "Bank Bonds")) {
+      classValues["Bank Bonds"] = dates.map((d) => computeBankBondsValueAt(compFilteredTransactions, d).total);
     }
     return { dates, classValues };
-  }, [composition, transactions]);
+  }, [composition, compFilteredTransactions]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -2283,11 +2338,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         )}
       </section>
 
-      {/* Composition Evolution card */}
-      {state === "done" && transactionsLoaded && (
-        <CompositionCard mergedComposition={mergedComposition} valuesHidden={valuesHidden} />
-      )}
-
       {/* Position Performance card */}
       {state === "done" && positionRows.length > 0 && (
         <PositionPerformanceTable
@@ -2295,6 +2345,22 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           valuesHidden={valuesHidden}
           open={posTableOpen}
           onToggle={() => setPosTableOpen((v) => !v)}
+        />
+      )}
+
+      {/* Composition Evolution card */}
+      {state === "done" && transactionsLoaded && (
+        <CompositionCard
+          mergedComposition={mergedComposition}
+          valuesHidden={valuesHidden}
+          assetClassOptions={compAssetClassOptions}
+          assetClassFilter={compAssetClassFilter}
+          onCommitAssetClassFilter={commitCompAssetClassFilter}
+          tickerOptions={compTickerOptions}
+          tickerFilter={compTickerFilter}
+          onCommitTickerFilter={setCompTickerFilter}
+          filtersActive={compFiltersActive}
+          onClearFilters={clearCompFilters}
         />
       )}
     </div>
