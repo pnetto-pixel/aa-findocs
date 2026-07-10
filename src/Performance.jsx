@@ -556,6 +556,14 @@ const COMPOSITION_COLORS = {
   "Unallocated USD": T.textDim,
 };
 
+// Composition Evolution's "Ticker" view can have far more series than the
+// 7 asset classes, so colors are assigned by cycling this palette (sorted by
+// each ticker's total contribution) instead of a fixed per-key map.
+const TICKER_PALETTE = [
+  T.blue, T.green, T.orange, "#a78bfa", "#5eead4", T.gold, "#f472b6",
+  T.red, "#38bdf8", "#facc15", "#4ade80", "#c084fc", T.textDim,
+];
+
 // Distinct from PERIODS (1M/6M/YTD/1Y/5Y/MAX, used by the TWR chart above) —
 // the composition card only needs long-horizon windows.
 const COMPOSITION_PERIODS = [
@@ -1176,6 +1184,37 @@ function FilterChip({ label, options, committed, onCommit }) {
   );
 }
 
+// Small 2-option pill toggle (e.g. Class/Ticker, Area/River) — a more
+// compact variant of the period pills, used for secondary view switches.
+function SegmentedToggle({ options, value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 2 }}>
+      {options.map((opt) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.06em",
+              padding: "5px 10px",
+              border: `1px solid ${active ? T.blue + "66" : T.border}`,
+              borderRadius: 4,
+              background: active ? T.blue + "18" : "transparent",
+              color: active ? T.blue : T.textDim,
+              cursor: "pointer",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function CompositionTooltip({ active, payload, label, valuesHidden }) {
   if (!active || !payload?.length) return null;
   const dateLabel = typeof label === "number"
@@ -1268,6 +1307,7 @@ function CompositionLegend({ classList, colors, page, setPage, pageSize = 4 }) {
 // data, so the stack renormalizes to 100% among whatever remains.
 function CompositionCard({
   mergedComposition,
+  mergedTickerComposition,
   valuesHidden,
   assetClassOptions,
   assetClassFilter,
@@ -1281,16 +1321,42 @@ function CompositionCard({
   const [open, setOpen] = useState(false);
   const [period, setPeriod] = useState("1Y");
   const [legendPage, setLegendPage] = useState(0);
+  const [viewBy, setViewBy] = useState("class"); // "class" | "ticker"
+  const [chartStyle, setChartStyle] = useState("area"); // "area" (0-100% expand) | "river" (streamgraph)
+
+  // `mergedTickerComposition` reuses the same `{ dates, classValues }` shape
+  // as `mergedComposition` (see PerformanceView) so `getCompositionWindow`
+  // works unmodified for both — its keys are ticker symbols instead of asset
+  // class names when viewBy === "ticker".
+  const activeComposition = viewBy === "ticker" ? mergedTickerComposition : mergedComposition;
 
   const windowed = useMemo(
-    () => getCompositionWindow(mergedComposition, period),
-    [mergedComposition, period]
+    () => getCompositionWindow(activeComposition, period),
+    [activeComposition, period]
   );
 
-  const classList = useMemo(
-    () => COMPOSITION_CLASS_ORDER.filter((cls) => (windowed.classValues[cls] || []).some((v) => v > 0)),
-    [windowed]
-  );
+  // Class mode keeps the fixed, hand-picked COMPOSITION_CLASS_ORDER; ticker
+  // mode has no natural fixed order, so series are ranked by total
+  // contribution over the visible window (largest band first).
+  const classList = useMemo(() => {
+    if (viewBy === "ticker") {
+      return Object.keys(windowed.classValues)
+        .filter((k) => (windowed.classValues[k] || []).some((v) => v > 0))
+        .sort((a, b) => {
+          const totalA = (windowed.classValues[a] || []).reduce((s, v) => s + v, 0);
+          const totalB = (windowed.classValues[b] || []).reduce((s, v) => s + v, 0);
+          return totalB - totalA;
+        });
+    }
+    return COMPOSITION_CLASS_ORDER.filter((cls) => (windowed.classValues[cls] || []).some((v) => v > 0));
+  }, [windowed, viewBy]);
+
+  const seriesColors = useMemo(() => {
+    if (viewBy !== "ticker") return COMPOSITION_COLORS;
+    const map = {};
+    classList.forEach((t, i) => { map[t] = TICKER_PALETTE[i % TICKER_PALETTE.length]; });
+    return map;
+  }, [viewBy, classList]);
 
   const chartRows = useMemo(() => {
     return windowed.dates.map((d, i) => {
@@ -1413,9 +1479,20 @@ function CompositionCard({
                 </div>
               )}
 
-              {/* Period pills, no icons — same gold-fill style as the
-                  "Income History" card's period selector in Dividends.jsx. */}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
+              {/* Period pills (left, gold-fill — same style as the "Income
+                  History" card's period selector in Dividends.jsx) + view
+                  toggles (right): Class/Ticker grouping and Area/River
+                  chart style. */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 16,
+                  marginBottom: 20,
+                }}
+              >
                 <div style={{ display: "flex", gap: 2 }}>
                   {COMPOSITION_PERIODS.map(({ label }) => {
                     const active = period === label;
@@ -1440,6 +1517,19 @@ function CompositionCard({
                     );
                   })}
                 </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <SegmentedToggle
+                    options={[{ value: "class", label: "Class" }, { value: "ticker", label: "Ticker" }]}
+                    value={viewBy}
+                    onChange={setViewBy}
+                  />
+                  <SegmentedToggle
+                    options={[{ value: "area", label: "Area" }, { value: "river", label: "River" }]}
+                    value={chartStyle}
+                    onChange={setChartStyle}
+                  />
+                </div>
               </div>
 
               <div
@@ -1451,8 +1541,12 @@ function CompositionCard({
                 }}
               >
                 <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={chartRows} stackOffset="expand" margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                  <AreaChart
+                    data={chartRows}
+                    stackOffset={chartStyle === "river" ? "wiggle" : "expand"}
+                    margin={{ top: 4, right: 20, left: 8, bottom: 4 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={chartStyle !== "river"} />
                     <XAxis
                       dataKey="dateTs"
                       type="number"
@@ -1468,7 +1562,8 @@ function CompositionCard({
                       height={60}
                     />
                     <YAxis
-                      domain={[0, 1]}
+                      hide={chartStyle === "river"}
+                      domain={chartStyle === "river" ? ["dataMin", "dataMax"] : [0, 1]}
                       tickFormatter={(v) => `${Math.round(v * 100)}%`}
                       tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
                       tickLine={false}
@@ -1483,8 +1578,8 @@ function CompositionCard({
                         dataKey={cls}
                         name={cls}
                         stackId="composition"
-                        stroke={COMPOSITION_COLORS[cls] || T.textDim}
-                        fill={COMPOSITION_COLORS[cls] || T.textDim}
+                        stroke={seriesColors[cls] || T.textDim}
+                        fill={seriesColors[cls] || T.textDim}
                         fillOpacity={0.55}
                       />
                     ))}
@@ -1492,7 +1587,7 @@ function CompositionCard({
                 </ResponsiveContainer>
                 <CompositionLegend
                   classList={classList}
-                  colors={COMPOSITION_COLORS}
+                  colors={seriesColors}
                   page={legendPage}
                   setPage={setLegendPage}
                 />
@@ -1950,6 +2045,51 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     }
     return { dates, classValues };
   }, [filteredComposition, compFilteredTransactions]);
+
+  // Same Asset Class/Ticker filter as `filteredComposition`, but kept at
+  // per-ticker granularity (no aggregation) — feeds the Composition
+  // Evolution card's "Ticker" view.
+  const filteredTickerComposition = useMemo(() => {
+    const { dates, tickerValues, tickerClass } = compositionRaw;
+    if (!dates?.length) return { dates: [], tickerValues: {}, tickerClass: {} };
+    const includedTickers = Object.keys(tickerClass).filter(
+      (t) =>
+        (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tickerClass[t])) &&
+        (compTickerFilter.size === 0 || compTickerFilter.has(t))
+    );
+    const outValues = {};
+    const outClass = {};
+    for (const t of includedTickers) {
+      outValues[t] = tickerValues[t] || [];
+      outClass[t] = tickerClass[t];
+    }
+    return { dates, tickerValues: outValues, tickerClass: outClass };
+  }, [compositionRaw, compAssetClassFilter, compTickerFilter]);
+
+  // Overlays client-computed Bank Bonds values per CUSIP (via
+  // computeBankBondsValueAt's `byTicker` breakdown) onto the per-ticker
+  // series — CUSIPs have no candle source so the backend reports them as 0.
+  // Field is named `classValues` (not `tickerValues`) so it matches the
+  // `{ dates, classValues }` shape `getCompositionWindow` expects — here the
+  // keys happen to be ticker symbols instead of asset class names.
+  const mergedTickerComposition = useMemo(() => {
+    const dates = filteredTickerComposition.dates || [];
+    if (!dates.length) return { dates: [], classValues: {} };
+    const classValues = { ...filteredTickerComposition.tickerValues };
+    const bbTickers = new Set(
+      compFilteredTransactions
+        .filter((tx) => tx.assetClass === "Bank Bonds")
+        .map((tx) => tx.ticker?.toUpperCase())
+        .filter(Boolean)
+    );
+    if (bbTickers.size) {
+      const perDate = dates.map((d) => computeBankBondsValueAt(compFilteredTransactions, d).byTicker);
+      for (const t of bbTickers) {
+        classValues[t] = perDate.map((byTicker) => byTicker[t]?.totalValue ?? 0);
+      }
+    }
+    return { dates, classValues };
+  }, [filteredTickerComposition, compFilteredTransactions]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -2414,6 +2554,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       {state === "done" && transactionsLoaded && (
         <CompositionCard
           mergedComposition={mergedComposition}
+          mergedTickerComposition={mergedTickerComposition}
           valuesHidden={valuesHidden}
           assetClassOptions={compAssetClassOptions}
           assetClassFilter={compAssetClassFilter}
