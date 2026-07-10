@@ -3626,24 +3626,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               {/* Consolidated holdings (auto + manual non-cash) */}
               {filteredHoldings.length > 0 && (
                 <>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <SectionLabel
-                        label="Holdings"
-                        count={filteredHoldings.length}
-                        of={holdings.filter((h) => !isCash(h) && !(isZeroHolding(h) && !(h.target > 0))).length}
-                        collapsible
-                        collapsed={trackedCollapsed}
-                        onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
-                      />
-                    </div>
-                    <button
-                      onClick={() => { setShowCSVImport(true); setCsvImportStep("upload"); setCsvImportRows([]); }}
-                      style={{ fontSize: 12, padding: "6px 14px", background: "rgba(201,169,97,0.12)", color: T.gold, border: `1px solid ${T.gold}55`, borderRadius: 6, cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.08em", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}
-                    >
-                      Import Allocation Targets
-                    </button>
-                  </div>
+                  <SectionLabel
+                    label="Holdings"
+                    count={filteredHoldings.length}
+                    of={holdings.filter((h) => !isCash(h) && !(isZeroHolding(h) && !(h.target > 0))).length}
+                    collapsible
+                    collapsed={trackedCollapsed}
+                    onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
+                  />
                   {!trackedCollapsed && (
                     <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4 }}>
                       {filteredHoldings.map((h, i) => (
@@ -3736,6 +3726,39 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               )}
             </>
           )}
+
+          {/* Import Allocation Targets — moved out of Holdings card */}
+          <section
+            style={{
+              marginTop: 18,
+              background: T.card,
+              border: `1px solid ${T.borderSoft}`,
+              borderRadius: 4,
+              padding: 14,
+            }}
+          >
+            <button
+              onClick={() => { setShowCSVImport(true); setCsvImportStep("upload"); setCsvImportRows([]); }}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.gold,
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: 0,
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.18em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+              }}
+            >
+              <Upload size={12} />
+              Import Allocation Targets
+            </button>
+          </section>
 
           {/* Add manual asset section */}
           <section
