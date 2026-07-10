@@ -3,10 +3,12 @@
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo, useRef, Fragment } from "react";
-import { ChevronDown, TrendingUp, BarChart2, Filter } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, BarChart2, Filter, Layers } from "lucide-react";
 import {
   LineChart,
   Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -351,6 +353,65 @@ function buildBondEvents(transactions, bondIncome, todayISO) {
   return { events, freqByCusip };
 }
 
+// Generalized replay + accrued-interest projection for Bank Bonds, extracted
+// from the Position Performance calculation (positionRows below) so both it
+// and the Composition Evolution card share a single source of truth instead
+// of two divergent implementations of the same math. `asOfISO` defaults to
+// today; the Composition Evolution card calls this once per historical date
+// in the composition series to build a client-side Bank Bonds value series.
+function computeBankBondsValueAt(transactions, asOfISO) {
+  const asOf = asOfISO || new Date().toISOString().slice(0, 10);
+  const sorted = (transactions || [])
+    .filter((tx) => tx?.assetClass === "Bank Bonds" && tx.date && tx.date <= asOf)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const positions = {};
+  for (const tx of sorted) {
+    const ticker = tx.ticker?.toUpperCase();
+    if (!ticker) continue;
+    if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, lastBuyDate: null, lastBuyNotes: null };
+    const pos = positions[ticker];
+    const qty = Number(tx.qty) || 0;
+    const price = Number(tx.price) || 0;
+    if (tx.side === "buy") {
+      pos.totalQty += qty;
+      pos.totalCost += qty * price;
+      if (!pos.lastBuyDate || tx.date > pos.lastBuyDate) {
+        pos.lastBuyDate = tx.date;
+        pos.lastBuyNotes = tx.notes || "";
+      }
+    } else if (tx.side === "sell") {
+      const avgBefore = pos.totalQty > 0 ? pos.totalCost / pos.totalQty : 0;
+      pos.totalQty -= qty;
+      pos.totalCost -= avgBefore * qty;
+      if (pos.totalQty < 0.0001) { pos.totalQty = 0; pos.totalCost = 0; }
+    }
+  }
+
+  const byTicker = {};
+  let total = 0;
+  for (const [ticker, pos] of Object.entries(positions)) {
+    if (pos.totalQty < 0.0001) continue;
+    const avgCost = pos.totalCost / pos.totalQty;
+    const totalCost = avgCost * pos.totalQty;
+    let totalValue = totalCost;
+    if (pos.lastBuyNotes && pos.lastBuyDate) {
+      const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
+      const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
+      if (couponM && maturityM) {
+        const annualRate = parseFloat(couponM[1]) / 100;
+        const purchaseTs = new Date(pos.lastBuyDate + "T00:00:00").getTime();
+        const asOfTs = new Date(asOf + "T00:00:00").getTime();
+        const daysSincePurchase = Math.max(0, (asOfTs - purchaseTs) / 86400000);
+        totalValue = totalCost + totalCost * annualRate * (daysSincePurchase / 365);
+      }
+    }
+    byTicker[ticker] = { qty: pos.totalQty, avgCost, totalCost, totalValue };
+    total += totalValue;
+  }
+  return { total, byTicker };
+}
+
 function fmtPrice(n) {
   if (n == null || isNaN(n)) return "—";
   return new Intl.NumberFormat("en-US", {
@@ -468,6 +529,78 @@ function getWindowData(rawData, period, divEvents) {
     lastUSD: last.usd,
     lastTotalReturn,
   };
+}
+
+// Fixed display order + color for the Composition Evolution card. Distinct
+// from PERF_ELIGIBLE_CLASSES only in that BRA Fixed Income is excluded (no
+// market price source, cannot be reconstructed historically — see CONTEXT.md).
+const COMPOSITION_CLASS_ORDER = [
+  "Stocks",
+  "BRA Stocks",
+  "Alternative",
+  "Real Estate",
+  "Bonds",
+  "Bank Bonds",
+  "Unallocated USD",
+];
+
+const COMPOSITION_COLORS = {
+  "Stocks": T.blue,
+  "BRA Stocks": T.green,
+  "Alternative": T.orange,
+  "Real Estate": "#a78bfa",
+  "Bonds": "#5eead4",
+  "Bank Bonds": T.gold,
+  "Unallocated USD": T.textDim,
+};
+
+// Distinct from PERIODS (1M/6M/YTD/1Y/5Y/MAX, used by the TWR chart above) —
+// the composition card only needs long-horizon windows.
+const COMPOSITION_PERIODS = [
+  { label: "1Y", days: 365 },
+  { label: "2Y", days: 730 },
+  { label: "5Y", days: 1825 },
+  { label: "All", days: Infinity },
+];
+
+// Slices a { dates, classValues } series to a period window. Same cutoff
+// pattern as getWindowData, but client-side over composition.dates (which are
+// sparse — only real transaction dates, not a daily grid).
+function getCompositionWindow(merged, period) {
+  const dates = merged?.dates || [];
+  if (!dates.length) return { dates: [], classValues: {} };
+
+  const p = COMPOSITION_PERIODS.find((x) => x.label === period) || COMPOSITION_PERIODS[0];
+  let cutoff = null;
+  if (p.days !== Infinity) {
+    cutoff = new Date(Date.now() - p.days * 86400 * 1000).toISOString().slice(0, 10);
+  }
+
+  let startIdx = 0;
+  if (cutoff) {
+    const found = dates.findIndex((d) => d >= cutoff);
+    startIdx = found >= 0 ? found : dates.length - 1;
+  }
+
+  const slicedDates = dates.slice(startIdx);
+  const classValues = {};
+  for (const [cls, arr] of Object.entries(merged.classValues || {})) {
+    classValues[cls] = arr.slice(startIdx);
+  }
+  return { dates: slicedDates, classValues };
+}
+
+// Ticks land exactly on real transaction dates (never a synthetic calendar
+// grid) — thinned to a readable count when there are many distinct dates.
+function computeCompXAxisTicks(rows, maxTicks = 8) {
+  if (!rows.length) return [];
+  if (rows.length <= maxTicks) return rows.map((r) => r.dateTs);
+  const step = Math.ceil(rows.length / maxTicks);
+  const ticks = [];
+  for (let i = 0; i < rows.length; i += step) ticks.push(rows[i].dateTs);
+  const lastTs = rows[rows.length - 1].dateTs;
+  if (ticks[ticks.length - 1] !== lastTs) ticks.push(lastTs);
+  return ticks;
 }
 
 function KpiCard({ label, value, color }) {
@@ -1054,6 +1187,334 @@ function FilterChip({ label, options, committed, onCommit }) {
   );
 }
 
+function CompositionTooltip({ active, payload, label, valuesHidden }) {
+  if (!active || !payload?.length) return null;
+  const dateLabel = typeof label === "number"
+    ? new Date(label).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : label;
+  const total = payload.reduce((s, p) => s + (Number(p.value) || 0), 0);
+  return (
+    <div
+      style={{
+        background: T.cardElev,
+        border: `1px solid ${T.border}`,
+        borderRadius: 4,
+        padding: "10px 14px",
+        fontFamily: FONT_MONO,
+        fontSize: 12,
+      }}
+    >
+      <div style={{ color: T.textDim, marginBottom: 6 }}>{dateLabel}</div>
+      {payload
+        .slice()
+        .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0))
+        .map((p) => {
+          const pct = total > 0 ? (Number(p.value) || 0) / total * 100 : 0;
+          return (
+            <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
+              {p.name}: {valuesHidden ? "$ ••••" : fmtUSD(p.value)} ({pct.toFixed(1)}%)
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+// Custom paginated legend — the native recharts <Legend> doesn't paginate,
+// and ~7 asset classes don't fit on one line on iPhone-width screens.
+function CompositionLegend({ classList, colors, hiddenSet, page, setPage, pageSize = 4 }) {
+  if (!classList.length) return null;
+  const totalPages = Math.max(1, Math.ceil(classList.length / pageSize));
+  const clampedPage = Math.min(page, totalPages - 1);
+  const start = clampedPage * pageSize;
+  const pageItems = classList.slice(start, start + pageSize);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10 }}>
+      <button
+        onClick={() => setPage((p) => Math.max(0, p - 1))}
+        disabled={clampedPage === 0}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 2,
+          cursor: clampedPage === 0 ? "default" : "pointer",
+          color: clampedPage === 0 ? T.textFaint : T.textDim,
+          display: "flex",
+        }}
+      >
+        <ChevronLeft size={14} />
+      </button>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", minWidth: 0 }}>
+        {pageItems.map((cls) => (
+          <div key={cls} style={{ display: "flex", alignItems: "center", gap: 6, opacity: hiddenSet.has(cls) ? 0.4 : 1 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[cls] || T.textDim, flexShrink: 0 }} />
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>{cls}</span>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+        disabled={clampedPage >= totalPages - 1}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 2,
+          cursor: clampedPage >= totalPages - 1 ? "default" : "pointer",
+          color: clampedPage >= totalPages - 1 ? T.textFaint : T.textDim,
+          display: "flex",
+        }}
+      >
+        <ChevronRight size={14} />
+      </button>
+    </div>
+  );
+}
+
+// "Composition Evolution" card — stacked-area chart of asset-class weight
+// over time, normalized to 100% (recharts stackOffset="expand"). Always uses
+// the FULL portfolio (ignores the Asset Class/Ticker filter chips above),
+// per product decision — it has its own independent class toggle instead.
+function CompositionCard({ mergedComposition, valuesHidden }) {
+  const [open, setOpen] = useState(false);
+  const [period, setPeriod] = useState("1Y");
+  const [hiddenClasses, setHiddenClasses] = useState(() => new Set());
+  const [legendPage, setLegendPage] = useState(0);
+
+  const windowed = useMemo(
+    () => getCompositionWindow(mergedComposition, period),
+    [mergedComposition, period]
+  );
+
+  const classList = useMemo(
+    () => COMPOSITION_CLASS_ORDER.filter((cls) => (windowed.classValues[cls] || []).some((v) => v > 0)),
+    [windowed]
+  );
+
+  const chartRows = useMemo(() => {
+    return windowed.dates.map((d, i) => {
+      const row = { date: d, dateTs: new Date(d + "T00:00:00Z").getTime() };
+      for (const cls of classList) {
+        row[cls] = windowed.classValues[cls]?.[i] ?? 0;
+      }
+      return row;
+    });
+  }, [windowed, classList]);
+
+  const xTicks = useMemo(() => computeCompXAxisTicks(chartRows), [chartRows]);
+
+  function toggleClass(cls) {
+    setHiddenClasses((prev) => {
+      const next = new Set(prev);
+      next.has(cls) ? next.delete(cls) : next.add(cls);
+      return next;
+    });
+  }
+
+  const visibleClasses = classList.filter((cls) => !hiddenClasses.has(cls));
+  const isEmpty = chartRows.length === 0;
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: "100%",
+          background: T.card,
+          border: `1px solid ${T.borderSoft}`,
+          borderRadius: open ? "4px 4px 0 0" : 4,
+          padding: "14px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: T.text,
+          cursor: "pointer",
+        }}
+      >
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            fontFamily: FONT_MONO,
+            fontSize: 11,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: T.gold,
+          }}
+        >
+          <Layers size={14} strokeWidth={2} />
+          Composition Evolution
+        </span>
+        <ChevronDown
+          size={16}
+          style={{
+            color: T.textDim,
+            transform: open ? "rotate(180deg)" : "none",
+            transition: "transform 0.2s",
+          }}
+        />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderTop: "none",
+            borderRadius: "0 0 4px 4px",
+            padding: 20,
+            marginTop: -1,
+          }}
+        >
+          {isEmpty ? (
+            <div
+              style={{
+                background: T.cardElev,
+                borderRadius: 4,
+                padding: "20px 24px",
+                fontFamily: FONT_MONO,
+                fontSize: 13,
+                color: T.textDim,
+              }}
+            >
+              No transactions in eligible asset classes (excludes BRA Fixed Income, Cash and Unallocated BRL).
+            </div>
+          ) : (
+            <>
+              {/* Period pills + asset class toggle pills — no icons, plain text */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
+                <div style={{ display: "flex", gap: 2 }}>
+                  {COMPOSITION_PERIODS.map(({ label }) => {
+                    const active = period === label;
+                    return (
+                      <button
+                        key={label}
+                        onClick={() => setPeriod(label)}
+                        style={{
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          padding: "5px 10px",
+                          border: `1px solid ${active ? T.blue + "66" : T.border}`,
+                          borderRadius: 3,
+                          background: active ? T.blue + "18" : "transparent",
+                          color: active ? T.blue : T.textDim,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {classList.map((cls) => {
+                    const hidden = hiddenClasses.has(cls);
+                    const color = COMPOSITION_COLORS[cls] || T.textDim;
+                    return (
+                      <button
+                        key={cls}
+                        onClick={() => toggleClass(cls)}
+                        style={{
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.04em",
+                          padding: "5px 10px",
+                          border: `1px solid ${hidden ? T.border : color}`,
+                          borderRadius: 3,
+                          background: hidden ? "transparent" : color + "18",
+                          color: hidden ? T.textFaint : color,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {cls}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: T.cardElev,
+                  border: `1px solid ${T.borderSoft}`,
+                  borderRadius: 4,
+                  padding: "20px 8px 8px",
+                }}
+              >
+                <ResponsiveContainer width="100%" height={320}>
+                  <AreaChart data={chartRows} stackOffset="expand" margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                    <XAxis
+                      dataKey="dateTs"
+                      type="number"
+                      scale="time"
+                      domain={["dataMin", "dataMax"]}
+                      ticks={xTicks}
+                      tickFormatter={(ts) =>
+                        new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" })
+                      }
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={{ stroke: T.border }}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                    />
+                    <YAxis
+                      domain={[0, 1]}
+                      tickFormatter={(v) => `${Math.round(v * 100)}%`}
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={40}
+                    />
+                    <Tooltip content={(props) => <CompositionTooltip {...props} valuesHidden={valuesHidden} />} />
+                    {visibleClasses.map((cls) => (
+                      <Area
+                        key={cls}
+                        type="monotone"
+                        dataKey={cls}
+                        name={cls}
+                        stackId="composition"
+                        stroke={COMPOSITION_COLORS[cls] || T.textDim}
+                        fill={COMPOSITION_COLORS[cls] || T.textDim}
+                        fillOpacity={0.55}
+                      />
+                    ))}
+                  </AreaChart>
+                </ResponsiveContainer>
+                <CompositionLegend
+                  classList={classList}
+                  colors={COMPOSITION_COLORS}
+                  hiddenSet={hiddenClasses}
+                  page={legendPage}
+                  setPage={setLegendPage}
+                />
+              </div>
+
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: T.textFaint,
+                  marginTop: 12,
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Uses the full portfolio (ignores the Asset Class/Ticker filters above). Excludes BRA Fixed Income
+                (no market price source). Percentages renormalize among the visible classes only.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdings }) {
   const [state, setState] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState(null);
@@ -1070,6 +1531,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [posTableOpen, setPosTableOpen] = useState(false);
   const [assetClassFilter, setAssetClassFilter] = useState(() => new Set()); // include-filter, empty = all
   const [tickerFilter, setTickerFilter] = useState(() => new Set()); // include-filter, empty = all
+  const [composition, setComposition] = useState({ dates: [], classValues: {} }); // full-portfolio series from the backend
 
   // ── Effect A: raw, unfiltered load on auth change ──────────────────────────
   // Loads transactions + bond income + dividend events. These also feed the
@@ -1087,6 +1549,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setDivByTicker({});
     setAssetClassFilter(new Set());
     setTickerFilter(new Set());
+    setComposition({ dates: [], classValues: {} });
 
     (async () => {
       try {
@@ -1212,13 +1675,17 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
     (async () => {
       try {
-        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = await postPerfHistory(auth, {
+        const { dates, portfolio, portfolioUSD, spy, composition: compResp, meta: respMeta } = await postPerfHistory(auth, {
           transactions: filteredTransactions,
+          // Composition Evolution always reflects the full portfolio,
+          // independent of the Asset Class/Ticker filter chips above.
+          allTransactions: transactions,
         });
 
         if (cancelled) return;
 
         setMeta(respMeta || null);
+        setComposition(compResp && Array.isArray(compResp.dates) ? compResp : { dates: [], classValues: {} });
 
         if (!dates?.length) {
           setState("done");
@@ -1247,7 +1714,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth, transactionsLoaded, filteredTransactions]);
+  }, [auth, transactionsLoaded, filteredTransactions, transactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
@@ -1286,6 +1753,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const positionRows = useMemo(() => {
     if (!transactions.length) return [];
+    const bankBondsSnapshot = computeBankBondsValueAt(transactions);
     const sorted = [...transactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const positions = {};
     for (const tx of sorted) {
@@ -1326,24 +1794,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const totalDiv = divData ? divData.total : null;
 
       if (assetClass === "Bank Bonds") {
-        const avgCost = pos.totalCost / pos.totalQty;
-        const totalCost = avgCost * pos.totalQty;
-        let totalValue = totalCost;
-        if (pos.lastBuyNotes && pos.lastBuyDate) {
-          const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
-          const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
-          if (couponM && maturityM) {
-            const annualRate = parseFloat(couponM[1]) / 100;
-            const purchaseTs = new Date(pos.lastBuyDate + "T00:00:00").getTime();
-            const todayTs = Date.now();
-            const daysSincePurchase = (todayTs - purchaseTs) / 86400000;
-            totalValue = totalCost + totalCost * annualRate * (daysSincePurchase / 365);
-          }
-        }
+        const bb = bankBondsSnapshot.byTicker[ticker];
+        if (!bb) continue;
+        const { avgCost, totalCost, totalValue } = bb;
         const totalGainLoss = totalValue - totalCost;
         const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
         const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
-        rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
+        rows.push({ ticker, assetClass, qty: bb.qty, avgCost, currentPrice: null, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
         continue;
       }
 
@@ -1362,6 +1819,20 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   }, [transactions, priceMap, divByTicker]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
+
+  // Overlays a client-computed Bank Bonds value series (accrued-interest
+  // projection, same helper used by Position Performance above) onto the
+  // backend's composition.classValues — the backend's own "Bank Bonds"
+  // entries are naturally all-zero since CUSIPs have no candle source.
+  const mergedComposition = useMemo(() => {
+    const dates = composition.dates || [];
+    if (!dates.length) return { dates: [], classValues: {} };
+    const classValues = { ...composition.classValues };
+    if (transactions.some((tx) => tx.assetClass === "Bank Bonds")) {
+      classValues["Bank Bonds"] = dates.map((d) => computeBankBondsValueAt(transactions, d).total);
+    }
+    return { dates, classValues };
+  }, [composition, transactions]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -1811,6 +2282,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           </div>
         )}
       </section>
+
+      {/* Composition Evolution card */}
+      {state === "done" && transactionsLoaded && (
+        <CompositionCard mergedComposition={mergedComposition} valuesHidden={valuesHidden} />
+      )}
 
       {/* Position Performance card */}
       {state === "done" && positionRows.length > 0 && (
