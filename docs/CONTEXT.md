@@ -236,7 +236,7 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 ### Storage
 
 - Endpoint: `api/perf-history.js` (POST)
-- Cache Redis: `portfolio:<storageKey>:perf-history`, TTL até próximo fechamento do mercado US (~21:00 UTC = 16h ET), **versão v13**
+- Cache Redis: `portfolio:<storageKey>:perf-history`, TTL até próximo fechamento do mercado US (~21:00 UTC = 16h ET), **versão v14**
 - Auth: mesmo padrão de `api/transactions.js`
 
 ### Lógica server-side
@@ -281,17 +281,16 @@ Elementos principais:
 
 Inserido **depois** do card "Position Performance" em `Performance.jsx` (ordem final: Portfolio Performance & Net Worth → Position Performance → Composition Evolution). Mostra a evolução histórica da composição do portfólio por asset class como stacked area chart normalizado a 100% (`recharts`, `stackOffset="expand"`).
 
-- **Filtros de período** (`COMPOSITION_PERIODS`: 1Y/2Y/5Y/All — array distinto do `PERIODS` do gráfico principal, que é 1M/6M/YTD/1Y/5Y/MAX), pills sem ícone.
-- **Filtro de Asset Class e de Ticker próprios**, no mesmo formato dropdown (`FilterChip` + `TickerFilterPopover`) usado pelo filtro "Asset Class"/"Ticker" do card "Portfolio Performance & Net Worth" — mas com estado independente (`compAssetClassFilter`/`compTickerFilter`, separado de `assetClassFilter`/`tickerFilter`). Ajuste (jul/2026): a versão original usava pills de toggle client-side puramente visuais ("ignora os filtros globais, mas não tinha filtro de ticker próprio"); agora o card tem seu próprio par de filtros dropdown, incluindo Ticker, e o filtro efetivamente restringe as transações usadas no cálculo (via `compFilteredTransactions`, enviado como `allTransactions` no POST) — não é mais só uma máscara de visibilidade do stack.
-- Ocultar uma classe/ticker via esses filtros restringe os dados na origem; como consequência, o stack renormaliza a 100% só entre o que resta (mesmo efeito de antes, agora obtido filtrando a origem em vez de esconder `<Area>` no cliente).
-- Eixo X (ajuste jul/2026): usa a mesma lógica de ticks por fronteira de calendário do gráfico de TWR principal (`computeXAxis`, chamada com o período do card) — antes usava as datas reais de transação como ticks, o que deixava os rótulos com espaçamento desigual quando as transações não eram uniformemente distribuídas no tempo. `computeXAxis` ganhou suporte aos períodos "2Y" (ticks trimestrais) e "All" (tratado como o "MAX" existente).
+- **Filtros de Asset Class e Ticker no topo** (acima do filtro de período — ordem trocada jul/2026 a pedido do usuário), no mesmo formato dropdown (`FilterChip` + `TickerFilterPopover`) usado pelo filtro "Asset Class"/"Ticker" do card "Portfolio Performance & Net Worth" — mas com estado independente (`compAssetClassFilter`/`compTickerFilter`, separado de `assetClassFilter`/`tickerFilter`).
+- **Filtro de período** (`COMPOSITION_PERIODS`: 1Y/2Y/5Y/All — array distinto do `PERIODS` do gráfico principal, que é 1M/6M/YTD/1Y/5Y/MAX) abaixo dos filtros de Asset Class/Ticker. Pills com preenchimento sólido dourado quando ativo (`background: T.gold`, `color: T.bg`) — mesmo design do seletor de período do card "Income History" em `Dividends.jsx` (`PERIOD_OPTIONS`). O filtro de período do card "Portfolio Performance & Net Worth" (`PERIODS`) recebeu o mesmo tratamento visual (antes ambos usavam um estilo azul translúcido).
+- Ocultar uma classe/ticker via esses filtros restringe os dados na origem (client-side, ver "Filtragem 100% client-side" abaixo); como consequência, o stack renormaliza a 100% só entre o que resta.
+- Eixo X: usa a mesma lógica de ticks por fronteira de calendário do gráfico de TWR principal (`computeXAxis`, chamada com o período do card) — não as datas reais de transação (que deixavam os rótulos com espaçamento desigual). `computeXAxis` ganhou suporte aos períodos "2Y" (ticks trimestrais) e "All" (tratado como o "MAX" existente).
 - Legenda paginada custom (`CompositionLegend`, setas prev/next) — as ~7 classes não cabem numa linha só.
 - **Classes incluídas** (`COMPOSITION_CLASSES` em `api/perf-history.js`): `INCLUDED_CLASSES` menos `BRA Fixed Income` — ou seja, Stocks, BRA Stocks, Alternative, Real Estate, Bonds, Bank Bonds, Unallocated USD. `BRA Fixed Income` é excluída (sem preço de mercado disponível, sem fallback flat). `Unallocated BRL` não está incluída, mantendo consistência com `PERF_ELIGIBLE_CLASSES`.
 - **Bank Bonds:** o accrued interest que já existia hardcoded em `Date.now()` dentro de `positionRows` foi extraído e generalizado no helper puro `computeBankBondsValueAt(transactions, asOfISO)` em `src/Performance.jsx` — aceita qualquer data de referência. Reusado tanto em `positionRows` (asOfISO = hoje) quanto no card novo (uma chamada por data histórica do range), agora sobre `compFilteredTransactions`.
-- **Texto de rodapé** simplificado (jul/2026) para apenas "Excludes BRA Fixed Income" — a versão anterior também mencionava "usa o portfólio inteiro" e "renormaliza entre as classes visíveis", considerado ruído irrelevante para o usuário.
-- **Backend (inalterado nesse ajuste):** função pura exportada `computeCompositionSeries({ transactions, candles, fxMap })` em `api/perf-history.js` — replay cumulativo de posições, amostrado só nas datas reais de transação (não diário), agrega valor USD por asset class. Retorna `{ dates, classValues }`. União de tickers do TWR + da composition usada para o fetch de candles/FX (garante preço mesmo para classes fora do filtro ativo de UI). Cache key inclui hash de ambos os conjuntos elegíveis (`eligible` + `compEligible`). `firstDate` = mínimo entre as datas dos dois conjuntos elegíveis.
-- **Fetch desacoplado em efeito próprio (bugfix, jul/2026):** inicialmente o filtro do card reusava o mesmo `useEffect`/POST do gráfico de TWR (Effect B), então committar o filtro disparava `setState("loading")` — a mesma flag `state` usada para decidir se TODOS os cards da página renderizam. Isso fazia a página inteira "recarregar" e os outros cards (e o próprio `CompositionCard`, ao desmontar/remontar) perderem o estado de collapse. Fix: **Effect C** dedicado, só dependente de `compFilteredTransactions`, faz um POST próprio (`{ transactions: [], allTransactions: compFilteredTransactions }`) e atualiza só `composition` — nunca toca em `state`. Effect B parou de enviar `allTransactions`/de ler `composition` da resposta. Trade-off aceito: 2 requests HTTP separados para `/api/perf-history` em vez de 1 (chaves de cache Redis diferentes para cada), em troca de os filtros de cada card serem independentes de fato.
-- **Débito técnico conhecido (não-bloqueante):** `CompositionCard` duplica estilos inline (`cardHeaderStyle`/`cardBodyStyle`) por estar fora do closure de `PerformanceView` (forçado por escopo). Campos `pos.lastBuyDate`/`pos.lastBuyNotes` em `positionRows` ficaram mortos (calculados mas não mais lidos) após a extração do helper — limpeza cosmética pendente. Testes formais para `computeCompositionSeries`/`computeBankBondsValueAt` ainda não existem em `test/perf-history.test.mjs` (o auditor validou com 3 casos ad-hoc, não incorporados ao suite).
+- **Texto de rodapé** simplificado para apenas "Excludes BRA Fixed Income".
+- **Filtragem 100% client-side (bugfix de performance, jul/2026):** a primeira versão refetchava `/api/perf-history` a cada mudança no filtro de Asset Class/Ticker do card, o que levava 1-2s (fetch ao vivo de candles no Twelve Data/brapi quando o novo subconjunto de tickers não estava em cache) — UX ruim para algo que devia ser instantâneo. Fix: `computeCompositionSeries` (backend) passou a retornar granularidade **por ticker** (`{ dates, tickerValues: { [ticker]: number[] }, tickerClass: { [ticker]: assetClass } }`) em vez de já agregado por classe (`classValues`), sempre para o portfólio inteiro (`allTransactions`). O fetch (**Effect C** em `Performance.jsx`) roda **uma única vez** por carregamento de página (depende só de `transactions`, não mais do filtro do card). O filtro de Asset Class/Ticker é aplicado inteiramente no cliente (`filteredComposition`, `useMemo`): soma `tickerValues` só dos tickers que passam no filtro, por classe — troca instantânea, sem round-trip de rede. `compFilteredTransactions` continua existindo apenas para o cálculo local (sem rede) do accrual de Bank Bonds. **Cache bump v13→v14** (mudança de shape do campo `composition`).
+- **Débito técnico conhecido (não-bloqueante):** `CompositionCard` duplica estilos inline (`cardHeaderStyle`/`cardBodyStyle`) por estar fora do closure de `PerformanceView` (forçado por escopo). Campos `pos.lastBuyDate`/`pos.lastBuyNotes` em `positionRows` ficaram mortos (calculados mas não mais lidos) após a extração do helper — limpeza cosmética pendente. Testes formais para `computeCompositionSeries`/`computeBankBondsValueAt` ainda não existem em `test/perf-history.test.mjs` (validado com sanity-checks ad-hoc, não incorporados ao suite).
 
 ### Tabela: Position Performance
 
@@ -323,6 +322,7 @@ Ticker (sticky) | Avg Cost | Price | Qty | Total Cost | Current Value | Total Ga
 | v11    | `INCLUDED_CLASSES` expandido (PR #37 + #39) |
 | v12    | Cache key inclui hash das transactions — invalida automaticamente quando transactions mudam |
 | v13    | Adicionou o campo `composition` à resposta (feature Composition Evolution, jul/2026) — mudança de shape |
+| v14    | `composition` passou de `classValues` (agregado por classe) para `tickerValues`+`tickerClass` (por ticker) — permite filtro de Asset Class/Ticker 100% client-side no card Composition Evolution (jul/2026) |
 
 ### Estados especiais
 
@@ -334,7 +334,7 @@ Loading / erro / vazio com mensagens específicas por `meta.reason`.
 - **Fixed income sem preço de mercado:** CDs e Tesouro ignorados silenciosamente no cálculo do gráfico (aparecem na Position Performance via preço manual)
 - **TWR** escolhido vs benchmark; MWR/IRR fica pra Fase 2
 - **Position Performance usa câmbio atual** para ativos BR
-- **Cache v13** com hash de transactions — invalida automaticamente quando transactions mudam (antes, cache de `perf-history` ficava stale após edições); bump v12→v13 foi pelo campo novo `composition` (Composition Evolution, jul/2026)
+- **Cache v14** com hash de transactions — invalida automaticamente quando transactions mudam (antes, cache de `perf-history` ficava stale após edições); bump v12→v13 foi pelo campo novo `composition` (Composition Evolution, jul/2026); bump v13→v14 foi a mudança de `classValues` para `tickerValues`/`tickerClass` (filtro client-side, jul/2026)
 - **Composition Evolution exclui `BRA Fixed Income`** — sem preço de mercado disponível, sem fallback flat (mesma limitação de Tesouro/CDs no gráfico de TWR)
 
 -----
@@ -714,6 +714,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**`BRA Fixed Income` excluida de `COMPOSITION_CLASSES` (jul/2026)**|Mesma limitacao estrutural do grafico de TWR: Tesouro/CDs nao tem preco de mercado disponivel (ver "BRA Fixed Income" nas Constraints) e nao ha fallback flat razoavel para uma serie historica de composicao. `COMPOSITION_CLASSES = INCLUDED_CLASSES - BRA Fixed Income`.|
 |**`computeBankBondsValueAt(transactions, asOfISO)` generalizado a partir do accrual hardcoded em `Date.now()` (jul/2026)**|`positionRows` ja calculava o valor accrued de Bank Bonds mas hardcoded pra "hoje" (`Date.now()`). Composition Evolution precisa do mesmo calculo em N datas historicas do range selecionado. Extrair um helper puro parametrizado por data evita duplicar a logica de accrual entre os dois usos.|
 |**Cache bump v12→v13 (jul/2026, Composition Evolution)**|Campo novo `composition` na resposta e mudanca de shape — cache antigo nao teria o campo, quebrando o card silenciosamente sem o bump.|
+|**Cache bump v13→v14 (jul/2026, bugfix performance Composition Evolution)**|`composition.classValues` (agregado por classe) trocado por `tickerValues`+`tickerClass` (por ticker), pra permitir filtro de Asset Class/Ticker do card 100% client-side (sem refetch a cada toggle, que levava 1-2s). Mudanca de shape exige bump.|
 
 -----
 
@@ -748,7 +749,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 | `PUT /api/transactions` | Salva `{ transactions, bondIncome?, splitEvents? }`; quando `bondIncome` e/ou `splitEvents` sao omitidos, preserva os valores existentes (read-modify-write unica) |
 | `GET /api/price` | Quote real-time de um ticker (Finnhub para US, brapi para B3); `?fx=USDBRL` retorna taxa de câmbio |
 | `GET /api/index-quote` | Quote do SPY |
-| `POST /api/perf-history` | Recebe `{ transactions, allTransactions? }`, retorna série TWR + portfolioUSD + `composition` (cache Redis v13) |
+| `POST /api/perf-history` | Recebe `{ transactions, allTransactions? }`, retorna série TWR + portfolioUSD + `composition` (por ticker: `tickerValues`/`tickerClass`, agregação por classe é client-side) (cache Redis v14) |
 | `GET/POST /api/users` | Admin: listar/convidar/remover emails no allowlist Redis |
 | `POST /api/events` | Recebe `{ tickers }`, retorna eventos corporativos (ex_dividend, payout, earnings, split) janela -30d/+90d; cache Redis GLOBAL por hash de tickers, TTL ate proximo fechamento de mercado |
 | `POST /api/split-detect` | Recebe `{ tickers }`, retorna TODOS os splits historicos (Yahoo `chart?events=split` range=10y, fallback Polygon) para deteccao de splits nao refletidos no historico; cache Redis GLOBAL `splitdetect:v1:{hash}`, TTL ate proximo fechamento de mercado |

@@ -45,9 +45,12 @@ function simpleHash(str) {
 
 function perfKeyFromAuth(auth, txsHash) {
   if (!auth?.storageKey) return null;
-  // v13: response shape gained a `composition` field (Composition Evolution
-  // card) alongside the transaction hash from v12.
-  return auth.storageKey.replace(/:holdings$/, `:perf-history:v13:${txsHash}`);
+  // v14: `composition` now reports per-ticker series (`tickerValues` +
+  // `tickerClass`) instead of a pre-aggregated `classValues` map, so the
+  // frontend can apply its Asset Class/Ticker filter client-side (instant,
+  // no refetch) instead of round-tripping to this endpoint on every filter
+  // change. v13 shipped the original class-aggregated shape.
+  return auth.storageKey.replace(/:holdings$/, `:perf-history:v14:${txsHash}`);
 }
 
 // Returns seconds until the next US market close (≈21:00 UTC = 4 PM ET).
@@ -379,16 +382,21 @@ export function computePerformance({
 
 // Pure calculation for the "Composition Evolution" card — exported for
 // testability. Unlike computePerformance (TWR from a fixed inception date),
-// this replays cumulative positions and reports absolute USD value per asset
-// class, sampled ONLY on the actual dates transactions occurred (no daily
-// grid) so the frontend can chart a stacked-area breakdown over time.
+// this replays cumulative positions and reports absolute USD value PER
+// TICKER (not pre-aggregated by class), sampled ONLY on the actual dates
+// transactions occurred (no daily grid). Always computed over the FULL
+// portfolio's composition-eligible transactions — the Asset Class/Ticker
+// filter on the Composition Evolution card is applied entirely client-side
+// by summing `tickerValues` for whichever tickers pass the filter, keyed by
+// `tickerClass`. This avoids a network round-trip (and the 1-2s Twelve
+// Data/brapi fetch it implied) every time the user toggles that filter.
 export function computeCompositionSeries({ transactions, candles, fxMap = {} }) {
   const filtered = (transactions || [])
     .filter((tx) => tx?.assetClass && COMPOSITION_CLASSES.has(tx.assetClass))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   if (filtered.length === 0) {
-    return { dates: [], classValues: {} };
+    return { dates: [], tickerValues: {}, tickerClass: {} };
   }
 
   const firstDate = filtered[0].date.slice(0, 10);
@@ -410,7 +418,7 @@ export function computeCompositionSeries({ transactions, candles, fxMap = {} }) 
     const t = tx.ticker?.toUpperCase();
     if (t) tickerClass[t] = tx.assetClass;
   }
-  const classesSeen = [...new Set(Object.values(tickerClass))];
+  const tickers = Object.keys(tickerClass);
 
   const txByDate = {};
   for (const tx of filtered) {
@@ -420,8 +428,8 @@ export function computeCompositionSeries({ transactions, candles, fxMap = {} }) 
   }
 
   const positions = {};
-  const classValues = {};
-  for (const cls of classesSeen) classValues[cls] = [];
+  const tickerValues = {};
+  for (const t of tickers) tickerValues[t] = [];
 
   for (const d of allDates) {
     if (txByDate[d]) {
@@ -436,33 +444,28 @@ export function computeCompositionSeries({ transactions, candles, fxMap = {} }) 
 
     if (!distinctSet.has(d)) continue;
 
-    const valuesByClass = {};
-    for (const [ticker, qty] of Object.entries(positions)) {
-      if (qty <= 0) continue;
-      const cls = tickerClass[ticker];
-      if (!cls) continue;
-      const rawPrice = filled[ticker]?.[d];
-      // Bank Bonds (CUSIPs) and any other ticker with no candle source
-      // naturally contribute 0 here — the frontend overlays a client-computed
-      // Bank Bonds series (accrued-interest projection) on top of this.
-      if (rawPrice == null) continue;
-      let usdPrice;
-      if (isBrazilianTicker(ticker)) {
-        const fx = filledFx[d];
-        if (!fx) continue;
-        usdPrice = rawPrice / fx;
-      } else {
-        usdPrice = rawPrice;
+    for (const ticker of tickers) {
+      const qty = positions[ticker] || 0;
+      let value = 0;
+      if (qty > 0) {
+        const rawPrice = filled[ticker]?.[d];
+        // Bank Bonds (CUSIPs) and any other ticker with no candle source
+        // naturally contribute 0 here — the frontend overlays a
+        // client-computed Bank Bonds series (accrued-interest projection).
+        if (rawPrice != null) {
+          if (isBrazilianTicker(ticker)) {
+            const fx = filledFx[d];
+            if (fx) value = qty * (rawPrice / fx);
+          } else {
+            value = qty * rawPrice;
+          }
+        }
       }
-      valuesByClass[cls] = (valuesByClass[cls] || 0) + qty * usdPrice;
-    }
-
-    for (const cls of classesSeen) {
-      classValues[cls].push(+((valuesByClass[cls] || 0).toFixed(2)));
+      tickerValues[ticker].push(+value.toFixed(2));
     }
   }
 
-  return { dates: distinctDates, classValues };
+  return { dates: distinctDates, tickerValues, tickerClass };
 }
 
 export default async function handler(req, res) {
@@ -492,8 +495,9 @@ export default async function handler(req, res) {
   // `transactions` is the (possibly client-filtered by Asset Class/Ticker
   // chips) set used for the TWR performance chart — unchanged from before.
   // `allTransactions`, when provided, is the FULL unfiltered portfolio and is
-  // used only to compute `composition` (the Composition Evolution card always
-  // shows the whole portfolio, independent of those chart filters). Falls
+  // used to compute `composition` (always the whole portfolio server-side —
+  // the Composition Evolution card's own Asset Class/Ticker filter is
+  // applied client-side over the per-ticker series, not sent here). Falls
   // back to `transactions` for backward compatibility if omitted.
   const { transactions, allTransactions } = req.body || {};
   if (!Array.isArray(transactions)) {
@@ -511,7 +515,7 @@ export default async function handler(req, res) {
   if (eligible.length === 0 && compEligible.length === 0) {
     return res.status(200).json({
       dates: [], portfolio: [], spy: [],
-      composition: { dates: [], classValues: {} },
+      composition: { dates: [], tickerValues: {}, tickerClass: {} },
       meta: {
         reason: 'no-eligible-transactions',
         txTotal: transactions.length,
