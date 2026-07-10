@@ -21,6 +21,13 @@ const INCLUDED_CLASSES = new Set([
   'Unallocated USD',
 ]);
 
+// Composition Evolution card: same eligible classes as the performance chart,
+// minus BRA Fixed Income (no market price source at all — manual BRL entry
+// only, so it cannot be reconstructed historically; see docs/CONTEXT.md).
+const COMPOSITION_CLASSES = new Set(
+  [...INCLUDED_CLASSES].filter((c) => c !== 'BRA Fixed Income')
+);
+
 const FETCH_TIMEOUT_MS = 15000;
 const TWELVEDATA_BATCH = 20; // tickers per request
 
@@ -38,8 +45,9 @@ function simpleHash(str) {
 
 function perfKeyFromAuth(auth, txsHash) {
   if (!auth?.storageKey) return null;
-  // v12: cache key includes transaction hash so any change invalidates automatically.
-  return auth.storageKey.replace(/:holdings$/, `:perf-history:v12:${txsHash}`);
+  // v13: response shape gained a `composition` field (Composition Evolution
+  // card) alongside the transaction hash from v12.
+  return auth.storageKey.replace(/:holdings$/, `:perf-history:v13:${txsHash}`);
 }
 
 // Returns seconds until the next US market close (≈21:00 UTC = 4 PM ET).
@@ -369,6 +377,94 @@ export function computePerformance({
   };
 }
 
+// Pure calculation for the "Composition Evolution" card — exported for
+// testability. Unlike computePerformance (TWR from a fixed inception date),
+// this replays cumulative positions and reports absolute USD value per asset
+// class, sampled ONLY on the actual dates transactions occurred (no daily
+// grid) so the frontend can chart a stacked-area breakdown over time.
+export function computeCompositionSeries({ transactions, candles, fxMap = {} }) {
+  const filtered = (transactions || [])
+    .filter((tx) => tx?.assetClass && COMPOSITION_CLASSES.has(tx.assetClass))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  if (filtered.length === 0) {
+    return { dates: [], classValues: {} };
+  }
+
+  const firstDate = filtered[0].date.slice(0, 10);
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const distinctDates = [...new Set(filtered.map((tx) => tx.date.slice(0, 10)))].sort();
+  const distinctSet = new Set(distinctDates);
+
+  const allDates = buildDateRange(firstDate, todayDate);
+  const filled = {};
+  for (const [t, raw] of Object.entries(candles || {})) {
+    filled[t] = carryForward(raw, allDates);
+  }
+  const filledFx = carryForward(fxMap, allDates);
+
+  // Ticker -> asset class, from the last known transaction for that ticker
+  // (same convention used elsewhere in the project, e.g. positionRows).
+  const tickerClass = {};
+  for (const tx of filtered) {
+    const t = tx.ticker?.toUpperCase();
+    if (t) tickerClass[t] = tx.assetClass;
+  }
+  const classesSeen = [...new Set(Object.values(tickerClass))];
+
+  const txByDate = {};
+  for (const tx of filtered) {
+    const d = tx.date.slice(0, 10);
+    if (!txByDate[d]) txByDate[d] = [];
+    txByDate[d].push(tx);
+  }
+
+  const positions = {};
+  const classValues = {};
+  for (const cls of classesSeen) classValues[cls] = [];
+
+  for (const d of allDates) {
+    if (txByDate[d]) {
+      for (const tx of txByDate[d]) {
+        const ticker = tx.ticker?.toUpperCase();
+        if (!ticker) continue;
+        const qty = Number(tx.qty) || 0;
+        const isSell = (tx.side || '').toLowerCase() === 'sell';
+        positions[ticker] = (positions[ticker] || 0) + (isSell ? -qty : qty);
+      }
+    }
+
+    if (!distinctSet.has(d)) continue;
+
+    const valuesByClass = {};
+    for (const [ticker, qty] of Object.entries(positions)) {
+      if (qty <= 0) continue;
+      const cls = tickerClass[ticker];
+      if (!cls) continue;
+      const rawPrice = filled[ticker]?.[d];
+      // Bank Bonds (CUSIPs) and any other ticker with no candle source
+      // naturally contribute 0 here — the frontend overlays a client-computed
+      // Bank Bonds series (accrued-interest projection) on top of this.
+      if (rawPrice == null) continue;
+      let usdPrice;
+      if (isBrazilianTicker(ticker)) {
+        const fx = filledFx[d];
+        if (!fx) continue;
+        usdPrice = rawPrice / fx;
+      } else {
+        usdPrice = rawPrice;
+      }
+      valuesByClass[cls] = (valuesByClass[cls] || 0) + qty * usdPrice;
+    }
+
+    for (const cls of classesSeen) {
+      classValues[cls].push(+((valuesByClass[cls] || 0).toFixed(2)));
+    }
+  }
+
+  return { dates: distinctDates, classValues };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -393,18 +489,29 @@ export default async function handler(req, res) {
 
   const bypassCache = req.query?.refresh === '1';
 
-  const { transactions } = req.body || {};
+  // `transactions` is the (possibly client-filtered by Asset Class/Ticker
+  // chips) set used for the TWR performance chart — unchanged from before.
+  // `allTransactions`, when provided, is the FULL unfiltered portfolio and is
+  // used only to compute `composition` (the Composition Evolution card always
+  // shows the whole portfolio, independent of those chart filters). Falls
+  // back to `transactions` for backward compatibility if omitted.
+  const { transactions, allTransactions } = req.body || {};
   if (!Array.isArray(transactions)) {
     return res.status(400).json({ error: 'transactions array required' });
   }
+  const compositionSource = Array.isArray(allTransactions) ? allTransactions : transactions;
 
   const eligible = transactions.filter(
     (tx) => tx?.assetClass && INCLUDED_CLASSES.has(tx.assetClass)
   );
+  const compEligible = compositionSource.filter(
+    (tx) => tx?.assetClass && COMPOSITION_CLASSES.has(tx.assetClass)
+  );
 
-  if (eligible.length === 0) {
+  if (eligible.length === 0 && compEligible.length === 0) {
     return res.status(200).json({
       dates: [], portfolio: [], spy: [],
+      composition: { dates: [], classValues: {} },
       meta: {
         reason: 'no-eligible-transactions',
         txTotal: transactions.length,
@@ -414,9 +521,11 @@ export default async function handler(req, res) {
     });
   }
 
-  // Hash over fields that affect the performance calculation so any change busts the cache.
+  // Hash over fields that affect either calculation so any change busts the cache.
   const txsHash = simpleHash(
-    eligible.map(t => `${t.id}|${t.date}|${t.side}|${t.ticker}|${t.qty}|${t.price}`).sort().join(',')
+    eligible.map(t => `${t.id}|${t.date}|${t.side}|${t.ticker}|${t.qty}|${t.price}`).sort().join(',') +
+    '|comp:' +
+    compEligible.map(t => `${t.id}|${t.date}|${t.side}|${t.ticker}|${t.qty}|${t.price}`).sort().join(',')
   );
   const cacheKey = perfKeyFromAuth(auth, txsHash);
 
@@ -428,11 +537,18 @@ export default async function handler(req, res) {
   }
 
   eligible.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const firstDate = eligible[0].date.slice(0, 10);
+  compEligible.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const firstDateCandidates = [];
+  if (eligible.length) firstDateCandidates.push(eligible[0].date.slice(0, 10));
+  if (compEligible.length) firstDateCandidates.push(compEligible[0].date.slice(0, 10));
+  const firstDate = firstDateCandidates.sort()[0];
   const todayDate = new Date().toISOString().slice(0, 10);
 
   const uniqueTickers = [
-    ...new Set(eligible.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean)),
+    ...new Set([
+      ...eligible.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean),
+      ...compEligible.map((tx) => tx.ticker?.toUpperCase()).filter(Boolean),
+    ]),
   ];
   const brTickers = uniqueTickers.filter(isBrazilianTicker);
   const usTickers = uniqueTickers.filter((t) => !isBrazilianTicker(t));
@@ -490,6 +606,12 @@ export default async function handler(req, res) {
     todayDate,
   });
 
+  result.composition = computeCompositionSeries({
+    transactions: compEligible,
+    candles: candleMap,
+    fxMap,
+  });
+
   const usMissing = usTickers.filter((t) => !candleMap[t]);
 
   result.meta = {
@@ -509,7 +631,7 @@ export default async function handler(req, res) {
     fetchMs,
   };
 
-  if (cacheKey && result.dates.length > 0) {
+  if (cacheKey && (result.dates.length > 0 || result.composition.dates.length > 0)) {
     try {
       await redis.set(cacheKey, JSON.stringify(result), 'EX', secondsUntilNextMarketClose());
     } catch {}
