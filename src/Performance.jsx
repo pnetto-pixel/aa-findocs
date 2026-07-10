@@ -1377,38 +1377,10 @@ function CompositionCard({
             </div>
           ) : (
             <>
-              {/* Period pills, no icons */}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
-                <div style={{ display: "flex", gap: 2 }}>
-                  {COMPOSITION_PERIODS.map(({ label }) => {
-                    const active = period === label;
-                    return (
-                      <button
-                        key={label}
-                        onClick={() => setPeriod(label)}
-                        style={{
-                          fontFamily: FONT_MONO,
-                          fontSize: 11,
-                          letterSpacing: "0.08em",
-                          padding: "5px 10px",
-                          border: `1px solid ${active ? T.blue + "66" : T.border}`,
-                          borderRadius: 3,
-                          background: active ? T.blue + "18" : "transparent",
-                          color: active ? T.blue : T.textDim,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {/* Asset Class / Ticker filter chips — same dropdown component
                   used by the Portfolio Performance & Net Worth card above. */}
               {assetClassOptions.length > 0 && (
-                <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
                   <FilterChip
                     label="Asset Class"
                     options={assetClassOptions}
@@ -1440,6 +1412,35 @@ function CompositionCard({
                   )}
                 </div>
               )}
+
+              {/* Period pills, no icons — same gold-fill style as the
+                  "Income History" card's period selector in Dividends.jsx. */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20 }}>
+                <div style={{ display: "flex", gap: 2 }}>
+                  {COMPOSITION_PERIODS.map(({ label }) => {
+                    const active = period === label;
+                    return (
+                      <button
+                        key={label}
+                        onClick={() => setPeriod(label)}
+                        style={{
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          padding: "5px 12px",
+                          border: `1px solid ${active ? T.gold : T.border}`,
+                          borderRadius: 4,
+                          background: active ? T.gold : T.cardElev,
+                          color: active ? T.bg : T.textDim,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
               <div
                 style={{
@@ -1536,7 +1537,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   // assetClassFilter/tickerFilter above (that pair drives the TWR chart).
   const [compAssetClassFilter, setCompAssetClassFilter] = useState(() => new Set());
   const [compTickerFilter, setCompTickerFilter] = useState(() => new Set());
-  const [composition, setComposition] = useState({ dates: [], classValues: {} }); // series from the backend, scoped by the filters above
+  // Raw per-ticker composition series for the FULL portfolio, fetched once
+  // (Effect C below) and never re-fetched when the card's own Asset
+  // Class/Ticker filter changes — that filter is applied client-side over
+  // `tickerValues`, so toggling it is instant instead of waiting on a fresh
+  // Twelve Data/brapi round-trip.
+  const [compositionRaw, setCompositionRaw] = useState({ dates: [], tickerValues: {}, tickerClass: {} });
 
   // ── Effect A: raw, unfiltered load on auth change ──────────────────────────
   // Loads transactions + bond income + dividend events. These also feed the
@@ -1556,7 +1562,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setTickerFilter(new Set());
     setCompAssetClassFilter(new Set());
     setCompTickerFilter(new Set());
-    setComposition({ dates: [], classValues: {} });
+    setCompositionRaw({ dates: [], tickerValues: {}, tickerClass: {} });
 
     (async () => {
       try {
@@ -1773,10 +1779,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     return () => { cancelled = true; };
   }, [auth, transactionsLoaded, filteredTransactions]);
 
-  // ── Effect C: refetch just the Composition Evolution series whenever its
-  // own independent Asset Class/Ticker filter changes. Kept separate from
-  // Effect B on purpose (see comment above) so this card's filter never
-  // triggers the page-wide loading state.
+  // ── Effect C: fetches the Composition Evolution series ONCE per full
+  // portfolio load (deps: `transactions`, not the card's own filter state).
+  // The response carries per-ticker series (`tickerValues`/`tickerClass`),
+  // and the card's Asset Class/Ticker filter is applied client-side over
+  // that data (see `filteredComposition` below) — so toggling the filter
+  // never triggers a network request, fixing the 1-2s lag from when this
+  // used to refetch on every filter change.
   useEffect(() => {
     if (!transactionsLoaded) return;
     let cancelled = false;
@@ -1785,10 +1794,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       try {
         const { composition: compResp } = await postPerfHistory(auth, {
           transactions: [],
-          allTransactions: compFilteredTransactions,
+          allTransactions: transactions,
         });
         if (cancelled) return;
-        setComposition(compResp && Array.isArray(compResp.dates) ? compResp : { dates: [], classValues: {} });
+        setCompositionRaw(
+          compResp && Array.isArray(compResp.dates)
+            ? compResp
+            : { dates: [], tickerValues: {}, tickerClass: {} }
+        );
       } catch {
         // Silent — Composition Evolution simply keeps its last good series;
         // the shared error UI is owned by Effect B.
@@ -1796,7 +1809,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     })();
 
     return () => { cancelled = true; };
-  }, [auth, transactionsLoaded, compFilteredTransactions]);
+  }, [auth, transactionsLoaded, transactions]);
 
   const hasUSD = rawData.some((d) => d.usd != null);
 
@@ -1902,19 +1915,41 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
+  // Applies the Composition Evolution card's own Asset Class/Ticker filter
+  // client-side: sums `tickerValues` (from Effect C, the full-portfolio
+  // per-ticker series) into per-class totals, including only tickers that
+  // pass the filter. Instant — no network request involved.
+  const filteredComposition = useMemo(() => {
+    const { dates, tickerValues, tickerClass } = compositionRaw;
+    if (!dates?.length) return { dates: [], classValues: {} };
+    const includedTickers = Object.keys(tickerClass).filter(
+      (t) =>
+        (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tickerClass[t])) &&
+        (compTickerFilter.size === 0 || compTickerFilter.has(t))
+    );
+    const classValues = {};
+    for (const t of includedTickers) {
+      const cls = tickerClass[t];
+      const vals = tickerValues[t] || [];
+      if (!classValues[cls]) classValues[cls] = dates.map(() => 0);
+      classValues[cls] = classValues[cls].map((v, i) => v + (vals[i] || 0));
+    }
+    return { dates, classValues };
+  }, [compositionRaw, compAssetClassFilter, compTickerFilter]);
+
   // Overlays a client-computed Bank Bonds value series (accrued-interest
-  // projection, same helper used by Position Performance above) onto the
-  // backend's composition.classValues — the backend's own "Bank Bonds"
-  // entries are naturally all-zero since CUSIPs have no candle source.
+  // projection, same helper used by Position Performance above) onto
+  // filteredComposition — the backend's own "Bank Bonds" ticker values are
+  // naturally all-zero since CUSIPs have no candle source.
   const mergedComposition = useMemo(() => {
-    const dates = composition.dates || [];
+    const dates = filteredComposition.dates || [];
     if (!dates.length) return { dates: [], classValues: {} };
-    const classValues = { ...composition.classValues };
+    const classValues = { ...filteredComposition.classValues };
     if (compFilteredTransactions.some((tx) => tx.assetClass === "Bank Bonds")) {
       classValues["Bank Bonds"] = dates.map((d) => computeBankBondsValueAt(compFilteredTransactions, d).total);
     }
     return { dates, classValues };
-  }, [composition, compFilteredTransactions]);
+  }, [filteredComposition, compFilteredTransactions]);
 
   const alpha =
     lastPortfolio != null && lastSpy != null
@@ -2136,11 +2171,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                             fontFamily: FONT_MONO,
                             fontSize: 11,
                             letterSpacing: "0.08em",
-                            padding: "5px 10px",
-                            border: `1px solid ${active ? T.blue + "66" : T.border}`,
-                            borderRadius: 3,
-                            background: active ? T.blue + "18" : "transparent",
-                            color: active ? T.blue : T.textDim,
+                            padding: "5px 12px",
+                            border: `1px solid ${active ? T.gold : T.border}`,
+                            borderRadius: 4,
+                            background: active ? T.gold : T.cardElev,
+                            color: active ? T.bg : T.textDim,
                             cursor: "pointer",
                             transition: "color 0.15s, background 0.15s, border-color 0.15s",
                           }}
