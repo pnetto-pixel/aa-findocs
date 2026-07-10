@@ -1200,10 +1200,10 @@ function SegmentedToggle({ options, value, onChange }) {
               fontSize: 10,
               letterSpacing: "0.06em",
               padding: "5px 10px",
-              border: `1px solid ${active ? T.blue + "66" : T.border}`,
+              border: `1px solid ${active ? T.gold : T.border}`,
               borderRadius: 4,
-              background: active ? T.blue + "18" : "transparent",
-              color: active ? T.blue : T.textDim,
+              background: active ? T.gold : T.cardElev,
+              color: active ? T.bg : T.textDim,
               cursor: "pointer",
             }}
           >
