@@ -595,6 +595,33 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 
 -----
 
+## 🖱️ Feature: Scroll Hint (indicador de swipe horizontal em tabelas — jul/2026, commit `cfb5d3b`, merge `0e4f9b0`, merged em main)
+
+Feature puramente visual/client-side, inspirada no statusinvest.com.br: tabelas cujo conteudo nao cabe na tela do iPhone (scroll horizontal necessario) ganham um indicador ensinando que da pra arrastar.
+
+### Componente `ScrollHintTable`
+
+Duplicado module-level (sem shared module entre arquivos `src/`, mesma convencao ja adotada por `TickerFilterPopover`/`FilterMultiSelect`/`cardHeaderStyle`/`CardTitle`) em 5 arquivos: `src/Transactions.jsx`, `src/Performance.jsx`, `src/Dividends.jsx`, `src/AporteQuinzenal.jsx`, `src/App.jsx`.
+
+Dois elementos visuais independentes:
+
+1. **Fade de borda persistente** (esquerda/direita) — gradiente sutil sinalizando conteudo cortado. Sempre visivel quando `scrollWidth > clientWidth` (checado via `ResizeObserver`), **independente** de qualquer flag de dismiss. Prop `fadeBg` ajusta a cor do gradiente para bater com o fundo real de cada card (`T.bg`/`T.card`/`T.cardElev`). Prop `leftFadeOffset` (usa a constante `TICKER_COL_WIDTH = 92px`) evita que o fade esquerdo fique escondido atras de colunas `Ticker` com `position: sticky`.
+2. **Pill "Swipe" animado, one-shot** — texto + 2 icones `ChevronRight` (lucide-react) com oscilacao `translateX` (3 ciclos de ~700ms via `setInterval` + `transition` inline, sem `@keyframes` novo). Dispensado por scroll real (`scrollLeft > 4`) ou timeout de ~4s, com fade-out suave. Persistencia via `localStorage.setItem("scrollHintSeen", "1")` — **flag global**, sem escopo por usuario/conta: uma vez dispensado em qualquer tabela, nao aparece mais em nenhuma tabela/sessao futura. Respeita `prefers-reduced-motion` (desativa so a animacao, mantem o pill visivel estatico).
+
+### Call sites (11)
+
+Tabela principal de Transactions, Position Performance, Position Dividends, Contribution Capacity History, Dividends Monthly Y/Y, Dividend History, Bond Income Audit Panel, Fidelity Import staged review, Splits/Groupings preview, Bond Projections payments, preview do modal "Import Allocation Targets" (`App.jsx`).
+
+### Fora de escopo (por pedido explicito do usuario)
+
+Graficos (`recharts`), tab bar do view switcher (`App.jsx`), pills de filtro de Events (`Events.jsx`), `SplitModal` (componente morto, nunca renderizado).
+
+### Notas
+
+100% client-side/visual — nenhuma mudanca em `api/`, `lib/`, contratos de dados, cache ou Redis. Auditoria aprovou sem bloqueadores; 2 achados cosmeticos de baixissima severidade registrados como nao-bloqueantes (ver "Lições Aprendidas"). Pendencia: validacao visual em iPhone real ainda nao feita (ver "Estado Externo" abaixo).
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -717,6 +744,11 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 |**`computeBankBondsValueAt(transactions, asOfISO)` generalizado a partir do accrual hardcoded em `Date.now()` (jul/2026)**|`positionRows` ja calculava o valor accrued de Bank Bonds mas hardcoded pra "hoje" (`Date.now()`). Composition Evolution precisa do mesmo calculo em N datas historicas do range selecionado. Extrair um helper puro parametrizado por data evita duplicar a logica de accrual entre os dois usos.|
 |**Cache bump v12→v13 (jul/2026, Composition Evolution)**|Campo novo `composition` na resposta e mudanca de shape — cache antigo nao teria o campo, quebrando o card silenciosamente sem o bump.|
 |**Cache bump v13→v14 (jul/2026, bugfix performance Composition Evolution)**|`composition.classValues` (agregado por classe) trocado por `tickerValues`+`tickerClass` (por ticker), pra permitir filtro de Asset Class/Ticker do card 100% client-side (sem refetch a cada toggle, que levava 1-2s). Mudanca de shape exige bump.|
+|**`ScrollHintTable` duplicado module-level em 5 arquivos (jul/2026)**|Mesma convencao ja adotada no projeto para componentes pequenos (`TickerFilterPopover`, `FilterMultiSelect`, `cardHeaderStyle`, `CardTitle`) — sem shared module entre arquivos `src/` por design.|
+|**Fade de borda sempre visivel via `ResizeObserver`, independente do dismiss do pill (jul/2026)**|Sinaliza overflow real de conteudo (fato objetivo do DOM), diferente do pill educativo que so precisa aparecer uma vez. Acoplar os dois ao mesmo flag esconderia a pista visual permanentemente apos o primeiro dismiss, mesmo em tabelas novas que o usuario nunca viu.|
+|**Flag `scrollHintSeen` global no localStorage, sem escopo por usuario/conta (jul/2026)**|E uma dica de UI generica ("da pra arrastar"), nao um dado de conta — nao precisa do padrao de scoping por email/senha usado em `alertLog`/`alertLogKey`. Uma vez o usuario aprende o gesto, nao precisa reaprender por tabela ou por conta.|
+|**Animacao do pill "Swipe" via `setInterval` + `transition` inline, sem `@keyframes` novo (jul/2026)**|Projeto e inline-styles-only (sem CSS files/Tailwind) — `@keyframes` exigiria injetar um `<style>` tag ou CSS-in-JS novo. Oscilacao de `translateX` via state + `setInterval` (3 ciclos ~700ms) reusa o mesmo padrao de transicoes inline ja usado no resto do app.|
+|**`leftFadeOffset` usa `TICKER_COL_WIDTH` (92px) no `ScrollHintTable` (jul/2026)**|Varias tabelas tem coluna `Ticker` com `position: sticky` cobrindo a borda esquerda — sem o offset, o fade esquerdo ficaria renderizado atras da coluna sticky e invisivel.|
 
 -----
 
@@ -726,6 +758,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - **Env vars no Vercel:** ⚠️ **Verificação pendente.** Lista esperada: `APP_PASSWORD`, `FINNHUB_API_KEY`, `BRAPI_API_KEY`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `VITE_GOOGLE_CLIENT_ID`, `ALLOWED_EMAILS`, `ADMIN_EMAILS`, `VITE_ADMIN_EMAILS`, `POLYGON_API_KEY`.
 - **Tab Events — Yahoo `events=earn` em producao:** ⚠️ **Nao validado.** Hosts externos estavam bloqueados no sandbox de implementacao. Comportamento esperado: Yahoo pode retornar apenas earnings passados dependendo do ticker/janela. Se confirmado, earnings futuros dependem exclusivamente de `FINNHUB_API_KEY`. Validar com um ticker de earnings proximo (ex: AAPL pre-earnings) apos o primeiro deploy.
 - **Split Detection — reachability Yahoo/Polygon do `api/split-detect.js`:** ⚠️ **Nao validado.** Hosts externos estavam bloqueados no sandbox de implementacao (commit 4e66bd9). O endpoint busca splits historicos via Yahoo `chart?events=split` (primario) e Polygon `v3/reference/splits` (fallback). Validar a deteccao com um ticker que teve split recente apos o primeiro deploy.
+- **Scroll Hint — validacao visual em iPhone real:** ⚠️ **Nao validado.** Feature 100% client-side (fade de borda + pill animado nas tabelas com scroll horizontal, commit `cfb5d3b`/merge `0e4f9b0`, jul/2026) implementada com build verde, mas o ambiente de dev nao tem acesso a browser/dispositivo pra conferir visualmente. Validar apos o rebuild automatico do Vercel: posicionamento do fade perto de colunas `Ticker` sticky, timing da animacao do pill "Swipe", e comportamento com `prefers-reduced-motion` ativado.
 - **Admin atual:** `pnetto@gmail.com`
 - **Usuários ativos:** Pedro + 1 amigo
 
@@ -837,6 +870,7 @@ O icone Bell deixou de ser especifico de splits e virou um **painel de Alerts** 
 - **Features grandes em chunks (1A/1B/1C)** — entregar incremental, validar entre chunks.
 - **Arquivo separado pra feature grande** — App.jsx só ganha 1 import + 1 prop por feature.
 - **Claude Code: revisar Files changed antes de mergear sempre.**
+- **Timers `setTimeout` de dismiss one-shot devem ser rastreados e limpos no unmount.** Achado cosmético não-bloqueante da auditoria do Scroll Hint (jul/2026): o `setTimeout` que dispensa o pill "Swipe" após ~4s não era guardado em `useRef`/limpo explicitamente em `useEffect` cleanup — sem efeito prático observado (troca de tab é rara nesse intervalo), mas o padrão correto é sempre limpar. Achado relacionado (também não-bloqueante): cenário teórico de `setInterval` double-invoke em React StrictMode (dev only) não afeta build de produção — vale considerar ao revisar código com timers/intervals que rodam em mount.
 - **Claude Code: bug fix = nova session.**
 - **Claude Code: atualizar `docs/CONTEXT.md` + `docs/Features_Roadmap.md` ao final de sessions relevantes.**
 - **Sonnet 4.6 é suficiente pra 95% das tarefas.**
