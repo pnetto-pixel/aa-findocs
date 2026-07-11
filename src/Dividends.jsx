@@ -7,7 +7,7 @@
 // Dividend History: full audit table of every payment.
 
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
-import { ChevronDown, TrendingUp, BarChart2, Receipt, Filter } from "lucide-react";
+import { ChevronDown, ChevronRight, TrendingUp, BarChart2, Receipt, Filter } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -815,6 +815,174 @@ function TickerFilterPopover({ anchor, onClose, options, selected, onChange }) {
   );
 }
 
+// Wraps a horizontally-scrollable table with edge fades (always shown while
+// the content overflows) and a one-shot animated "Swipe" hint pill that
+// teaches the horizontal-scroll gesture. Fades are persistent; the pill is
+// dismissed globally (localStorage flag, no per-user scoping - low-risk UI
+// preference) after the first real horizontal scroll or a ~4s timeout.
+const SCROLL_HINT_SEEN_KEY = "scrollHintSeen";
+
+function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card }) {
+  const scrollRef = useRef(null);
+  const dismissTimerRef = useRef(null);
+  const [showLeftFade, setShowLeftFade] = useState(false);
+  const [showRightFade, setShowRightFade] = useState(false);
+  const [pillPhase, setPillPhase] = useState("hidden"); // "hidden" | "visible" | "fading"
+  const [bounce, setBounce] = useState(false);
+
+  function hasSeenHint() {
+    try {
+      return localStorage.getItem(SCROLL_HINT_SEEN_KEY) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function dismissPill() {
+    if (dismissTimerRef.current) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    try {
+      localStorage.setItem(SCROLL_HINT_SEEN_KEY, "1");
+    } catch (e) {}
+    setPillPhase((p) => (p === "hidden" ? p : "fading"));
+    setTimeout(() => setPillPhase((p) => (p === "fading" ? "hidden" : p)), 320);
+  }
+
+  function measure() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const overflow = el.scrollWidth > el.clientWidth + 1;
+    setShowRightFade(overflow && el.scrollLeft < el.scrollWidth - el.clientWidth - 2);
+    setShowLeftFade(el.scrollLeft > 4);
+    if (overflow && !hasSeenHint()) {
+      setPillPhase((p) => {
+        if (p !== "hidden") return p;
+        if (!dismissTimerRef.current) {
+          dismissTimerRef.current = setTimeout(dismissPill, 4000);
+        }
+        return "visible";
+      });
+    }
+  }
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    measure();
+    let ro;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+    } else {
+      window.addEventListener("resize", measure);
+    }
+    return () => {
+      if (ro) ro.disconnect();
+      else window.removeEventListener("resize", measure);
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (pillPhase !== "visible") return;
+    let reduceMotion = false;
+    try {
+      reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) {}
+    if (reduceMotion) return;
+    let ticks = 0;
+    const id = setInterval(() => {
+      setBounce((b) => !b);
+      ticks += 1;
+      if (ticks >= 6) clearInterval(id);
+    }, 700);
+    return () => clearInterval(id);
+  }, [pillPhase]);
+
+  function handleScroll() {
+    measure();
+    const el = scrollRef.current;
+    if (el && el.scrollLeft > 4) dismissPill();
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", ...style }}
+      >
+        {children}
+      </div>
+      {showRightFade && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            right: 0,
+            width: 28,
+            pointerEvents: "none",
+            background: `linear-gradient(to right, transparent, ${fadeBg} 75%)`,
+          }}
+        />
+      )}
+      {showLeftFade && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: leftFadeOffset,
+            width: 28,
+            pointerEvents: "none",
+            background: `linear-gradient(to left, transparent, ${fadeBg} 75%)`,
+          }}
+        />
+      )}
+      {pillPhase !== "hidden" && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 8,
+            right: 10,
+            background: "rgba(19,22,27,0.9)",
+            border: `1px solid ${T.borderSoft}`,
+            borderRadius: 12,
+            padding: "4px 10px",
+            display: "flex",
+            alignItems: "center",
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            color: T.textDim,
+            opacity: pillPhase === "visible" ? 1 : 0,
+            transition: "opacity 0.3s ease",
+            pointerEvents: "none",
+            whiteSpace: "nowrap",
+          }}
+        >
+          <span>Swipe</span>
+          <ChevronRight
+            size={12}
+            color={T.gold}
+            style={{ marginLeft: 3, transform: bounce ? "translateX(6px)" : "translateX(0)", transition: "transform 0.7s ease-in-out" }}
+          />
+          <ChevronRight
+            size={12}
+            color={T.gold}
+            style={{ marginLeft: -8, transform: bounce ? "translateX(6px)" : "translateX(0)", transition: "transform 0.7s ease-in-out" }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Position Dividends table ──────────────────────────────────────────────────
 
 function PositionDividendsTable({ rows, transactions, valuesHidden, open, onToggle }) {
@@ -1068,7 +1236,7 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
             overflow: "hidden",
           }}
         >
-          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+          <ScrollHintTable leftFadeOffset={TICKER_COL_WIDTH}>
             <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -1141,7 +1309,7 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollHintTable>
           <div
             style={{
               fontFamily: FONT_MONO,
@@ -1701,7 +1869,7 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                   No dividends in {monthLabel}.
                 </div>
               ) : (
-                <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <ScrollHintTable leftFadeOffset={TICKER_COL_WIDTH}>
                   <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
@@ -1755,7 +1923,7 @@ function YearVsYearTable({ events, transactions, valuesHidden, open, onToggle })
                       }
                     </tbody>
                   </table>
-                </div>
+                </ScrollHintTable>
               )}
 
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "10px 16px 14px", letterSpacing: "0.04em" }}>
@@ -1953,7 +2121,7 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
               No dividend payments recorded yet.
             </div>
           ) : (
-            <div style={{ maxHeight: 420, overflowY: "auto", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            <ScrollHintTable style={{ maxHeight: 420, overflowY: "auto" }}>
               <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
@@ -1989,7 +2157,7 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollHintTable>
           )}
         </div>
       )}
@@ -2592,7 +2760,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                       </div>
 
                       {/* Payments table */}
-                      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                      <ScrollHintTable fadeBg={T.cardElev}>
                         <table style={{ width: "100%", minWidth: 300, borderCollapse: "collapse" }}>
                           <thead>
                             <tr>
@@ -2635,7 +2803,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                             </tr>
                           </tfoot>
                         </table>
-                      </div>
+                      </ScrollHintTable>
                     </div>
                   );
                 })
