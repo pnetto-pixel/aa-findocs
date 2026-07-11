@@ -817,14 +817,14 @@ function TickerFilterPopover({ anchor, onClose, options, selected, onChange }) {
 
 // Wraps a horizontally-scrollable table with edge fades (always shown while
 // the content overflows) and a one-shot animated "Swipe" hint pill that
-// teaches the horizontal-scroll gesture. Fades are persistent; the pill is
-// dismissed globally (localStorage flag, no per-user scoping - low-risk UI
-// preference) after the first real horizontal scroll or a ~4s timeout.
+// teaches the horizontal-scroll gesture. Fades are persistent; the pill
+// keeps bouncing to draw attention until the user actually scrolls
+// horizontally, then it's dismissed globally (localStorage flag, no
+// per-user scoping - low-risk UI preference).
 const SCROLL_HINT_SEEN_KEY = "scrollHintSeen";
 
 function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card }) {
   const scrollRef = useRef(null);
-  const dismissTimerRef = useRef(null);
   const [showLeftFade, setShowLeftFade] = useState(false);
   const [showRightFade, setShowRightFade] = useState(false);
   const [pillPhase, setPillPhase] = useState("hidden"); // "hidden" | "visible" | "fading"
@@ -839,10 +839,6 @@ function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card 
   }
 
   function dismissPill() {
-    if (dismissTimerRef.current) {
-      clearTimeout(dismissTimerRef.current);
-      dismissTimerRef.current = null;
-    }
     try {
       localStorage.setItem(SCROLL_HINT_SEEN_KEY, "1");
     } catch (e) {}
@@ -857,13 +853,7 @@ function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card 
     setShowRightFade(overflow && el.scrollLeft < el.scrollWidth - el.clientWidth - 2);
     setShowLeftFade(el.scrollLeft > 4);
     if (overflow && !hasSeenHint()) {
-      setPillPhase((p) => {
-        if (p !== "hidden") return p;
-        if (!dismissTimerRef.current) {
-          dismissTimerRef.current = setTimeout(dismissPill, 4000);
-        }
-        return "visible";
-      });
+      setPillPhase((p) => (p === "hidden" ? "visible" : p));
     }
   }
 
@@ -881,7 +871,6 @@ function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card 
     return () => {
       if (ro) ro.disconnect();
       else window.removeEventListener("resize", measure);
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -893,11 +882,8 @@ function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card 
       reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     } catch (e) {}
     if (reduceMotion) return;
-    let ticks = 0;
     const id = setInterval(() => {
       setBounce((b) => !b);
-      ticks += 1;
-      if (ticks >= 6) clearInterval(id);
     }, 700);
     return () => clearInterval(id);
   }, [pillPhase]);
