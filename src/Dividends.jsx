@@ -2048,6 +2048,18 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
   }, [events, filters, sort]);
 
   const totalReceived = useMemo(() => visible.reduce((s, e) => s + (e.totalReceived || 0), 0), [visible]);
+  // Gross/tax breakdown — only meaningful (and only shown) when at least one foreign-tax
+  // row is present among the visible rows. totalReceived above is already the net figure
+  // (gross dividends + negative tax rows summed together).
+  const grossReceived = useMemo(
+    () => visible.reduce((s, e) => s + (e.incomeType !== "tax" ? (e.totalReceived || 0) : 0), 0),
+    [visible]
+  );
+  const taxWithheld = useMemo(
+    () => visible.reduce((s, e) => s + (e.incomeType === "tax" ? (e.totalReceived || 0) : 0), 0),
+    [visible]
+  );
+  const hasTaxRows = taxWithheld !== 0;
 
   function openPopover(col, e) { setOpenCol(col); setAnchor(e.currentTarget); }
   function closePopover() { setOpenCol(null); setAnchor(null); }
@@ -2102,6 +2114,19 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
 
       {open && (
         <div style={{ background: T.card, border: `1px solid ${T.borderSoft}`, borderTop: "none", borderRadius: "0 0 4px 4px", marginTop: -1, overflow: "hidden" }}>
+          {hasTaxRows && (
+            <div style={{ display: "flex", gap: 18, padding: "10px 16px", borderBottom: `1px solid ${T.borderSoft}`, background: "rgba(224,164,88,0.04)" }}>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Gross <span style={{ color: T.text }}>{fmtUSD(grossReceived, valuesHidden)}</span>
+              </span>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Foreign Tax <span style={{ color: T.red }}>{fmtUSD(taxWithheld, valuesHidden)}</span>
+              </span>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Net <span style={{ color: T.green, fontWeight: 600 }}>{fmtUSD(totalReceived, valuesHidden)}</span>
+              </span>
+            </div>
+          )}
           {events.length === 0 ? (
             <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
               No dividend payments recorded yet.
@@ -2127,11 +2152,16 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                     <td style={tdBase}>—</td>
                     <td style={{ ...tdBase, color: T.green, fontWeight: 700 }}>{fmtUSD(totalReceived, valuesHidden)}</td>
                   </tr>
-                  {visible.map((e, i) => (
-                    <tr key={`${e.ticker}-${e.date}-${i}`}>
+                  {visible.map((e, i) => {
+                    const isTax = e.incomeType === "tax";
+                    return (
+                    <tr key={`${e.ticker}-${e.date}-${i}`} style={isTax ? { background: "rgba(232,140,140,0.04)" } : undefined}>
                       <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.source === "estimated" ? "Estimated bond interest accrual (no real payment imported for this period)" : e.exDate ? `Ex-date: ${e.exDate}${e.payDate ? "" : " (pay date n/a — showing ex-date)"}` : undefined}>{e.date}</td>
                       <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>
                         {e.ticker}
+                        {isTax && (
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.red, marginLeft: 6, letterSpacing: "0.1em", border: "1px solid rgba(232,140,140,0.4)", borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>TAX</span>
+                        )}
                         {e.source === "estimated" && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.textFaint, marginLeft: 6, letterSpacing: "0.1em", border: `1px solid ${T.borderSoft}`, borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>EST</span>
                         )}
@@ -2144,11 +2174,12 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                           </span>
                         )}
                       </td>
-                      <td style={tdBase}>{fmtPerShare(e.amountPerShare, valuesHidden)}</td>
-                      <td style={tdBase}>{fmtQty(e.qtyHeld)}</td>
-                      <td style={{ ...tdBase, color: T.green, fontWeight: 600 }}>{fmtUSD(e.totalReceived, valuesHidden)}</td>
+                      <td style={tdBase}>{isTax ? "—" : fmtPerShare(e.amountPerShare, valuesHidden)}</td>
+                      <td style={tdBase}>{isTax ? "—" : fmtQty(e.qtyHeld)}</td>
+                      <td style={{ ...tdBase, color: isTax ? T.red : T.green, fontWeight: 600 }}>{fmtUSD(e.totalReceived, valuesHidden)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </ScrollHintTable>
@@ -2181,6 +2212,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [transactions, setTransactions] = useState([]);
   const [bondIncome, setBondIncome] = useState([]);
   const [events, setEvents] = useState([]);
+  const [foreignTax, setForeignTax] = useState([]);
   const [state, setState] = useState("loading"); // loading | done | error
   const [error, setError] = useState(null);
 
@@ -2221,7 +2253,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         }
 
         if (!txs.length) {
-          if (!cancelled) { setEvents([]); setState("done"); }
+          if (!cancelled) { setEvents([]); setForeignTax([]); setState("done"); }
           return;
         }
 
@@ -2235,6 +2267,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         const divData = await divRes.json();
         if (!cancelled) {
           setEvents(Array.isArray(divData.events) ? divData.events : []);
+          setForeignTax(Array.isArray(divData.foreignTax) ? divData.foreignTax : []);
           setState("done");
         }
       } catch (err) {
@@ -2342,6 +2375,15 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const bondProjections = useMemo(
     () => buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, 12),
     [transactions, bondIncome, freqByCusip, todayISO]
+  );
+
+  // Dividend History table only: merge in foreign-tax rows (negative totalReceived,
+  // incomeType "tax") so gross dividends, tax withheld, and the resulting net total
+  // are all visible side by side in that one table. Kept OUT of allEvents/KPIs/chart/
+  // Position Dividends — those stay gross, unaffected by tax visibility.
+  const historyEvents = useMemo(
+    () => [...allEvents, ...foreignTax],
+    [allEvents, foreignTax]
   );
 
   return (
@@ -2637,7 +2679,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
       {/* ── Dividend History (audit) ── */}
       {state === "done" && (
         <DividendHistoryTable
-          events={allEvents}
+          events={historyEvents}
           valuesHidden={valuesHidden}
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
