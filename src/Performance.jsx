@@ -1833,8 +1833,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         if (cancelled) return;
 
         const stockEvents = Array.isArray(divJson?.events) ? divJson.events : [];
+        // Foreign tax withheld (negative totalReceived) — dividend events carry the
+        // GROSS amount Fidelity reported, so this must be netted in for Total Return
+        // and the Div TTM/Total columns below to reflect actual cash received.
+        const taxEvents = Array.isArray(divJson?.foreignTax) ? divJson.foreignTax : [];
         const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
-        const allEvents = [...stockEvents, ...bondEventsArr];
+        const allEvents = [...stockEvents, ...bondEventsArr, ...taxEvents];
         setDivEvents(allEvents);
         const todayMs = Date.now();
         const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);

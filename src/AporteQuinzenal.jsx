@@ -725,8 +725,10 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
             const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
             const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
             // Bucket by e.date (= payDate when known, else ex-date) — the same basis
-            // the Dividends tab uses, so the two screens stay in lockstep.
-            const apiTotal = (data.events || [])
+            // the Dividends tab uses, so the two screens stay in lockstep. Foreign tax
+            // withheld (data.foreignTax, negative totalReceived) is netted in too —
+            // dividend events carry the GROSS amount Fidelity reported.
+            const apiTotal = [...(data.events || []), ...(data.foreignTax || [])]
               .filter((e) => e.date && e.date.startsWith(prefix))
               .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
             // Add real bond interest payments not returned by /api/dividends.
