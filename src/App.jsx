@@ -266,7 +266,11 @@ async function fetchTransactionsForSync(auth, withMeta = false) {
     const d = await res.json();
     const transactions = d.exists && Array.isArray(d.transactions) ? d.transactions : [];
     if (withMeta) {
-      return { transactions, splitEvents: Array.isArray(d.splitEvents) ? d.splitEvents : [] };
+      return {
+        transactions,
+        splitEvents: Array.isArray(d.splitEvents) ? d.splitEvents : [],
+        bondIncome: Array.isArray(d.bondIncome) ? d.bondIncome : [],
+      };
     }
     return transactions;
   } catch {
@@ -1611,6 +1615,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const txMeta = await fetchTransactionsForSync(auth, true);
         const txs = txMeta ? txMeta.transactions : null;
         const loadedSplitEvents = txMeta ? txMeta.splitEvents : [];
+        const loadedBondIncome = txMeta ? txMeta.bondIncome : [];
         if (!cancelled && txs) {
           setTransactions(txs);
           setSplitEvents(loadedSplitEvents);
@@ -1628,7 +1633,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               prev.map((a) => (!a.read && readSet.has(a.id) ? { ...a, read: true } : a))
             );
           });
-          refreshAlerts(txs);
+          refreshAlerts(txs, loadedBondIncome);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
@@ -2023,8 +2028,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   // Detect today's dividend payouts, earnings, and bond maturities and merge them
   // into the alert log. Non-blocking; uses the same events Redis cache as the
-  // Events tab. Dividend alerts compute the amount paid (qty held × $/share).
-  async function refreshAlerts(txs) {
+  // Events tab. Dividend alerts compute the amount paid (qty held × $/share) from
+  // a live Yahoo/Finnhub estimate — bondIncome (Fidelity-imported dividends, same
+  // store the Dividends tab uses) overrides that estimate with the exact amount
+  // when today's payout for that ticker was already imported. Without this, the
+  // Alerts badge and the Dividends tab can disagree (confirmed case: AMT badge
+  // showed $91.29 from a stale Yahoo $/share estimate while Fidelity's actual
+  // import — and the Dividends tab — had $71.60).
+  async function refreshAlerts(txs, bondIncome) {
     const todayISO = localTodayISO();
     const netQty = computeNetQty(txs);
     // Bond maturity within 7 days — derived from transactions, no API needed.
@@ -2076,6 +2087,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       if (!res.ok) return;
       const data = await res.json();
       const events = Array.isArray(data.events) ? data.events : [];
+      // Fidelity-imported dividend payments already received today, keyed by
+      // ticker — exact totalReceived, used instead of the live estimate below.
+      // Foreign tax withheld the same day (e.g. TSM/VALE ADRs) is netted in too,
+      // same as every other dividend total in the app — but only against a ticker
+      // that actually has a dividend row for today (two passes: a stray tax-only
+      // row, order-independent, must never by itself produce a negative override).
+      const todaysBondIncome = (bondIncome || []).filter(
+        (e) => e && e.date === todayISO && e.ticker && e.amount > 0
+      );
+      const fidelityToday = new Map();
+      for (const e of todaysBondIncome) {
+        if (e.kind !== "dividend") continue;
+        const tk = e.ticker.toUpperCase();
+        fidelityToday.set(tk, (fidelityToday.get(tk) || 0) + Number(e.amount));
+      }
+      for (const e of todaysBondIncome) {
+        if (e.kind !== "tax") continue;
+        const tk = e.ticker.toUpperCase();
+        if (fidelityToday.has(tk)) fidelityToday.set(tk, fidelityToday.get(tk) - Number(e.amount));
+      }
       const seenPayout = new Set();
       const seenEarnings = new Set();
       const apiAlerts = [];
@@ -2086,16 +2117,23 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           seenPayout.add(tk);
           const qty = netQty[tk] || 0;
           const perShare = Number(ev.amount) || 0;
-          const total = qty > 0 && perShare > 0 ? qty * perShare : 0;
+          const realAmount = fidelityToday.get(tk);
+          const total = realAmount != null
+            ? realAmount
+            : qty > 0 && perShare > 0 ? qty * perShare : 0;
+          // When the real Fidelity amount overrides the estimate, re-derive $/share
+          // from it (same total ÷ qty) so the "N sh × $X/sh" detail stays consistent
+          // with the total shown — using the raw Yahoo perShare here would mismatch.
+          const displayPerShare = realAmount != null && qty > 0 ? realAmount / qty : perShare;
           apiAlerts.push({
             id: `dividend|${tk}|${ev.date}`,
             type: "dividend",
             ticker: ev.ticker,
-            amount: perShare,
+            amount: displayPerShare,
             qtyHeld: qty,
             total,
             message: total > 0 ? `Dividend paid: ${fmtMoney(total)}` : "Dividend paid today",
-            detail: total > 0 ? `${fmtNum(qty)} sh × ${fmtMoney(perShare)}/sh` : null,
+            detail: total > 0 ? `${fmtNum(qty)} sh × ${fmtMoney(displayPerShare)}/sh` : null,
           });
         } else if (ev.type === "earnings" && !seenEarnings.has(tk)) {
           seenEarnings.add(tk);
