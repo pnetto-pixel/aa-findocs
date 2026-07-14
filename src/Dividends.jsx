@@ -2285,9 +2285,15 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     () => buildBondEvents(transactions, bondIncome, todayISO),
     [transactions, bondIncome, todayISO]
   );
+  // Foreign tax withheld (negative totalReceived, incomeType "tax") is merged in here too —
+  // dividend events carry the GROSS amount Fidelity reported (confirmed against a real
+  // export: e.g. TSM's $8.45 matches the official gross $/ADS rate), so every aggregate
+  // that sums totalReceived needs the tax event netted in to reflect actual cash received.
+  // Previously kept separate (pre-jul/2026) under the wrong assumption dividends were
+  // already net — see "Foreign tax withheld" in Decisões Técnicas (CONTEXT.md) for the fix.
   const allEvents = useMemo(
-    () => [...events, ...bondEvents],
-    [events, bondEvents]
+    () => [...events, ...bondEvents, ...foreignTax],
+    [events, bondEvents, foreignTax]
   );
 
   // KPIs
@@ -2375,15 +2381,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const bondProjections = useMemo(
     () => buildBondProjections(transactions, bondIncome, freqByCusip, todayISO, 12),
     [transactions, bondIncome, freqByCusip, todayISO]
-  );
-
-  // Dividend History table only: merge in foreign-tax rows (negative totalReceived,
-  // incomeType "tax") so gross dividends, tax withheld, and the resulting net total
-  // are all visible side by side in that one table. Kept OUT of allEvents/KPIs/chart/
-  // Position Dividends — those stay gross, unaffected by tax visibility.
-  const historyEvents = useMemo(
-    () => [...allEvents, ...foreignTax],
-    [allEvents, foreignTax]
   );
 
   return (
@@ -2679,7 +2676,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
       {/* ── Dividend History (audit) ── */}
       {state === "done" && (
         <DividendHistoryTable
-          events={historyEvents}
+          events={allEvents}
           valuesHidden={valuesHidden}
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
