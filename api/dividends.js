@@ -14,22 +14,38 @@
 // Polygon free tier is 5 req/min, so pay dates are cached PER TICKER in Redis (dividend
 // dates are immutable historical facts) and only a few cold tickers are fetched per
 // request — over a couple of loads every ticker warms up and the rate limit never bites.
-// Qty is always computed at the ex-date; if Polygon is unavailable/lacks a row (or no
-// POLYGON_API_KEY is set), the event gracefully falls back to the ex-date as `date`.
+// Qty is always computed at the ex-date; if Polygon lacks coverage for a ticker (common
+// for ADRs filing 20-F, e.g. TSM), we ALSO try Finnhub's /stock/dividend payDate field
+// as a second-opinion source (lazy, once per cold ticker, cached separately — see
+// `fetchFinnhubPayDates`/`loadFinnhubPayDateRows` below). Only if BOTH Polygon and
+// Finnhub fail to resolve a pay date do we fall back to the ex-date as `date`, and in
+// that case the event is flagged `payDateUncertain: true` so the UI can warn the user
+// instead of silently showing a wrong date (see Dividends.jsx "EX-DATE" badge).
 // BRA Stocks is included in AUTO_CLASSES so US-listed tickers (e.g. VALE, a NYSE ADR)
 // that are tagged "BRA Stocks" are still fetched — isBrazilianTicker gates out B3 tickers.
 // Cache: Redis, versioned, TTL until next US market close.
+//
+// PENDING PRODUCTION VALIDATION: the Finnhub payDate lookup added in v8 (fix for TSM/ADR
+// pay dates falling back to ex-date) has not been exercised against real Finnhub responses
+// in this dev environment — the sandbox blocks outbound requests to finnhub.io by network
+// policy, same as the existing pending-validation status for the Yahoo/Polygon/Nasdaq
+// integrations documented in docs/CONTEXT.md ("Pendência de validação em produção"). Watch
+// `meta.payDatesResolvedViaFinnhub` after deploy to confirm real-world coverage.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v8: Finnhub payDate lookup added as a second opinion when Polygon has no matching row
+//     for an ex-date (fixes ADRs like TSM showing ex-date instead of pay date). Events
+//     that still can't resolve a pay date after both sources are tried are flagged
+//     `payDateUncertain: true` instead of silently showing the ex-date as fact.
 // v7: per-(ticker,month) de-dupe instead of per-ticker skip — a partial Fidelity import
 //     (e.g. only June) no longer erases that ticker's API dividends for other months (e.g. May).
 // v6: Fidelity-imported dividend events (bondIncome kind=dividend) bypass Yahoo/Finnhub entirely.
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -38,6 +54,13 @@ const PAYDATE_CACHE_VERSION = 'v1';
 const PAYDATE_CACHE_TTL_SECONDS = 7 * 24 * 3600;
 // Polygon free tier ≈ 5 req/min. Warm at most this many cold tickers per request (burst).
 const MAX_FRESH_PAYDATE_FETCHES = 5;
+// Separate per-ticker cache for Finnhub-sourced pay dates (different source, different
+// coverage than Polygon — must not be conflated with payDateCacheKey). Finnhub free tier
+// is ~60 req/min, much more permissive than Polygon's 5/min, but we still cache since
+// dividend dates are immutable public facts and this is only consulted lazily (once per
+// ticker whose first Yahoo event doesn't resolve via Polygon).
+const FINNHUB_PAYDATE_CACHE_VERSION = 'v1';
+const FINNHUB_PAYDATE_CACHE_TTL_SECONDS = 7 * 24 * 3600;
 
 // Asset classes where we auto-fetch dividends via Yahoo (US tickers only).
 // BRA Stocks is included so US-listed tickers (e.g. VALE NYSE ADR) tagged "BRA Stocks" still
@@ -65,6 +88,12 @@ function cacheKey(auth, txsHash) {
 // Per-ticker pay-date cache key is global (not per-user) — dividend dates are public facts.
 function payDateCacheKey(ticker) {
   return `dividends:paydates:${PAYDATE_CACHE_VERSION}:${ticker.toUpperCase()}`;
+}
+
+// Separate global cache for Finnhub-sourced pay dates — distinct source from Polygon,
+// deliberately not sharing a key so a Polygon miss/hit doesn't shadow a Finnhub result.
+function finnhubPayDateCacheKey(ticker) {
+  return `dividends:paydates:finnhub:${FINNHUB_PAYDATE_CACHE_VERSION}:${ticker.toUpperCase()}`;
 }
 
 
@@ -170,6 +199,32 @@ async function fetchPolygonPayDates(ticker) {
   } catch {
     return null;
   }
+}
+
+// Lazily resolve a ticker's pay-date rows from Finnhub, shaped like Polygon's
+// [{exDate, payDate}] so they can be matched with the same `payDateForExDate` helper.
+// Checks the per-ticker Redis cache first; only hits the Finnhub API on a cold ticker.
+// Returns rows[] (possibly empty) on success, or null if Finnhub is unavailable/unkeyed.
+async function loadFinnhubPayDateRowsForTicker(redis, ticker, apiKey) {
+  if (!apiKey) return null;
+  const key = finnhubPayDateCacheKey(ticker);
+  const cached = await redis.get(key).catch(() => null);
+  if (cached != null) {
+    try {
+      return JSON.parse(cached);
+    } catch {
+      /* fall through to refetch */
+    }
+  }
+  const divs = await fetchFinnhubDividends(ticker, apiKey);
+  if (divs == null) return null;
+  const rows = divs
+    .filter((d) => d.date && d.payDate)
+    .map((d) => ({ exDate: d.date, payDate: d.payDate }));
+  await redis
+    .set(key, JSON.stringify(rows), 'EX', FINNHUB_PAYDATE_CACHE_TTL_SECONDS)
+    .catch(() => {});
+  return rows;
 }
 
 // Given a ticker's pay-date rows, return the pay date whose ex-date best matches the
@@ -346,8 +401,12 @@ export default async function handler(req, res) {
   const events = [];
   let payDatesMatched = 0;
   let payDatesMissing = 0;
+  let payDatesResolvedViaFinnhub = 0;
   let futureSkipped = 0;
   const todayISO = new Date().toISOString().slice(0, 10);
+  // Lazy, per-ticker Finnhub pay-date rows — only fetched (and cached) for tickers whose
+  // first event doesn't resolve a pay date via Polygon/Finnhub's own payDate field.
+  const finnhubPayRowsByTicker = new Map(); // ticker -> rows[]|null, populated on demand
 
   // Convert Fidelity-imported dividend events directly — exact amounts, no API reconstruction.
   for (const fe of fidelityDivEvents) {
@@ -380,12 +439,36 @@ export default async function handler(req, res) {
       // Entitlement is fixed at the ex-date — that is the qty that earned this dividend.
       const qty = qtyAtDate(transactions, ticker, exDate);
       if (qty <= 0) continue;
-      // Finnhub supplies payDate directly; Yahoo-sourced events fall back to Polygon lookup.
-      const payDate = divPayDate || payDateForExDate(payRows, exDate);
-      if (payDate) payDatesMatched++;
-      else payDatesMissing++;
-      // Bucket by pay date (when cash lands) when known; otherwise fall back to ex-date.
+      // Finnhub supplies payDate directly (when Finnhub was the primary source, i.e.
+      // Yahoo was empty); Yahoo-sourced events fall back to Polygon lookup first.
+      let payDate = divPayDate || payDateForExDate(payRows, exDate);
+      let resolvedViaFinnhub = false;
+      // Polygon didn't cover this ex-date (e.g. ADRs like TSM). Try Finnhub's payDate
+      // as a second opinion — lazily, once per ticker, cached across the request.
+      if (!payDate && finnhubKey) {
+        if (!finnhubPayRowsByTicker.has(ticker)) {
+          finnhubPayRowsByTicker.set(
+            ticker,
+            await loadFinnhubPayDateRowsForTicker(redis, ticker, finnhubKey)
+          );
+        }
+        const finnhubRows = finnhubPayRowsByTicker.get(ticker);
+        const finnhubPay = payDateForExDate(finnhubRows, exDate);
+        if (finnhubPay) {
+          payDate = finnhubPay;
+          resolvedViaFinnhub = true;
+        }
+      }
+      if (payDate) {
+        payDatesMatched++;
+        if (resolvedViaFinnhub) payDatesResolvedViaFinnhub++;
+      } else {
+        payDatesMissing++;
+      }
+      // Bucket by pay date (when cash lands) when known; otherwise fall back to ex-date,
+      // flagging the event so the UI can warn the user the date shown isn't confirmed.
       const date = payDate || exDate;
+      const payDateUncertain = !payDate;
       // Skip dividends not yet paid (future pay date, or future ex-date in the fallback).
       if (date > todayISO) {
         futureSkipped++;
@@ -406,6 +489,7 @@ export default async function handler(req, res) {
         totalReceived: Math.round(amount * qty * 100) / 100,
         currency: 'USD',
         source: 'api',
+        payDateUncertain,
       });
     }
   }
@@ -420,6 +504,7 @@ export default async function handler(req, res) {
       eventsFound: events.length,
       payDatesMatched,
       payDatesMissing,
+      payDatesResolvedViaFinnhub,
       futureSkipped,
       payDatesWarm: allWarm,
       payDatesSource: process.env.POLYGON_API_KEY ? 'polygon' : 'none',

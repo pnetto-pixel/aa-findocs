@@ -2135,6 +2135,14 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                         {e.source === "estimated" && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.textFaint, marginLeft: 6, letterSpacing: "0.1em", border: `1px solid ${T.borderSoft}`, borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>EST</span>
                         )}
+                        {e.payDateUncertain && (
+                          <span
+                            title={e.exDate ? `Ex-date: ${e.exDate} (pay date n/a - showing ex-date)` : undefined}
+                            style={{ fontFamily: FONT_MONO, fontSize: 8, color: "#e0a458", marginLeft: 6, letterSpacing: "0.1em", border: "1px solid rgba(224,164,88,0.4)", borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}
+                          >
+                            EX-DATE
+                          </span>
+                        )}
                       </td>
                       <td style={tdBase}>{fmtPerShare(e.amountPerShare, valuesHidden)}</td>
                       <td style={tdBase}>{fmtQty(e.qtyHeld)}</td>
