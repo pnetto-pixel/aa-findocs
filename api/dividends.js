@@ -35,6 +35,10 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v9: Fidelity-imported dividend events now carry a derived amountPerShare/qtyHeld
+//     (qty read off the transaction log as of the event date, amount back-computed from
+//     the exact Fidelity total) instead of always null — UI can show $/share and qty for
+//     every row, not just API-reconstructed ones.
 // v8: Finnhub payDate lookup added as a second opinion when Polygon has no matching row
 //     for an ex-date (fixes ADRs like TSM showing ex-date instead of pay date). Events
 //     that still can't resolve a pay date after both sources are tried are flagged
@@ -45,7 +49,7 @@ import { authenticate } from '../lib/auth.js';
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v8';
+const CACHE_VERSION = 'v9';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -408,10 +412,17 @@ export default async function handler(req, res) {
   // first event doesn't resolve a pay date via Polygon/Finnhub's own payDate field.
   const finnhubPayRowsByTicker = new Map(); // ticker -> rows[]|null, populated on demand
 
-  // Convert Fidelity-imported dividend events directly — exact amounts, no API reconstruction.
+  // Convert Fidelity-imported dividend events directly — exact totalReceived, no API
+  // reconstruction of the amount. $/share and qty are still derived for display: qty is
+  // read off the transaction log as of the event date (same helper used for API events),
+  // and amountPerShare is back-computed from the exact Fidelity total ÷ that qty. This is
+  // an approximation (entitlement is technically fixed at the ex-date, which Fidelity's
+  // export doesn't give us — we only have the credit date) but qty rarely changes between
+  // ex-date and pay date, so it's accurate in the common case and never overrides totalReceived.
   for (const fe of fidelityDivEvents) {
     if (fe.date > todayISO) { futureSkipped++; continue; }
     const assetClass = relevant.find((tx) => tx.ticker === fe.ticker)?.assetClass || 'Stocks';
+    const qty = qtyAtDate(transactions, fe.ticker, fe.date);
     events.push({
       date: fe.date,
       exDate: fe.date,
@@ -419,8 +430,8 @@ export default async function handler(req, res) {
       ticker: fe.ticker,
       assetClass,
       incomeType: 'dividend',
-      amountPerShare: null,
-      qtyHeld: null,
+      amountPerShare: qty > 0 ? fe.amount / qty : null,
+      qtyHeld: qty > 0 ? qty : null,
       totalReceived: Math.round(fe.amount * 100) / 100,
       currency: 'USD',
       source: 'fidelity',
