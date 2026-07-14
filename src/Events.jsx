@@ -135,6 +135,17 @@ function fmtAmount(n) {
   return `$${Number(n).toFixed(2)}/share`;
 }
 
+function fmtMoney(n, hidden) {
+  if (hidden) return '$ ••••';
+  if (n == null || isNaN(n)) return null;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 function fmtEPS(n) {
   if (n == null || isNaN(n)) return null;
   const sign = n >= 0 ? '' : '-';
@@ -209,7 +220,52 @@ function TypeBadge({ type }) {
   );
 }
 
-function EventDetail({ ev }) {
+// Small colored pill, same visual language as TypeBadge — used for earnings
+// beat/miss so it reads with the same weight as the Alerts panel's color coding.
+function BeatMissPill({ label, color }) {
+  return (
+    <span
+      style={{
+        fontFamily: FONT_MONO,
+        fontSize: 9,
+        letterSpacing: "0.1em",
+        textTransform: "uppercase",
+        color,
+        border: `1px solid ${color}55`,
+        borderRadius: 3,
+        padding: "1px 5px",
+        marginLeft: 6,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+// Dividend $ line for ex_dividend/payout cards. `real` (exact Fidelity-imported
+// amount, already net of same-day foreign tax) takes priority — same source and
+// netting the Alerts badge and Dividends tab use. Falls back to qty × $/share.
+function DividendAmountLine({ ev, qty, real, isFuture, hidden }) {
+  if (real != null) {
+    return (
+      <span>
+        {isFuture ? 'Estimated dividend to be paid: ' : 'Dividend paid: '}
+        <span style={{ color: T.green, fontWeight: 600 }}>{fmtMoney(real, hidden)}</span>
+      </span>
+    );
+  }
+  const est = qty > 0 && ev.amount != null ? qty * ev.amount : null;
+  if (est == null) return null;
+  return (
+    <span>
+      {isFuture ? 'Estimated dividend to be paid: ' : 'Dividend paid: '}
+      <span style={{ color: isFuture ? T.gold : T.green, fontWeight: 600 }}>{fmtMoney(est, hidden)}</span>
+      {' (est.)'}
+    </span>
+  );
+}
+
+function EventDetail({ ev, qty, real, todayISO, hidden }) {
   const detailStyle = {
     fontFamily: FONT_MONO,
     fontSize: 11,
@@ -223,13 +279,12 @@ function EventDetail({ ev }) {
       if (ev.epsEstimate != null) {
         const beat = ev.epsActual > ev.epsEstimate;
         const miss = ev.epsActual < ev.epsEstimate;
-        const beatMissLabel = beat ? 'beat' : miss ? 'miss' : 'in-line';
+        const beatMissLabel = beat ? 'BEAT' : miss ? 'MISS' : 'IN-LINE';
         const beatMissColor = beat ? T.green : miss ? T.red : T.textDim;
         return (
           <div style={detailStyle}>
             {`EPS est. ${fmtEPS(ev.epsEstimate)} → reported ${fmtEPS(ev.epsActual)}`}
-            {' · '}
-            <span style={{ color: beatMissColor }}>{beatMissLabel}</span>
+            <BeatMissPill label={beatMissLabel} color={beatMissColor} />
           </div>
         );
       }
@@ -241,34 +296,50 @@ function EventDetail({ ev }) {
     return null;
   }
 
-  const lines = [];
+  const isFuture = ev.date > todayISO;
+
   if (ev.type === 'ex_dividend') {
+    const lines = [];
     const amt = fmtAmount(ev.amount);
     if (amt) lines.push(amt);
     if (ev.payDate) lines.push(`Pay ${fmtDateShort(ev.payDate)}`);
-  } else if (ev.type === 'payout') {
-    const amt = fmtAmount(ev.amount);
-    if (amt) lines.push(amt);
-  } else if (ev.type === 'split') {
-    if (ev.splitRatio) {
-      // Reverse split: denominator > numerator — display as "1:10 reverse split"
-      const isReverse =
-        ev.splitDenominator != null &&
-        ev.splitNumerator != null &&
-        ev.splitDenominator > ev.splitNumerator;
-      lines.push(`${ev.splitRatio}${isReverse ? ' reverse split' : ' split'} effective`);
-    }
+    return (
+      <div style={detailStyle}>
+        {lines.length > 0 && <div>{lines.join(' · ')}</div>}
+        {/* Only show the $ estimate here when there's no separate payout event
+            to carry it (payDate unknown) — avoids showing the amount twice. */}
+        {!ev.payDate && <div><DividendAmountLine ev={ev} qty={qty} real={real} isFuture={isFuture} hidden={hidden} /></div>}
+      </div>
+    );
   }
 
-  if (!lines.length) return null;
-  return (
-    <div style={detailStyle}>
-      {lines.join(' · ')}
-    </div>
-  );
+  if (ev.type === 'payout') {
+    const amt = fmtAmount(ev.amount);
+    return (
+      <div style={detailStyle}>
+        <div><DividendAmountLine ev={ev} qty={qty} real={real} isFuture={isFuture} hidden={hidden} /></div>
+        {amt && <div>{amt}</div>}
+      </div>
+    );
+  }
+
+  if (ev.type === 'split' && ev.splitRatio) {
+    // Reverse split: denominator > numerator — display as "1:10 reverse split"
+    const isReverse =
+      ev.splitDenominator != null &&
+      ev.splitNumerator != null &&
+      ev.splitDenominator > ev.splitNumerator;
+    return (
+      <div style={detailStyle}>
+        {`${ev.splitRatio}${isReverse ? ' reverse split' : ' split'} effective`}
+      </div>
+    );
+  }
+
+  return null;
 }
 
-function EventCard({ ev, todayISO }) {
+function EventCard({ ev, todayISO, qty, real, hidden }) {
   const isPast = ev.date < todayISO;
   return (
     <div
@@ -306,7 +377,7 @@ function EventCard({ ev, todayISO }) {
         </span>
         <TypeBadge type={ev.type} />
       </div>
-      <EventDetail ev={ev} />
+      <EventDetail ev={ev} qty={qty} real={real} todayISO={todayISO} hidden={hidden} />
     </div>
   );
 }
@@ -378,6 +449,7 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
   const [state, setState] = useState("loading"); // "loading" | "error" | "empty" | "done"
   const [errorMsg, setErrorMsg] = useState("");
   const [transactions, setTransactions] = useState([]);
+  const [bondIncome, setBondIncome] = useState([]);
   const [events, setEvents] = useState([]);
   const [meta, setMeta] = useState(null);
   const [filterType, setFilterType] = useState("All");
@@ -415,9 +487,11 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
         }
         const txData = await txRes.json();
         const txList = Array.isArray(txData.transactions) ? txData.transactions : [];
+        const bondIncomeList = Array.isArray(txData.bondIncome) ? txData.bondIncome : [];
 
         if (cancelled) return;
         setTransactions(txList);
+        setBondIncome(bondIncomeList);
 
         const tickers = extractEligibleTickers(txList);
         if (!tickers.length) {
@@ -470,6 +544,30 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
     () => groupEvents(filteredEvents, todayISO),
     [filteredEvents, todayISO]
   );
+
+  // Current net qty per ticker — same simplification the Alerts panel uses
+  // (qty held today, not qty-at-ex-date) to estimate/confirm dividend $ amounts.
+  const netQty = useMemo(() => computeNetQty(transactions), [transactions]);
+
+  // Fidelity-imported dividend amounts (net of same-day foreign tax withheld),
+  // keyed by "TICKER|YYYY-MM-DD" — exact real cash for a date the app already
+  // has an import for, same source/netting logic as the Alerts badge and the
+  // Dividends tab. Two passes so a tax row's order relative to its dividend row
+  // never matters (a stray tax-only row must never produce a negative amount).
+  const fidelityAmountByKey = useMemo(() => {
+    const map = new Map();
+    for (const e of bondIncome || []) {
+      if (!e || e.kind !== 'dividend' || !e.ticker || !e.date || !(e.amount > 0)) continue;
+      const key = `${e.ticker.toUpperCase()}|${e.date}`;
+      map.set(key, (map.get(key) || 0) + Number(e.amount));
+    }
+    for (const e of bondIncome || []) {
+      if (!e || e.kind !== 'tax' || !e.ticker || !e.date || !(e.amount > 0)) continue;
+      const key = `${e.ticker.toUpperCase()}|${e.date}`;
+      if (map.has(key)) map.set(key, map.get(key) - Number(e.amount));
+    }
+    return map;
+  }, [bondIncome]);
 
   // ── Loading state ────────────────────────────────────────────────────────────
   if (state === "loading") {
@@ -567,7 +665,14 @@ export default function EventsView({ auth, onAuthFail, valuesHidden }) {
                 />
                 {!collapsed &&
                   group.items.map((ev, i) => (
-                    <EventCard key={`${ev.date}-${ev.ticker}-${ev.type}-${i}`} ev={ev} todayISO={todayISO} />
+                    <EventCard
+                      key={`${ev.date}-${ev.ticker}-${ev.type}-${i}`}
+                      ev={ev}
+                      todayISO={todayISO}
+                      qty={netQty[ev.ticker?.toUpperCase()] || 0}
+                      real={fidelityAmountByKey.get(`${ev.ticker?.toUpperCase()}|${ev.date}`)}
+                      hidden={valuesHidden}
+                    />
                   ))}
               </div>
             );
