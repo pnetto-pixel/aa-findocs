@@ -2000,18 +2000,36 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   function mergeAlerts(detected, todayISO) {
     if (!detected || !detected.length) return;
     setAlertLog((prev) => {
-      const known = new Set(prev.map((a) => a.id));
-      const additions = detected
-        .filter((a) => !known.has(a.id))
-        .map((a) => ({
-          ...a,
-          sentDate: todayISO,
-          // If another device already marked this alert as read (per the
-          // server's readIds snapshot), don't surface it as unread here.
-          read: serverReadIdsRef.current.has(a.id),
-        }));
-      if (!additions.length) return prev;
-      return [...additions, ...prev].slice(0, MAX_ALERT_LOG);
+      const byId = new Map(prev.map((a) => [a.id, a]));
+      const additions = [];
+      // Existing alerts get their payload (message/detail/total/amount/etc.)
+      // refreshed in place when the freshly detected version differs — e.g. a
+      // dividend alert recorded before a data-source fix (Yahoo estimate → real
+      // Fidelity amount) must not stay stuck showing the old number forever.
+      // sentDate and read state are preserved; only the displayed content updates.
+      let changed = false;
+      const updated = prev.map((a) => {
+        const fresh = detected.find((d) => d.id === a.id);
+        if (!fresh) return a;
+        const { id, ...rest } = fresh;
+        const same = Object.keys(rest).every((k) => rest[k] === a[k]);
+        if (same) return a;
+        changed = true;
+        return { ...a, ...rest };
+      });
+      for (const a of detected) {
+        if (!byId.has(a.id)) {
+          additions.push({
+            ...a,
+            sentDate: todayISO,
+            // If another device already marked this alert as read (per the
+            // server's readIds snapshot), don't surface it as unread here.
+            read: serverReadIdsRef.current.has(a.id),
+          });
+        }
+      }
+      if (!additions.length && !changed) return prev;
+      return [...additions, ...updated].slice(0, MAX_ALERT_LOG);
     });
   }
 
