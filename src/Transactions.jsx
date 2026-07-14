@@ -3078,6 +3078,30 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
       continue;
     }
 
+    // Foreign tax withheld on ADR dividends (e.g. TSM, VALE — foreign issuers filing
+    // 20-F). Fidelity reports this as its own row ("FOREIGN TAX PAID" / "FOREIGN TAX
+    // WITHHELD"), separate from the DIVIDEND RECEIVED row for the same payment — the
+    // dividend row is the gross amount credited, this row is the tax debited right
+    // after. Captured for visibility (its own row + KPI in Dividend History); never
+    // subtracted from the dividend event's totalReceived, which stays the gross amount
+    // Fidelity actually reported.
+    if (upper.includes("FOREIGN TAX") && idxAmount >= 0) {
+      const isoDateT = toISO(arr[idxDate]);
+      const symbolT = String(arr[idxSymbol] || "").trim().toUpperCase();
+      const amountT = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
+      if (isoDateT && symbolT && !CUSIP_RX.test(symbolT) && isFinite(amountT) && amountT !== 0) {
+        incomeEvents.push({
+          id: newId(),
+          date: isoDateT,
+          ticker: symbolT,
+          amount: Math.abs(amountT),
+          kind: "tax",
+          source: "fidelity",
+        });
+      }
+      continue;
+    }
+
     // Stock dividend payment rows: capture for non-CUSIP tickers (e.g. VALE, AAPL).
     // Fidelity labels these "DIVIDEND RECEIVED", "CASH DIV", "ORDINARY DIVIDEND", etc.
     // Amount ($) is the total cash received (not per-share). Skip REINVESTMENT rows.
@@ -4107,11 +4131,13 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
               )}
 
               {parsed.incomeEvents && parsed.incomeEvents.length > 0 && (() => {
-                const bondCount = parsed.incomeEvents.filter(e => e.kind !== "dividend").length;
+                const bondCount = parsed.incomeEvents.filter(e => e.kind === "interest").length;
                 const divCount  = parsed.incomeEvents.filter(e => e.kind === "dividend").length;
+                const taxCount  = parsed.incomeEvents.filter(e => e.kind === "tax").length;
                 const parts = [];
                 if (bondCount > 0) parts.push(`${bondCount} bond interest payment${bondCount === 1 ? "" : "s"}`);
                 if (divCount  > 0) parts.push(`${divCount} stock dividend payment${divCount  === 1 ? "" : "s"}`);
+                if (taxCount  > 0) parts.push(`${taxCount} foreign tax payment${taxCount === 1 ? "" : "s"}`);
                 return (
                   <div
                     style={{
@@ -4624,9 +4650,9 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n || 0);
 
   const totalByKind = useMemo(() => {
-    const t = { interest: 0, dividend: 0, other: 0 };
+    const t = { interest: 0, dividend: 0, tax: 0, other: 0 };
     for (const e of bondIncome || []) {
-      const k = e.kind === "interest" ? "interest" : e.kind === "dividend" ? "dividend" : "other";
+      const k = e.kind === "interest" ? "interest" : e.kind === "dividend" ? "dividend" : e.kind === "tax" ? "tax" : "other";
       t[k] += Number(e.amount) || 0;
     }
     return t;
@@ -4680,7 +4706,7 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
         <span>
           Import History — Bond Income
           <span style={{ marginLeft: 10, color: T.textFaint }}>
-            {sorted.length} entries · {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.other)}
+            {sorted.length} entries · {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.tax + totalByKind.other)}
           </span>
         </span>
         <ChevronDown
@@ -4707,6 +4733,11 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
             {totalByKind.dividend > 0 && (
               <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
                 Dividend <span style={{ color: T.text }}>{fmt(totalByKind.dividend)}</span>
+              </span>
+            )}
+            {totalByKind.tax > 0 && (
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
+                Foreign Tax <span style={{ color: T.red }}>-{fmt(totalByKind.tax)}</span>
               </span>
             )}
             {totalByKind.other > 0 && (
@@ -4740,7 +4771,7 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
                       <td style={{ ...tdStyle, fontWeight: 600 }}>{e.ticker || "—"}</td>
                       <td style={{ ...tdStyle, color: T.textDim }}>{e.kind || "—"}</td>
                       <td style={{ ...tdStyle, color: T.textFaint }}>{e.source || "—"}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", color: T.green }}>{fmt(e.amount)}</td>
+                      <td style={{ ...tdStyle, textAlign: "right", color: e.kind === "tax" ? T.red : T.green }}>{e.kind === "tax" ? "-" : ""}{fmt(e.amount)}</td>
                       <td style={{ ...tdStyle, padding: "4px 8px" }}>
                         {isConfirming ? (
                           <span style={{ display: "flex", gap: 4, alignItems: "center" }}>

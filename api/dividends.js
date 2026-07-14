@@ -25,6 +25,12 @@
 // that are tagged "BRA Stocks" are still fetched — isBrazilianTicker gates out B3 tickers.
 // Cache: Redis, versioned, TTL until next US market close.
 //
+// Foreign tax withheld on ADR dividends (Fidelity's separate "FOREIGN TAX PAID" row,
+// e.g. TSM/VALE) is returned as its own top-level `foreignTax` array — NOT merged into
+// `events` — so the dividend event's totalReceived always stays the gross amount
+// Fidelity reported, and existing consumers of `events` (KPIs, Income History chart,
+// Position Dividends) are unaffected. The UI decides per-view how to net gross/tax/net.
+//
 // PENDING PRODUCTION VALIDATION: the Finnhub payDate lookup added in v8 (fix for TSM/ADR
 // pay dates falling back to ex-date) has not been exercised against real Finnhub responses
 // in this dev environment — the sandbox blocks outbound requests to finnhub.io by network
@@ -35,6 +41,9 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v10: New top-level `foreignTax` array — Fidelity-imported "FOREIGN TAX PAID" rows
+//      (ADR withholding, e.g. TSM/VALE), kept separate from `events` (dividend income
+//      stays gross, unchanged) so the UI can show gross/tax/net without double-counting.
 // v9: Fidelity-imported dividend events now carry a derived amountPerShare/qtyHeld
 //     (qty read off the transaction log as of the event date, amount back-computed from
 //     the exact Fidelity total) instead of always null — UI can show $/share and qty for
@@ -49,7 +58,7 @@ import { authenticate } from '../lib/auth.js';
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v9';
+const CACHE_VERSION = 'v10';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -340,6 +349,16 @@ export default async function handler(req, res) {
     ? body.bondIncome.filter((e) => e.kind === 'dividend' && e.ticker && e.date && e.amount > 0)
     : [];
   const fidelityTickers = new Set(fidelityDivEvents.map((e) => e.ticker));
+
+  // Fidelity-imported foreign tax withheld (ADR dividends, e.g. TSM/VALE) — kind="tax".
+  // Separate line items from the dividend row they accompany (Fidelity posts the gross
+  // dividend and the tax debit as two distinct rows on the same day). Returned as their
+  // own events (incomeType "tax", totalReceived negative) so the UI can show gross,
+  // tax withheld, and net side by side without ever double-subtracting from the
+  // dividend event's totalReceived, which stays the gross Fidelity-reported amount.
+  const fidelityTaxEvents = Array.isArray(body.bondIncome)
+    ? body.bondIncome.filter((e) => e.kind === 'tax' && e.ticker && e.date && e.amount > 0)
+    : [];
   // (ticker, YYYY-MM) pairs that a Fidelity import actually covers. Used to de-dupe
   // API dividends per month — NOT per ticker. A Fidelity import only covers the
   // months present in the imported CSV(s), so a ticker can have a Fidelity dividend
@@ -357,10 +376,14 @@ export default async function handler(req, res) {
       !isBrazilianTicker(tx.ticker)
   );
 
-  // Include a hash of Fidelity dividend events in the cache key so that importing
-  // new dividends from Fidelity immediately invalidates any stale cached response.
-  const fdHash = fidelityDivEvents.length > 0
-    ? simpleHash(fidelityDivEvents.map((e) => `${e.date}|${e.ticker}|${e.amount}`).join(';'))
+  // Include a hash of Fidelity dividend/tax events in the cache key so that importing
+  // new dividends or tax rows from Fidelity immediately invalidates any stale cached response.
+  const fdHash = (fidelityDivEvents.length > 0 || fidelityTaxEvents.length > 0)
+    ? simpleHash(
+        [...fidelityDivEvents, ...fidelityTaxEvents]
+          .map((e) => `${e.date}|${e.ticker}|${e.amount}|${e.kind}`)
+          .join(';')
+      )
     : '';
   const txHashInput = relevant
     .map((tx) => `${tx.id}|${tx.date}|${tx.side}|${tx.ticker}|${tx.qty}`)
@@ -379,8 +402,8 @@ export default async function handler(req, res) {
   // ticker's API dividends for the months it doesn't cover (e.g. May).
   const tickers = [...new Set(relevant.map((tx) => tx.ticker))];
 
-  if (!tickers.length && !fidelityDivEvents.length) {
-    return res.status(200).json({ events: [], meta: { tickers: 0, eventsFound: 0 } });
+  if (!tickers.length && !fidelityDivEvents.length && !fidelityTaxEvents.length) {
+    return res.status(200).json({ events: [], foreignTax: [], meta: { tickers: 0, eventsFound: 0 } });
   }
 
   // Yahoo (primary, keyless) → ex-dates + amounts.
@@ -437,6 +460,25 @@ export default async function handler(req, res) {
       source: 'fidelity',
     });
     payDatesMatched++;
+  }
+
+  // Convert Fidelity-imported foreign-tax events. Returned as their own array
+  // (`foreignTax`, not merged into `events`) so existing consumers of `events` (KPIs,
+  // Income History chart, Position Dividends) keep reflecting gross dividend income
+  // unchanged — the UI decides per-view whether/how to net tax against dividends.
+  const foreignTax = [];
+  for (const fe of fidelityTaxEvents) {
+    if (fe.date > todayISO) continue;
+    const assetClass = relevant.find((tx) => tx.ticker === fe.ticker)?.assetClass || 'Stocks';
+    foreignTax.push({
+      date: fe.date,
+      ticker: fe.ticker,
+      assetClass,
+      incomeType: 'tax',
+      totalReceived: -Math.round(fe.amount * 100) / 100,
+      currency: 'USD',
+      source: 'fidelity',
+    });
   }
 
   // Cash that hasn't landed yet isn't received income. Yahoo lists recently-declared
@@ -509,10 +551,12 @@ export default async function handler(req, res) {
 
   const result = {
     events,
+    foreignTax,
     meta: {
       tickers: tickers.length,
       fidelityTickers: fidelityTickers.size,
       eventsFound: events.length,
+      foreignTaxFound: foreignTax.length,
       payDatesMatched,
       payDatesMissing,
       payDatesResolvedViaFinnhub,
