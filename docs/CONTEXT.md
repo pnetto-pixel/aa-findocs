@@ -522,8 +522,8 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 
 ### UI `src/Events.jsx`
 
-- Export default `EventsView({ auth, onAuthFail, valuesHidden })` — `valuesHidden` recebido mas nao mascara nada (dados publicos de calendario)
-- Busca `GET /api/transactions` ao montar, extrai tickers US elegiveis (exclui B3 via `isBrazilianTicker`, CUSIPs, `tesouro-*`), entao `POST /api/events`
+- Export default `EventsView({ auth, onAuthFail, valuesHidden })` — `valuesHidden` mascara os valores em $ de dividendo (jul/2026; antes recebido mas nao usado, ver item abaixo)
+- Busca `GET /api/transactions` ao montar (tambem le `bondIncome`, jul/2026), extrai tickers US elegiveis (exclui B3 via `isBrazilianTicker`, CUSIPs, `tesouro-*`), entao `POST /api/events`
 - Filtro client-side por tipo: pills All | Ex-Div | Payout | Earnings | Split — sem novo fetch ao mudar o filtro
 - Agrupamento cronologico: "Last 7 Days", "Last Month", "Today", "This Week", "Next Week", depois buckets mensais "Mon YYYY"
 - Eventos passados com `opacity: 0.55`; eventos futuros em destaque normal
@@ -531,6 +531,7 @@ Tab nova, arquivo separado (`src/Events.jsx`), lazy-loaded como Performance e Di
 - Estados: loading / erro / vazio com mensagens especificas
 - Sem recharts; inline styles com tokens `T` e `FONT_*` (mesmo padrao das outras tabs)
 - **Earnings beat/miss (jun/2026):** `EventDetail` para tipo `earnings` exibe, quando `epsActual` esta disponivel: "Est: $X -> Reported: $Y" com indicador colorido beat (verde) / miss (vermelho) / in-line (neutro). Eventos futuros (so `epsEstimate`) continuam inalterados — sem regressao.
+- **Beat/miss vira badge colorido + valor $ de dividendo pago/estimado (jul/2026):** duas mudancas. **(1)** O indicador beat/miss deixou de ser texto inline e virou um pill colorido (`BeatMissPill`, mesmo padrao visual do `TypeBadge`) — mais proximo do peso visual do painel de Alerts. **(2)** Cards `ex_dividend`/`payout` ganharam uma linha de valor em $ (nao so $/share): usa o valor exato importado da Fidelity (`bondIncome`, `kind:"dividend"`, ja liquido de `kind:"tax"` do mesmo ticker+data — mesma fonte/netting do badge de Alerts e da Tab Dividends) quando disponivel; senao estima via `qty atual do ticker × $/share`. Rotulo "Dividend paid: $X" pra eventos passados/hoje (`ev.date <= todayISO`), "Estimated dividend to be paid: $X" pra eventos futuros; quando a estimativa nao vem de import real, ganha sufixo "(est.)". `ex_dividend` so mostra essa linha quando nao ha `payDate` conhecido (i.e., nao existira um card `payout` separado pra carregar o valor) — evita duplicar o valor nos dois cards do mesmo dividendo. `netQty` (qty atual, mesma simplificacao do Alerts — nao qty-na-ex-date) e `fidelityAmountByKey` (Map `TICKER|YYYY-MM-DD` -> valor liquido) calculados via `useMemo` no componente principal. `valuesHidden` (recebido mas nunca usado antes) agora mascara esses valores em $.
 - **Bug fix — timezone incorreto no agrupamento cronologico (PR #128, jul/2026):** o calculo de "hoje" usava `new Date().toISOString().slice(0,10)` (UTC), classificando eventos errado no agrupamento Today/Last 7 Days e no `isPast` (opacity de eventos passados) para usuarios em timezone negativo (Brasil, UTC-3) perto da virada do dia UTC. Substituido por `localTodayISO(d)` (ajusta pelo offset de timezone do browser). Mesmo helper duplicado em `src/App.jsx` para o painel de Alerts — ver "Painel de Alerts".
 
 ### Limitacoes conhecidas / pendencias de validacao em producao
