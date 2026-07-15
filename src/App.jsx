@@ -2164,6 +2164,47 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         }
       }
       mergeAlerts(apiAlerts, todayISO);
+
+      // Reconcile already-recorded dividend alerts against Fidelity imports,
+      // regardless of date — the "today" loop above only re-detects an event
+      // while its date is still today's, so an alert recorded on the day a
+      // dividend paid (using the live Yahoo/Finnhub estimate) never got a
+      // chance to pick up a real import added on a *later* day, staying stuck
+      // on the stale estimate forever (confirmed: AMT stuck at $91.29 even
+      // after the estimate-preference fix above, because by the time the fix
+      // shipped the payout date was no longer "today"). Full-history version
+      // of the same dividend/tax netting used above.
+      const fidelityByKey = new Map();
+      for (const e of bondIncome || []) {
+        if (!e || e.kind !== "dividend" || !e.ticker || !e.date || !(e.amount > 0)) continue;
+        const key = `${e.ticker.toUpperCase()}|${e.date}`;
+        fidelityByKey.set(key, (fidelityByKey.get(key) || 0) + Number(e.amount));
+      }
+      for (const e of bondIncome || []) {
+        if (!e || e.kind !== "tax" || !e.ticker || !e.date || !(e.amount > 0)) continue;
+        const key = `${e.ticker.toUpperCase()}|${e.date}`;
+        if (fidelityByKey.has(key)) fidelityByKey.set(key, fidelityByKey.get(key) - Number(e.amount));
+      }
+      setAlertLog((prev) => {
+        let changed = false;
+        const next = prev.map((a) => {
+          if (a.type !== "dividend") return a;
+          const [, tk, date] = a.id.split("|");
+          const real = fidelityByKey.get(`${tk}|${date}`);
+          if (real == null || real === a.total) return a;
+          changed = true;
+          const qty = netQty[tk] || a.qtyHeld || 0;
+          const displayPerShare = qty > 0 ? real / qty : a.amount;
+          return {
+            ...a,
+            amount: displayPerShare,
+            total: real,
+            message: `Dividend paid: ${fmtMoney(real)}`,
+            detail: `${fmtNum(qty)} sh × ${fmtMoney(displayPerShare)}/sh`,
+          };
+        });
+        return changed ? next : prev;
+      });
     } catch {
       /* silent — alerts are best-effort */
     }

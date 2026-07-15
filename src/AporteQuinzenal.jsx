@@ -145,6 +145,15 @@ function authHeaders(auth) {
   return h;
 }
 
+// Local (not UTC) "today" as YYYY-MM-DD — UTC rolls over hours before local
+// midnight for negative-offset timezones (US Central, Brazil, etc), which was
+// causing dividends to show as already-received a day early. Same helper/fix
+// already applied in App.jsx (Alerts), Events.jsx, Dividends.jsx, Performance.jsx.
+function localTodayISO(d = new Date()) {
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
 async function fetchTransactions(auth) {
   const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
   if (res.status === 401) {
@@ -716,7 +725,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         fetch("/api/dividends", {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders(auth) },
-          body: JSON.stringify({ transactions: txs, bondIncome: bi }),
+          body: JSON.stringify({ transactions: txs, bondIncome: bi, todayISO: localTodayISO() }),
         })
           .then((r) => (r.ok ? r.json() : null))
           .then((data) => {

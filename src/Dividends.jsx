@@ -54,6 +54,15 @@ function isBrazilianTicker(t) {
   return /^[A-Z]{4}\d{1,2}$/i.test(t);
 }
 
+// Local (not UTC) "today" as YYYY-MM-DD — UTC rolls over hours before local
+// midnight for negative-offset timezones (US Central, Brazil, etc), which was
+// causing dividends to show as already-received a day early. Same helper/fix
+// already applied in App.jsx (Alerts) and Events.jsx (chronological grouping).
+function localTodayISO(d = new Date()) {
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
 function fmtUSD(n, hidden) {
   if (hidden) return "$ ••••";
   if (n == null || isNaN(n)) return "—";
@@ -2227,7 +2236,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [yoyOpen, setYoyOpen] = useState(false);
   const [bondProjOpen, setBondProjOpen] = useState(false);
 
-  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayISO = useMemo(() => localTodayISO(), []);
 
   const headers = authHeaders(auth);
 
@@ -2260,7 +2269,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         const divRes = await fetch("/api/dividends", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ transactions: txs, bondIncome: bi }),
+          body: JSON.stringify({ transactions: txs, bondIncome: bi, todayISO: localTodayISO() }),
         });
         if (divRes.status === 401) { onAuthFail?.(); return; }
         if (!divRes.ok) throw new Error(`Dividends: ${divRes.status}`);
