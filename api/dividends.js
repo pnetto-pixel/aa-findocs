@@ -41,6 +41,10 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v11: "Today" for the future-pay-date guard now uses the client's local calendar
+//      day (body.todayISO) instead of the server's UTC clock — fixes dividends
+//      appearing as already-received hours early for negative-offset timezones
+//      (US Central, Brazil, etc). Falls back to server UTC if the client omits it.
 // v10: New top-level `foreignTax` array — Fidelity-imported "FOREIGN TAX PAID" rows
 //      (ADR withholding, e.g. TSM/VALE), kept separate from `events` (dividend income
 //      stays gross, unchanged) so the UI can show gross/tax/net without double-counting.
@@ -58,7 +62,7 @@ import { authenticate } from '../lib/auth.js';
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v10';
+const CACHE_VERSION = 'v11';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -430,7 +434,16 @@ export default async function handler(req, res) {
   let payDatesMissing = 0;
   let payDatesResolvedViaFinnhub = 0;
   let futureSkipped = 0;
-  const todayISO = new Date().toISOString().slice(0, 10);
+  // "Today" for the future-pay-date guard below MUST be the caller's LOCAL calendar
+  // day, not the server's UTC clock — Vercel functions run in UTC, which rolls over
+  // hours before local midnight for negative-offset timezones (US Central, Brazil,
+  // etc). Without this, a dividend paid "tomorrow" locally can already read as
+  // "today" server-side and get included as received hours early. The client sends
+  // its own localTodayISO(); fall back to server UTC only for callers that don't
+  // (e.g. any future non-browser caller of this endpoint).
+  const todayISO = /^\d{4}-\d{2}-\d{2}$/.test(body.todayISO)
+    ? body.todayISO
+    : new Date().toISOString().slice(0, 10);
   // Lazy, per-ticker Finnhub pay-date rows — only fetched (and cached) for tickers whose
   // first event doesn't resolve a pay date via Polygon/Finnhub's own payDate field.
   const finnhubPayRowsByTicker = new Map(); // ticker -> rows[]|null, populated on demand
