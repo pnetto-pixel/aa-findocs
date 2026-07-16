@@ -1,0 +1,35 @@
+# CI: build + tests on every push.
+# The deploy flow is "merge direto no main" (see CLAUDE.md) with no local
+# machine available (iPhone-only constraint), so this is the only automatic
+# check that the app still builds and the parser/perf tests still pass.
+# npm install (not ci): package-lock.json is intentionally gitignored.
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: |
+          status=0
+          for f in test/*.test.mjs; do
+            echo "== $f =="
+            node "$f" || status=1
+          done
+          exit $status

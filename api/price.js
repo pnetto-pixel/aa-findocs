@@ -4,9 +4,50 @@
 // Auth: Google ID token OR APP_PASSWORD (via shared lib/auth.js)
 
 import { authenticate } from "../lib/auth.js";
+import { getRedis } from "../lib/redis.js";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// --- Redis quote cache -------------------------------------------------------
+// Quotes are public market data, so the cache is GLOBAL (no storageKey): one
+// user's refresh warms the cache for everyone, and repeated refreshes within
+// 60s never touch Finnhub/brapi. Fails open when Redis is unavailable.
+const QUOTE_CACHE_TTL_SEC = 60;
+
+function quoteCacheKey(ticker, quoteOnly) {
+  return `portfolio:quotecache:v1:${ticker}:${quoteOnly ? "q" : "full"}`;
+}
+
+function getRedisSafe() {
+  try {
+    return getRedis();
+  } catch {
+    return null;
+  }
+}
+
+async function cacheGetQuote(redis, ticker, quoteOnly) {
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(quoteCacheKey(ticker, quoteOnly));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSetQuote(redis, ticker, quoteOnly, payload) {
+  if (!redis) return;
+  try {
+    await redis.set(
+      quoteCacheKey(ticker, quoteOnly),
+      JSON.stringify(payload),
+      "EX",
+      QUOTE_CACHE_TTL_SEC
+    );
+  } catch {}
 }
 
 // Retry fetch with exponential backoff on 429 (rate limit) — important for Finnhub free tier.
@@ -144,7 +185,7 @@ async function handleFx(brapiKey, finnhubKey) {
   return { pair: "USDBRL", rate: brlPerUsd, fxRate: brlPerUsd };
 }
 
-async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false) {
+async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false, prefetchedFx = null) {
   const baseTicker = stripSA(ticker).toUpperCase();
 
   // Fetch BRL price (try brapi first if key available, else Yahoo)
@@ -163,8 +204,9 @@ async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false) 
     brl = await fetchYahooBR(baseTicker);
   }
 
-  // Get USD/BRL rate (real-time via Finnhub forex, then open.er-api, then Frankfurter EOD)
-  const brlPerUsd = await fetchUsdBrlRate(brapiKey, finnhubKey);
+  // Get USD/BRL rate (real-time via Finnhub forex, then open.er-api, then
+  // Frankfurter EOD). Batch requests prefetch it once for all BR tickers.
+  const brlPerUsd = prefetchedFx || (await fetchUsdBrlRate(brapiKey, finnhubKey));
 
   const base = {
     price: brl.price / brlPerUsd,
@@ -270,8 +312,10 @@ async function handleUS(ticker, finnhubKey, quoteOnly = false) {
 }
 
 export default async function handler(req, res) {
-  const auth = await authenticate(req, res);
-  if (!auth) return;
+  const auth = await authenticate(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error });
+  }
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const brapiKey = process.env.BRAPI_API_KEY || null;
@@ -291,22 +335,71 @@ export default async function handler(req, res) {
     }
   }
 
+  // quoteOnly=1: client signals it already has name/industry/sector cached.
+  // We skip the profile + search endpoints entirely, saving ~2/3 of Finnhub calls.
+  const quoteOnly = req.query.quoteOnly === "1" || req.query.quoteOnly === "true";
+  const redis = getRedisSafe();
+
+  async function resolveQuote(ticker, prefetchedFx) {
+    const cached = await cacheGetQuote(redis, ticker, quoteOnly);
+    if (cached) return cached;
+    const payload = isBrazilianTicker(ticker)
+      ? await handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly, prefetchedFx)
+      : await handleUS(ticker, finnhubKey, quoteOnly);
+    await cacheSetQuote(redis, ticker, quoteOnly, payload);
+    return payload;
+  }
+
+  // Batch endpoint: /api/price?tickers=AAPL,VNQ,BBSE3 → one serverless
+  // invocation resolves every quote (bounded concurrency), instead of the
+  // client fanning out one request per holding.
+  const tickersRaw = (req.query.tickers || "").toString().toUpperCase().trim();
+  if (tickersRaw) {
+    const tickers = [...new Set(tickersRaw.split(",").map((t) => t.trim()).filter(Boolean))];
+    if (
+      tickers.length === 0 ||
+      tickers.length > 60 ||
+      tickers.some((t) => !/^[A-Z0-9.\-]{1,12}$/.test(t))
+    ) {
+      return res.status(400).json({ error: "Invalid tickers list (max 60)" });
+    }
+
+    // Prefetch USD/BRL once for all BR tickers in the batch.
+    let prefetchedFx = null;
+    if (tickers.some(isBrazilianTicker)) {
+      try {
+        prefetchedFx = await fetchUsdBrlRate(brapiKey, finnhubKey);
+      } catch {}
+    }
+
+    const quotes = {};
+    const queue = [...tickers];
+    const CONCURRENCY = 4;
+    async function worker() {
+      while (queue.length > 0) {
+        const t = queue.shift();
+        try {
+          quotes[t] = await resolveQuote(t, prefetchedFx);
+        } catch (e) {
+          quotes[t] = { error: e.message || "Fetch failed" };
+        }
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, tickers.length) }, worker)
+    );
+
+    res.setHeader("Cache-Control", "private, max-age=60");
+    return res.status(200).json({ quotes });
+  }
+
   const tickerRaw = (req.query.ticker || "").toString().toUpperCase().trim();
   if (!tickerRaw || !/^[A-Z0-9.\-]{1,12}$/.test(tickerRaw)) {
     return res.status(400).json({ error: "Invalid ticker" });
   }
 
-  // quoteOnly=1: client signals it already has name/industry/sector cached.
-  // We skip the profile + search endpoints entirely, saving ~2/3 of Finnhub calls.
-  const quoteOnly = req.query.quoteOnly === "1" || req.query.quoteOnly === "true";
-
   try {
-    let payload;
-    if (isBrazilianTicker(tickerRaw)) {
-      payload = await handleBrazilian(tickerRaw, brapiKey, finnhubKey, quoteOnly);
-    } else {
-      payload = await handleUS(tickerRaw, finnhubKey, quoteOnly);
-    }
+    const payload = await resolveQuote(tickerRaw, null);
     res.setHeader("Cache-Control", "private, max-age=60");
     return res.status(200).json(payload);
   } catch (e) {
