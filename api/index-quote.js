@@ -26,8 +26,10 @@ async function fetchWithRetry(url, options = {}, maxAttempts = 3) {
 }
 
 export default async function handler(req, res) {
-  const auth = await authenticate(req, res);
-  if (!auth) return;
+  const auth = await authenticate(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error });
+  }
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
   if (!finnhubKey) {

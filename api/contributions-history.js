@@ -138,7 +138,7 @@ async function handleContributionsHistory(req, res, auth) {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('contributions-history handler error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
 
@@ -233,6 +233,6 @@ async function handleAlertsRead(req, res, auth) {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('alerts-read handler error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

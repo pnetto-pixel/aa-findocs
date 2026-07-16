@@ -78,27 +78,40 @@ export default async function handler(req, res) {
       // bondIncome and splitEvents are separate stores kept in the same blob.
       // When the request omits either, preserve whatever is already stored so
       // ordinary saves don't wipe imported interest payments or split history.
-      // Read the existing blob ONCE and reuse it for both fields.
+      // Read the existing blob ONCE and reuse it for both fields AND for the
+      // optimistic-concurrency check below.
       let bondIncome = Array.isArray(body.bondIncome) ? body.bondIncome : null;
       let splitEvents = Array.isArray(body.splitEvents) ? body.splitEvents : null;
-      if (bondIncome === null || splitEvents === null) {
-        try {
-          const prev = await redis.get(storageKey);
-          if (prev) {
-            const parsedPrev = JSON.parse(prev);
-            if (parsedPrev && typeof parsedPrev === 'object') {
-              if (bondIncome === null && Array.isArray(parsedPrev.bondIncome)) {
-                bondIncome = parsedPrev.bondIncome;
-              }
-              if (splitEvents === null && Array.isArray(parsedPrev.splitEvents)) {
-                splitEvents = parsedPrev.splitEvents;
-              }
+      let currentSavedAt = null;
+      try {
+        const prev = await redis.get(storageKey);
+        if (prev) {
+          const parsedPrev = JSON.parse(prev);
+          if (parsedPrev && typeof parsedPrev === 'object' && !Array.isArray(parsedPrev)) {
+            currentSavedAt = parsedPrev.savedAt || null;
+            if (bondIncome === null && Array.isArray(parsedPrev.bondIncome)) {
+              bondIncome = parsedPrev.bondIncome;
+            }
+            if (splitEvents === null && Array.isArray(parsedPrev.splitEvents)) {
+              splitEvents = parsedPrev.splitEvents;
             }
           }
-        } catch {}
-      }
+        }
+      } catch {}
       if (bondIncome === null) bondIncome = [];
       if (splitEvents === null) splitEvents = [];
+
+      // Optimistic concurrency: when the client sends expectedSavedAt (the
+      // savedAt it last read), reject the write if another device saved in
+      // between. Clients that omit the field keep the old behavior.
+      if ('expectedSavedAt' in body) {
+        if (currentSavedAt && currentSavedAt !== (body.expectedSavedAt || null)) {
+          return res.status(409).json({
+            error: 'Conflict: transactions were modified on another device',
+            savedAt: currentSavedAt,
+          });
+        }
+      }
       const savedAt = new Date().toISOString();
       const payload = JSON.stringify({ transactions, bondIncome, splitEvents, savedAt });
       await redis.set(storageKey, payload);
@@ -108,6 +121,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('transactions handler error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

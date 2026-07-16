@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell } from "lucide-react";
-import TransactionsView, { applySplitToTransactions, saveTransactionsToServer } from "./Transactions.jsx";
+import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
 const DividendsView = lazy(() => import("./Dividends.jsx"));
@@ -169,6 +169,33 @@ async function fetchPrice(ticker, auth, quoteOnly = false) {
   return parsed;
 }
 
+// Batch quote fetch: one API call resolves many tickers (server fans out with
+// bounded concurrency + shared 60s Redis cache). Returns { TICKER: payload }
+// where a failed ticker's payload is { error }.
+async function fetchPricesBatch(tickers, auth, quoteOnly = false) {
+  if (!tickers.length) return {};
+  const params = new URLSearchParams({ tickers: tickers.join(",") });
+  if (quoteOnly) params.set("quoteOnly", "1");
+  const res = await fetch(`/api/price?${params.toString()}`, {
+    headers: authHeaders(auth),
+  });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (!res.ok) {
+    let msg = `API ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  const d = await res.json();
+  return d.quotes && typeof d.quotes === "object" ? d.quotes : {};
+}
+
 // --- BRA Fixed Income (manual, entered in BRL) -----------------------------
 // These holdings (e.g. Tesouro balances copied from Nubank) are entered as a
 // total value in BRL; the app converts to USD using a live USD/BRL rate.
@@ -205,6 +232,13 @@ async function fetchIndexQuote(symbol, auth) {
 }
 
 // Server-side holdings sync (Upstash Redis backend)
+
+// Last savedAt read from / written to the server. Sent as expectedSavedAt on
+// PUT so the server can reject the write (409) if another device saved in
+// between — instead of silently overwriting it. Module-level: one account
+// per session.
+let holdingsServerSavedAt = null;
+
 async function fetchHoldingsFromServer(auth) {
   const res = await fetch("/api/holdings", {
     headers: authHeaders(auth),
@@ -227,7 +261,9 @@ async function fetchHoldingsFromServer(auth) {
     } catch {}
     throw new Error(msg);
   }
-  return await res.json();
+  const data = await res.json();
+  holdingsServerSavedAt = data.savedAt || null;
+  return data;
 }
 
 // Cross-device sync for the Bell alert log's "read" state (item 128).
@@ -264,6 +300,7 @@ async function fetchTransactionsForSync(auth, withMeta = false) {
     const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
     if (!res.ok) return null;
     const d = await res.json();
+    noteTransactionsSavedAt(d.savedAt);
     const transactions = d.exists && Array.isArray(d.transactions) ? d.transactions : [];
     if (withMeta) {
       return {
@@ -476,11 +513,20 @@ async function saveHoldingsToServer(auth, holdings) {
       ...authHeaders(auth),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ holdings }),
+    body: JSON.stringify({ holdings, expectedSavedAt: holdingsServerSavedAt }),
   });
   if (res.status === 401) {
     const err = new Error("Unauthorized");
     err.code = 401;
+    throw err;
+  }
+  if (res.status === 409) {
+    // Another device saved after we last read. Keep our stale marker so
+    // further saves also fail — reloading the app is the way to resync.
+    const err = new Error(
+      "Holdings changed on another device. Reload the app to sync."
+    );
+    err.code = 409;
     throw err;
   }
   if (!res.ok) {
@@ -491,7 +537,9 @@ async function saveHoldingsToServer(auth, holdings) {
     } catch {}
     throw new Error(msg);
   }
-  return await res.json();
+  const data = await res.json();
+  holdingsServerSavedAt = data.savedAt || null;
+  return data;
 }
 
 // Admin-only: list/invite/remove users from the allowlist.
@@ -1715,6 +1763,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           onAuthFail();
           return;
         }
+        if (e.code === 409) {
+          setSyncState("offline");
+          setToast({ kind: "error", message: e.message });
+          return;
+        }
         setSyncState("offline");
       }
     }, 1500);
@@ -1871,28 +1924,65 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     refreshSp500();
     const txsPromise = fetchTransactionsForSync(auth);
 
-    const results = new Map(); // id -> { ok: true, patch } | { ok: false, error }
-    const batchSize = 3;
-    for (let i = 0; i < autoHoldings.length; i += batchSize) {
-      const batch = autoHoldings.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (h) => {
-          try {
-            const quoteOnly = profileIsFresh(h);
-            const data = await fetchPrice(h.ticker, auth, quoteOnly);
-            results.set(h.id, { ok: true, data });
-          } catch (e) {
-            if (e.code === 401) {
-              throw e; // bubble up to outer catch
+    const results = new Map(); // id -> { ok: true, data } | { ok: false, error }
+
+    // Primary path: two batch calls (quoteOnly for holdings with a fresh
+    // profile, full for the rest) — a single serverless invocation each,
+    // instead of one request per holding.
+    let batchFailed = false;
+    try {
+      const freshGroup = autoHoldings.filter((h) => profileIsFresh(h));
+      const staleGroup = autoHoldings.filter((h) => !profileIsFresh(h));
+      const uniq = (hs) => [...new Set(hs.map((h) => h.ticker.toUpperCase()))];
+      const [freshQuotes, staleQuotes] = await Promise.all([
+        fetchPricesBatch(uniq(freshGroup), auth, true),
+        fetchPricesBatch(uniq(staleGroup), auth, false),
+      ]);
+      for (const h of autoHoldings) {
+        const map = profileIsFresh(h) ? freshQuotes : staleQuotes;
+        const q = map[h.ticker.toUpperCase()];
+        if (q && !q.error && q.price != null) {
+          results.set(h.id, { ok: true, data: q });
+        } else {
+          results.set(h.id, { ok: false, error: q?.error || "Price fetch failed" });
+        }
+      }
+    } catch (e) {
+      if (e.code === 401) {
+        onAuthFail();
+        setRefreshing(false);
+        setToast(null);
+        return;
+      }
+      batchFailed = true;
+    }
+
+    // Fallback: legacy per-ticker loop (3 at a time) if the batch call itself
+    // failed (network error, older server build during deploy, etc.).
+    if (batchFailed) {
+      results.clear();
+      const batchSize = 3;
+      for (let i = 0; i < autoHoldings.length; i += batchSize) {
+        const batch = autoHoldings.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (h) => {
+            try {
+              const quoteOnly = profileIsFresh(h);
+              const data = await fetchPrice(h.ticker, auth, quoteOnly);
+              results.set(h.id, { ok: true, data });
+            } catch (e) {
+              if (e.code === 401) {
+                throw e; // bubble up to outer catch
+              }
+              results.set(h.id, { ok: false, error: e.message || "Failed" });
             }
-            results.set(h.id, { ok: false, error: e.message || "Failed" });
-          }
-        })
-      ).catch((e) => {
-        if (e.code === 401) onAuthFail();
-      });
-      if (i + batchSize < autoHoldings.length) {
-        await new Promise((r) => setTimeout(r, 800));
+          })
+        ).catch((e) => {
+          if (e.code === 401) onAuthFail();
+        });
+        if (i + batchSize < autoHoldings.length) {
+          await new Promise((r) => setTimeout(r, 800));
+        }
       }
     }
 

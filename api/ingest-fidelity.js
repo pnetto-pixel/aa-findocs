@@ -16,16 +16,8 @@
 //   GET                                                  -> read pending (troubleshooting)
 //   DELETE                                               -> clear pending (reset)
 
-import crypto from 'crypto';
 import { getRedis } from '../lib/redis.js';
-import { emailStorageKey } from '../lib/auth.js';
-
-function constantTimeEqual(a, b) {
-  const ba = Buffer.from(String(a || ''), 'utf8');
-  const bb = Buffer.from(String(b || ''), 'utf8');
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
-}
+import { emailStorageKey, constantTimeEqual } from '../lib/auth.js';
 
 // Mirrors dupKey(tx) in src/Transactions.jsx so server-side dedupe matches the app.
 function dupKey(tx) {
@@ -158,6 +150,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('ingest-fidelity handler error:', err.message);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

@@ -81,14 +81,34 @@ export default async function handler(req, res) {
       }
 
       await redis.srem(ALLOWLIST_KEY, normalized);
-      await redis.del(emailStorageKey(normalized));
 
-      return res.status(200).json({ ok: true });
+      // Remove ALL of the user's data, not just :holdings — transactions,
+      // contributions-history, alerts-read, fidelity-pending and any
+      // versioned caches (:perf-history:*, :dividends:*) share the same
+      // `portfolio:email:<hash>:` prefix.
+      const prefix = emailStorageKey(normalized).replace(/:holdings$/, '');
+      let cursor = '0';
+      let deleted = 0;
+      do {
+        const [next, keys] = await redis.scan(
+          cursor,
+          'MATCH',
+          `${prefix}:*`,
+          'COUNT',
+          100
+        );
+        cursor = next;
+        if (keys.length > 0) {
+          deleted += await redis.del(...keys);
+        }
+      } while (cursor !== '0');
+
+      return res.status(200).json({ ok: true, deletedKeys: deleted });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('users handler error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

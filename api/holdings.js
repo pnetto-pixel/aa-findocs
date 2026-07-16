@@ -55,6 +55,30 @@ export default async function handler(req, res) {
       if (!Array.isArray(holdings)) {
         return res.status(400).json({ error: 'holdings array required' });
       }
+
+      // Optimistic concurrency: when the client sends expectedSavedAt (the
+      // savedAt it last read), reject the write if another device saved in
+      // between — last-write-wins silently losing data across devices.
+      // Clients that omit the field keep the old unconditional behavior.
+      if ('expectedSavedAt' in body) {
+        let currentSavedAt = null;
+        try {
+          const prev = await redis.get(auth.storageKey);
+          if (prev) {
+            const parsedPrev = JSON.parse(prev);
+            if (parsedPrev && !Array.isArray(parsedPrev)) {
+              currentSavedAt = parsedPrev.savedAt || null;
+            }
+          }
+        } catch {}
+        if (currentSavedAt && currentSavedAt !== (body.expectedSavedAt || null)) {
+          return res.status(409).json({
+            error: 'Conflict: data was modified on another device',
+            savedAt: currentSavedAt,
+          });
+        }
+      }
+
       const savedAt = new Date().toISOString();
       const payload = JSON.stringify({ holdings, savedAt });
       await redis.set(auth.storageKey, payload);
@@ -64,6 +88,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error('holdings handler error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
