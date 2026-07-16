@@ -3323,6 +3323,23 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               }}
             >
               <div style={{ display: "flex", gap: 6 }}>
+                {/* Deployed build id (commit · build date), injected by Vite
+                    from VERCEL_GIT_COMMIT_SHA — confirms which version is
+                    live after each deploy. "dev" outside Vercel. */}
+                <span
+                  title="Deployed build: commit · build date"
+                  style={{
+                    alignSelf: "center",
+                    marginRight: 4,
+                    fontFamily: FONT_MONO,
+                    fontSize: 9,
+                    letterSpacing: "0.08em",
+                    color: T.textFaint,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {__APP_BUILD__}
+                </span>
                 <button
                   onClick={refreshAll}
                   disabled={refreshing || holdings.length === 0}
