@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell } from "lucide-react";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
+// Lazy so recharts (used by the treemap) stays out of the main bundle.
+const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
 const AporteQuinzenalView = lazy(() => import("./AporteQuinzenal.jsx"));
 const DividendsView = lazy(() => import("./Dividends.jsx"));
 const EventsView = lazy(() => import("./Events.jsx"));
@@ -1412,6 +1414,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     return isFinite(v) && v > 0 ? v : null;
   });
   const [showRebalance, setShowRebalance] = useState(false);
+  const [showTreemap, setShowTreemap] = useState(false);
   const [newCash, setNewCash] = useState("");
   const importJsonRef = useRef(null);
 
@@ -1805,6 +1808,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     () => holdings.reduce((s, h) => s + holdingValue(h), 0),
     [holdings, usdBrlRate]
   );
+
+  // Monthly TOTAL net-worth snapshot (write-side). Unlike the perf-history
+  // series (which excludes Cash/Unallocated/BRA Fixed Income — no price
+  // history), this records the live total so a true "all assets" history
+  // accumulates organically from now on. Debounced so it fires once after
+  // prices settle; idempotent overwrite of the current month per PUT.
+  useEffect(() => {
+    if (!loaded || !(totalValue > 0)) return;
+    if (syncState === "local-only") return;
+    const handle = setTimeout(() => {
+      const month = localTodayISO().slice(0, 7);
+      fetch("/api/contributions-history?resource=networth-history", {
+        method: "PUT",
+        headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+        body: JSON.stringify({ month, value: totalValue }),
+      }).catch(() => {});
+    }, 5000);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, totalValue]);
 
   const totalTarget = useMemo(
     () => holdings.reduce((s, h) => s + (h.target || 0), 0),
@@ -4465,6 +4488,81 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       </span>
                     </div>
                   )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* Portfolio Map — treemap of holdings (lazy: keeps recharts out of main bundle) */}
+          {holdings.length > 0 && (
+            <section style={{ marginTop: 18 }}>
+              <button
+                onClick={() => setShowTreemap(!showTreemap)}
+                style={{
+                  width: "100%",
+                  background: T.card,
+                  border: `1px solid ${T.borderSoft}`,
+                  borderRadius: 4,
+                  padding: "14px 16px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  color: T.text,
+                }}
+              >
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: T.gold,
+                  }}
+                >
+                  <LayoutGrid size={14} strokeWidth={2} />
+                  Portfolio Map
+                </span>
+                <ChevronDown
+                  size={16}
+                  style={{
+                    color: T.textDim,
+                    transform: showTreemap ? "rotate(180deg)" : "none",
+                    transition: "transform 0.2s",
+                  }}
+                />
+              </button>
+
+              {showTreemap && (
+                <div
+                  className="card-enter"
+                  style={{
+                    background: T.card,
+                    border: `1px solid ${T.borderSoft}`,
+                    borderTop: "none",
+                    borderRadius: "0 0 4px 4px",
+                    padding: 16,
+                    marginTop: -1,
+                  }}
+                >
+                  <Suspense
+                    fallback={
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textDim, padding: "24px 0", textAlign: "center" }}>
+                        Loading map…
+                      </div>
+                    }
+                  >
+                    {/* Full holdings list (not filteredHoldings): the map should
+                        show the whole portfolio, including Cash — zero-value
+                        holdings are dropped inside the component. */}
+                    <TreemapCard
+                      holdings={holdings}
+                      usdBrlRate={usdBrlRate}
+                      valuesHidden={valuesHidden}
+                    />
+                  </Suspense>
                 </div>
               )}
             </section>

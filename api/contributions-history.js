@@ -25,6 +25,18 @@
 //   - Read-modify-write: unions `add` into the stored set of read alert ids,
 //     capped at the 200 most-recently-added ids.
 // Storage: auth.storageKey with ":holdings" swapped for ":alerts-read".
+//
+// ?resource=networth-history routes to a third store (same 12-function
+// rationale): monthly snapshots of the TOTAL net worth (all holdings,
+// including Cash / Unallocated / BRA Fixed Income — assets the perf-history
+// chart can't reconstruct because they have no market price history). The
+// app PUTs the current month on load; the stored value for a month is
+// therefore "net worth at the last app load of that month". History
+// accumulates organically from first deploy — past months can't be
+// backfilled.
+// GET: { exists, history: { "YYYY-MM": { value, savedAt } }, method, ... }
+// PUT { month: "YYYY-MM", value: number }: { ok, savedAt }
+// Storage: auth.storageKey with ":holdings" swapped for ":networth-history".
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
@@ -40,6 +52,11 @@ function alertsReadKeyFromAuth(auth) {
   return auth.storageKey.replace(/:holdings$/, ':alerts-read');
 }
 
+function netWorthKeyFromAuth(auth) {
+  if (!auth?.storageKey) return null;
+  return auth.storageKey.replace(/:holdings$/, ':networth-history');
+}
+
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const MAX_READ_IDS = 200;
 
@@ -52,7 +69,85 @@ export default async function handler(req, res) {
   if (req.query?.resource === 'alerts-read') {
     return handleAlertsRead(req, res, auth);
   }
+  if (req.query?.resource === 'networth-history') {
+    return handleNetWorthHistory(req, res, auth);
+  }
   return handleContributionsHistory(req, res, auth);
+}
+
+async function handleNetWorthHistory(req, res, auth) {
+  const storageKey = netWorthKeyFromAuth(auth);
+  if (!storageKey) {
+    return res.status(500).json({ error: 'No storage key derived' });
+  }
+
+  let redis;
+  try {
+    redis = getRedis();
+  } catch (err) {
+    return res.status(503).json({ error: `Storage unavailable: ${err.message}` });
+  }
+
+  try {
+    if (req.method === 'GET') {
+      const raw = await redis.get(storageKey);
+      let history = {};
+      let exists = false;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            history = parsed;
+            exists = true;
+          }
+        } catch {
+          exists = false;
+        }
+      }
+      return res.status(200).json({
+        exists,
+        history,
+        method: auth.method,
+        email: auth.email,
+        admin: auth.admin,
+      });
+    }
+
+    if (req.method === 'PUT') {
+      const body = req.body || {};
+      const month = body.month;
+      const value = body.value;
+      if (typeof month !== 'string' || !MONTH_RE.test(month)) {
+        return res.status(400).json({ error: 'month "YYYY-MM" required' });
+      }
+      if (typeof value !== 'number' || !isFinite(value) || value < 0) {
+        return res.status(400).json({ error: 'value (non-negative number) required' });
+      }
+
+      // Read-modify-write: overwrite the given month, preserve the rest.
+      let history = {};
+      try {
+        const prev = await redis.get(storageKey);
+        if (prev) {
+          const parsed = JSON.parse(prev);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            history = parsed;
+          }
+        }
+      } catch {}
+
+      const savedAt = new Date().toISOString();
+      history[month] = { value, savedAt };
+
+      await redis.set(storageKey, JSON.stringify(history));
+      return res.status(200).json({ ok: true, savedAt });
+    }
+
+    return res.status(405).json({ error: 'Method not allowed' });
+  } catch (err) {
+    console.error('networth-history handler error:', err);
+    return res.status(500).json({ error: 'Internal error' });
+  }
 }
 
 async function handleContributionsHistory(req, res, auth) {
