@@ -3,12 +3,15 @@
 // switches to a TWR % comparison chart.
 
 import { useEffect, useState, useMemo, useRef, Fragment } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, BarChart2, Filter, Layers } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, BarChart2, Filter, Layers, Activity, Calendar, Wallet, PiggyBank } from "lucide-react";
 import {
   LineChart,
   Line,
   AreaChart,
   Area,
+  ComposedChart,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -16,6 +19,19 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import {
+  wealthFromTwr,
+  dailyReturns,
+  annualizedVolatility,
+  cagr,
+  sharpeRatio,
+  betaVsBenchmark,
+  underwaterSeries,
+  maxDrawdown,
+  monthlyReturns,
+  investedSeries,
+  xirrFromTransactions,
+} from "./lib/analytics.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -445,6 +461,18 @@ function kpiColor(n) {
   if (n > 0) return T.green;
   if (n < 0) return T.red;
   return T.textDim;
+}
+
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Heatmap cell background for the Monthly Returns table: green/red with
+// intensity scaled by |return|, saturating at ±8% (a typical strong month).
+function heatColor(ret) {
+  if (ret == null || isNaN(ret)) return "transparent";
+  const a = Math.min(0.8, 0.12 + (Math.abs(ret) / 8) * 0.6);
+  return ret >= 0
+    ? `rgba(125, 211, 164, ${a.toFixed(2)})`
+    : `rgba(232, 140, 140, ${a.toFixed(2)})`;
 }
 
 // Dynamic chart card title covering every combination of the two independent
@@ -1789,6 +1817,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [divEvents, setDivEvents] = useState([]);
   const [perfCardOpen, setPerfCardOpen] = useState(true);
   const [posTableOpen, setPosTableOpen] = useState(false);
+  const [riskOpen, setRiskOpen] = useState(false);
+  const [monthlyOpen, setMonthlyOpen] = useState(false);
+  const [investedOpen, setInvestedOpen] = useState(false);
+  const [nwHistOpen, setNwHistOpen] = useState(false);
+  // Monthly TOTAL net-worth snapshots (all assets, incl. Cash / BRA Fixed
+  // Income) written by App.jsx on load; accumulates organically month by month.
+  const [nwHistory, setNwHistory] = useState([]); // [{ month: "YYYY-MM", value }]
   const [assetClassFilter, setAssetClassFilter] = useState(() => new Set()); // include-filter, empty = all
   const [tickerFilter, setTickerFilter] = useState(() => new Set()); // include-filter, empty = all
   // Composition Evolution's own Asset Class/Ticker filter — independent of
@@ -2073,6 +2108,29 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     return () => { cancelled = true; };
   }, [auth, transactionsLoaded, transactions]);
 
+  // Fetch the total net-worth snapshot history once per mount (small blob,
+  // silent failure — the card just shows its empty state).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/contributions-history?resource=networth-history", {
+          headers: authHeaders(auth),
+        });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (cancelled || !d.history || typeof d.history !== "object") return;
+        const rows = Object.entries(d.history)
+          .filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && v && isFinite(v.value))
+          .map(([m, v]) => ({ month: m, value: v.value }))
+          .sort((a, b) => (a.month < b.month ? -1 : 1));
+        setNwHistory(rows);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth]);
+
   const hasUSD = rawData.some((d) => d.usd != null);
 
   const { data: chartData, lastPortfolio, lastSpy, lastUSD, lastTotalReturn } = useMemo(
@@ -2107,6 +2165,75 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     }
     return map;
   }, [holdings]);
+
+  // ── Analytics (Risk & Drawdown / Monthly Returns / Invested vs Growth) ──
+  // All computed SINCE INCEPTION over the full rawData series (deliberately
+  // not coupled to the period selector — mixed scopes confuse the reading).
+  const analytics = useMemo(() => {
+    if (rawData.length < 2) return null;
+    const dates = rawData.map((d) => d.date);
+    const twr = rawData.map((d) => d.portfolio);
+    const wealth = wealthFromTwr(twr);
+    const rp = dailyReturns(wealth);
+    const rb = dailyReturns(wealthFromTwr(rawData.map((d) => d.spy)));
+    const vol = annualizedVolatility(rp);
+    const annReturn = cagr(dates, twr);
+    const sharpe = sharpeRatio(annReturn, vol);
+    const beta = betaVsBenchmark(rp, rb);
+    const mdd = maxDrawdown(dates, twr);
+    const underwater = underwaterSeries(dates, twr).map((p) => ({
+      ...p,
+      dateTs: Date.parse(p.date),
+    }));
+    const monthly = monthlyReturns(dates, twr);
+
+    // Cashflows use the same transaction subset that produced the TWR series
+    // (page filters ∩ perf-eligible classes). BRL txs convert at the CURRENT
+    // FX rate of that ticker (from live holdings); txs without a usable rate
+    // are skipped and surfaced in the card footer.
+    const eligibleTxs = filteredTransactions.filter((t) =>
+      PERF_ELIGIBLE_CLASSES.has(t.assetClass)
+    );
+    const resolveFx = (tx) => {
+      if ((tx.currency || "USD") !== "BRL") return 1;
+      const fxRate = priceMap[(tx.ticker || "").toUpperCase()]?.fxRate;
+      return fxRate ? 1 / fxRate : null;
+    };
+    const invested = investedSeries(dates, eligibleTxs, resolveFx);
+    const investedChart = rawData.map((d, i) => ({
+      dateTs: Date.parse(d.date),
+      usd: d.usd,
+      invested: invested.series[i],
+    }));
+    const lastUsd = [...rawData].reverse().find((d) => d.usd != null)?.usd ?? null;
+    const xirrPct =
+      lastUsd != null
+        ? xirrFromTransactions(eligibleTxs, resolveFx, lastUsd, dates[dates.length - 1])
+        : null;
+
+    return {
+      vol,
+      annReturn,
+      sharpe,
+      beta,
+      mdd,
+      underwater,
+      monthly,
+      investedChart,
+      investedSkipped: invested.skipped,
+      xirrPct,
+      hasUsdSeries: lastUsd != null,
+    };
+  }, [rawData, filteredTransactions, priceMap]);
+
+  const uwXAxis = useMemo(
+    () => computeXAxis(analytics?.underwater || [], "MAX"),
+    [analytics]
+  );
+  const investedXAxis = useMemo(
+    () => computeXAxis(analytics?.investedChart || [], "MAX"),
+    [analytics]
+  );
 
   const positionRows = useMemo(() => {
     if (!transactions.length) return [];
@@ -2733,6 +2860,308 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           onClearFilters={clearCompFilters}
         />
       )}
+
+      {/* Risk & Drawdown card — since inception, decoupled from the period selector */}
+      {state === "done" && analytics && (
+        <section style={{ marginTop: 28 }}>
+          <button onClick={() => setRiskOpen((o) => !o)} style={cardHeaderStyle(riskOpen)}>
+            <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
+              <Activity size={14} strokeWidth={2} />
+              Risk &amp; Drawdown
+            </span>
+            <ChevronDown size={16} style={{ color: T.textDim, transform: riskOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+          </button>
+          {riskOpen && (
+            <div style={cardBodyStyle}>
+              <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+                <KpiCard
+                  label="XIRR (Money-Weighted)"
+                  value={fmt(analytics.xirrPct)}
+                  color={kpiColor(analytics.xirrPct)}
+                />
+                <KpiCard
+                  label="CAGR (TWR)"
+                  value={fmt(analytics.annReturn)}
+                  color={kpiColor(analytics.annReturn)}
+                />
+                <KpiCard
+                  label="Volatility (Ann.)"
+                  value={analytics.vol == null ? "—" : `${analytics.vol.toFixed(1)}%`}
+                  color={T.text}
+                />
+                <KpiCard
+                  label="Sharpe (rf=0)"
+                  value={analytics.sharpe == null ? "—" : analytics.sharpe.toFixed(2)}
+                  color={kpiColor(analytics.sharpe)}
+                />
+                <KpiCard
+                  label="Beta vs SPY"
+                  value={analytics.beta == null ? "—" : analytics.beta.toFixed(2)}
+                  color={T.text}
+                />
+                <KpiCard
+                  label="Max Drawdown"
+                  value={analytics.mdd ? `${analytics.mdd.ddPct.toFixed(1)}%` : "—"}
+                  color={T.red}
+                />
+              </div>
+              {analytics.mdd && analytics.mdd.ddPct < 0 && (
+                <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginBottom: 16, letterSpacing: "0.04em" }}>
+                  Deepest drawdown: {fmtDateLabel(analytics.mdd.peakDate)} → {fmtDateLabel(analytics.mdd.troughDate)}
+                </div>
+              )}
+              <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: T.textDim, marginBottom: 8, paddingLeft: 8 }}>
+                  Underwater — % Below Peak
+                </div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={analytics.underwater} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                    <XAxis
+                      dataKey="dateTs"
+                      type="number"
+                      scale="time"
+                      domain={["dataMin", "dataMax"]}
+                      ticks={uwXAxis.ticks}
+                      tickFormatter={uwXAxis.tickFormatter}
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={{ stroke: T.border }}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => `${v.toFixed(0)}%`}
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={44}
+                    />
+                    <Tooltip
+                      content={({ active, payload }) =>
+                        active && payload?.length ? (
+                          <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
+                            <div style={{ color: T.textDim, marginBottom: 4 }}>{fmtDateLabel(payload[0].payload.date)}</div>
+                            <div style={{ color: T.red }}>{payload[0].payload.dd.toFixed(2)}% below peak</div>
+                          </div>
+                        ) : null
+                      }
+                    />
+                    <Area type="monotone" dataKey="dd" name="Drawdown" stroke={T.red} strokeWidth={1.5} fill={T.red + "33"} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+                All metrics since inception, from the daily TWR series (same asset universe as the chart above).
+                XIRR weighs your actual contribution timing; BRL cashflows convert at each ticker's current FX rate.
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Monthly Returns heatmap card */}
+      {state === "done" && analytics && analytics.monthly.years.length > 0 && (
+        <section style={{ marginTop: 28 }}>
+          <button onClick={() => setMonthlyOpen((o) => !o)} style={cardHeaderStyle(monthlyOpen)}>
+            <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
+              <Calendar size={14} strokeWidth={2} />
+              Monthly Returns
+            </span>
+            <ChevronDown size={16} style={{ color: T.textDim, transform: monthlyOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+          </button>
+          {monthlyOpen && (
+            <div style={cardBodyStyle}>
+              <ScrollHintTable>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: T.textDim, padding: "6px 10px", textAlign: "left", borderBottom: `1px solid ${T.border}` }}>
+                        Year
+                      </th>
+                      {MONTH_LABELS.map((m) => (
+                        <th key={m} style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: T.textDim, padding: "6px 6px", textAlign: "right", borderBottom: `1px solid ${T.border}` }}>
+                          {m}
+                        </th>
+                      ))}
+                      <th style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: T.gold, padding: "6px 10px", textAlign: "right", borderBottom: `1px solid ${T.border}` }}>
+                        YTD
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analytics.monthly.years.map((y) => {
+                      const row = analytics.monthly.table[y] || {};
+                      return (
+                        <tr key={y}>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "6px 10px", borderBottom: `1px solid ${T.borderSoft}` }}>
+                            {y}
+                          </td>
+                          {MONTH_LABELS.map((_, i) => {
+                            const r = row[i + 1];
+                            return (
+                              <td
+                                key={i}
+                                style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.text, padding: "6px 6px", textAlign: "right", background: heatColor(r), borderBottom: `1px solid ${T.borderSoft}` }}
+                              >
+                                {r == null ? "" : r.toFixed(1)}
+                              </td>
+                            );
+                          })}
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 700, color: kpiColor(row.ytd), padding: "6px 10px", textAlign: "right", borderBottom: `1px solid ${T.borderSoft}` }}>
+                            {row.ytd == null ? "—" : `${row.ytd > 0 ? "+" : ""}${row.ytd.toFixed(1)}`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </ScrollHintTable>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+                TWR % per calendar month, since inception. The first month may be partial.
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Invested vs Growth card */}
+      {state === "done" && analytics && analytics.hasUsdSeries && (
+        <section style={{ marginTop: 28 }}>
+          <button onClick={() => setInvestedOpen((o) => !o)} style={cardHeaderStyle(investedOpen)}>
+            <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
+              <Wallet size={14} strokeWidth={2} />
+              Invested vs Growth
+            </span>
+            <ChevronDown size={16} style={{ color: T.textDim, transform: investedOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+          </button>
+          {investedOpen && (
+            <div style={cardBodyStyle}>
+              <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: T.textDim, marginBottom: 8, paddingLeft: 8 }}>
+                  Portfolio Value vs Capital Invested
+                </div>
+                <ResponsiveContainer width="100%" height={280}>
+                  <ComposedChart data={analytics.investedChart} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                    <XAxis
+                      dataKey="dateTs"
+                      type="number"
+                      scale="time"
+                      domain={["dataMin", "dataMax"]}
+                      ticks={investedXAxis.ticks}
+                      tickFormatter={investedXAxis.tickFormatter}
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={{ stroke: T.border }}
+                      angle={-45}
+                      textAnchor="end"
+                      height={60}
+                    />
+                    <YAxis
+                      tickFormatter={valuesHidden ? () => "" : fmtUSDAxis}
+                      tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={valuesHidden ? 16 : 64}
+                    />
+                    <Tooltip
+                      content={({ active, payload }) =>
+                        active && payload?.length && !valuesHidden ? (
+                          <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
+                            <div style={{ color: T.textDim, marginBottom: 4 }}>
+                              {fmtDateLabel(new Date(payload[0].payload.dateTs).toISOString().slice(0, 10))}
+                            </div>
+                            <div style={{ color: T.blue }}>Value: {fmtUSD(payload[0].payload.usd)}</div>
+                            <div style={{ color: T.gold }}>Invested: {fmtUSD(payload[0].payload.invested)}</div>
+                            <div style={{ color: kpiColor((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0)) }}>
+                              Gain: {fmtUSD((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0))}
+                            </div>
+                          </div>
+                        ) : null
+                      }
+                    />
+                    <Legend wrapperStyle={{ fontFamily: FONT_MONO, fontSize: 11, paddingTop: 8, color: T.textDim }} />
+                    <Area type="monotone" dataKey="usd" name="Portfolio Value" stroke={T.blue} strokeWidth={2} fill={T.blue + "22"} dot={false} />
+                    <Line type="monotone" dataKey="invested" name="Capital Invested" stroke={T.gold} strokeWidth={2} strokeDasharray="6 3" dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+                The gap between the lines is market gain on top of what you put in (net of sells).
+                {analytics.investedSkipped > 0 &&
+                  ` ${analytics.investedSkipped} BRL transaction${analytics.investedSkipped !== 1 ? "s" : ""} skipped (no live FX rate for the ticker).`}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Total Net Worth History card — monthly snapshots incl. Cash/BRA FI */}
+      <section style={{ marginTop: 28 }}>
+        <button onClick={() => setNwHistOpen((o) => !o)} style={cardHeaderStyle(nwHistOpen)}>
+          <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
+            <PiggyBank size={14} strokeWidth={2} />
+            Total Net Worth History
+          </span>
+          <ChevronDown size={16} style={{ color: T.textDim, transform: nwHistOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+        </button>
+        {nwHistOpen && (
+          <div style={cardBodyStyle}>
+            {nwHistory.length === 0 ? (
+              <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                No snapshots yet. Your TOTAL net worth (including Cash, Unallocated and BRA
+                Fixed Income) is recorded automatically once per month when you open the app —
+                history builds from now on.
+              </div>
+            ) : (
+              <>
+                <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={nwHistory} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
+                      <XAxis
+                        dataKey="month"
+                        tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                        tickLine={false}
+                        axisLine={{ stroke: T.border }}
+                        angle={-45}
+                        textAnchor="end"
+                        height={50}
+                      />
+                      <YAxis
+                        tickFormatter={valuesHidden ? () => "" : fmtUSDAxis}
+                        tick={{ fontFamily: FONT_MONO, fontSize: 10, fill: T.textFaint }}
+                        tickLine={false}
+                        axisLine={false}
+                        width={valuesHidden ? 16 : 64}
+                      />
+                      <Tooltip
+                        cursor={{ fill: T.border + "44" }}
+                        content={({ active, payload }) =>
+                          active && payload?.length && !valuesHidden ? (
+                            <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
+                              <div style={{ color: T.textDim, marginBottom: 4 }}>{payload[0].payload.month}</div>
+                              <div>{fmtUSD(payload[0].payload.value)}</div>
+                            </div>
+                          ) : null
+                        }
+                      />
+                      <Bar dataKey="value" name="Net Worth" fill={T.gold} radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+                  One snapshot per month — your total net worth at the last app load of that
+                  month. Unlike the performance chart, this includes ALL holdings (Cash,
+                  Unallocated, BRA Fixed Income).
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
