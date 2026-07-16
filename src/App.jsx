@@ -317,6 +317,48 @@ async function fetchTransactionsForSync(auth, withMeta = false) {
   }
 }
 
+// Fires once per session, ~3s after the initial data load: preloads the lazy
+// tab chunks and warms the server-side caches behind the Performance and
+// Dividends tabs by issuing the exact same POST bodies those tabs send on
+// mount. The first tab visit then hits warm Redis caches instead of waiting
+// on live candle / dividend-API fetches ("Fetching performance/dividends").
+// The two perf-history calls run sequentially on purpose — the first warms
+// the shared candle cache, so the composition call doesn't duplicate the
+// same external fetches while both are cold.
+let warmedUp = false;
+function warmUpTabCaches(auth, transactions, bondIncome) {
+  if (warmedUp || !Array.isArray(transactions) || transactions.length === 0) return;
+  warmedUp = true;
+  setTimeout(() => {
+    import("./Performance.jsx").catch(() => {});
+    import("./Dividends.jsx").catch(() => {});
+    import("./Events.jsx").catch(() => {});
+    const headers = { ...authHeaders(auth), "Content-Type": "application/json" };
+    fetch("/api/perf-history", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ transactions }),
+    })
+      .catch(() => {})
+      .then(() =>
+        fetch("/api/perf-history", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ transactions: [], allTransactions: transactions }),
+        }).catch(() => {})
+      );
+    fetch("/api/dividends", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        transactions,
+        bondIncome: bondIncome || [],
+        todayISO: localTodayISO(),
+      }),
+    }).catch(() => {});
+  }, 3000);
+}
+
 function computeNetQty(transactions) {
   const net = {};
   for (const tx of transactions) {
@@ -1685,6 +1727,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             );
           });
           refreshAlerts(txs, loadedBondIncome);
+          // Warm the tabs the user visits next: preload the lazy JS chunks
+          // and fire the exact POSTs Performance/Dividends will make, so the
+          // server-side Redis caches (candles, dividends, composition) are
+          // hot before the first tab switch. Delayed so it never competes
+          // with the initial quote fetches for bandwidth.
+          warmUpTabCaches(auth, txs, loadedBondIncome);
           let didChange = false;
           const patched = applyTxQty(loadedHoldings, computeNetQty(txs));
           if (patched) {
@@ -3851,6 +3899,81 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             </div>
           ) : (
             <>
+              {/* Portfolio Map — treemap of holdings (lazy: keeps recharts out
+                  of main bundle). Sits right below the main holdings block,
+                  above Filters & Sort (user request, jul/2026). */}
+              <section style={{ marginTop: 18 }}>
+                <button
+                  onClick={() => setShowTreemap(!showTreemap)}
+                  style={{
+                    width: "100%",
+                    background: T.card,
+                    border: `1px solid ${T.borderSoft}`,
+                    borderRadius: 4,
+                    padding: "14px 16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    color: T.text,
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      letterSpacing: "0.18em",
+                      textTransform: "uppercase",
+                      color: T.gold,
+                    }}
+                  >
+                    <LayoutGrid size={14} strokeWidth={2} />
+                    Portfolio Map
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    style={{
+                      color: T.textDim,
+                      transform: showTreemap ? "rotate(180deg)" : "none",
+                      transition: "transform 0.2s",
+                    }}
+                  />
+                </button>
+
+                {showTreemap && (
+                  <div
+                    className="card-enter"
+                    style={{
+                      background: T.card,
+                      border: `1px solid ${T.borderSoft}`,
+                      borderTop: "none",
+                      borderRadius: "0 0 4px 4px",
+                      padding: 16,
+                      marginTop: -1,
+                    }}
+                  >
+                    <Suspense
+                      fallback={
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textDim, padding: "24px 0", textAlign: "center" }}>
+                          Loading map…
+                        </div>
+                      }
+                    >
+                      {/* Full holdings list (not filteredHoldings): the map should
+                          show the whole portfolio, including Cash — zero-value
+                          holdings are dropped inside the component. */}
+                      <TreemapCard
+                        holdings={holdings}
+                        usdBrlRate={usdBrlRate}
+                        valuesHidden={valuesHidden}
+                      />
+                    </Suspense>
+                  </div>
+                )}
+              </section>
+
               {/* Filters & Sort — own card */}
               <section
                 style={{
@@ -4488,81 +4611,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       </span>
                     </div>
                   )}
-                </div>
-              )}
-            </section>
-          )}
-
-          {/* Portfolio Map — treemap of holdings (lazy: keeps recharts out of main bundle) */}
-          {holdings.length > 0 && (
-            <section style={{ marginTop: 18 }}>
-              <button
-                onClick={() => setShowTreemap(!showTreemap)}
-                style={{
-                  width: "100%",
-                  background: T.card,
-                  border: `1px solid ${T.borderSoft}`,
-                  borderRadius: 4,
-                  padding: "14px 16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  color: T.text,
-                }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: "0.18em",
-                    textTransform: "uppercase",
-                    color: T.gold,
-                  }}
-                >
-                  <LayoutGrid size={14} strokeWidth={2} />
-                  Portfolio Map
-                </span>
-                <ChevronDown
-                  size={16}
-                  style={{
-                    color: T.textDim,
-                    transform: showTreemap ? "rotate(180deg)" : "none",
-                    transition: "transform 0.2s",
-                  }}
-                />
-              </button>
-
-              {showTreemap && (
-                <div
-                  className="card-enter"
-                  style={{
-                    background: T.card,
-                    border: `1px solid ${T.borderSoft}`,
-                    borderTop: "none",
-                    borderRadius: "0 0 4px 4px",
-                    padding: 16,
-                    marginTop: -1,
-                  }}
-                >
-                  <Suspense
-                    fallback={
-                      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.textDim, padding: "24px 0", textAlign: "center" }}>
-                        Loading map…
-                      </div>
-                    }
-                  >
-                    {/* Full holdings list (not filteredHoldings): the map should
-                        show the whole portfolio, including Cash — zero-value
-                        holdings are dropped inside the component. */}
-                    <TreemapCard
-                      holdings={holdings}
-                      usdBrlRate={usdBrlRate}
-                      valuesHidden={valuesHidden}
-                    />
-                  </Suspense>
                 </div>
               )}
             </section>

@@ -4,6 +4,7 @@
 // Tile size = current USD value; tile color = day change (green/red) for
 // ticker-backed holdings with a previous close; neutral for manual holdings.
 
+import { useState, useMemo } from "react";
 import { Treemap, ResponsiveContainer, Tooltip } from "recharts";
 
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -95,19 +96,46 @@ function Tile(props) {
 }
 
 export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
-  const data = (holdings || [])
-    .map((h) => {
-      const value = holdingValueUSD(h, usdBrlRate);
-      return {
-        name: (h.ticker || h.name || "?").toUpperCase(),
-        size: value,
-        dayPct: dayChangePct(h),
-      };
-    })
-    .filter((d) => d.size > 0)
-    .sort((a, b) => b.size - a.size);
+  // Multi-select asset-class filter (empty = all). No ticker filter here:
+  // each tile IS a ticker — tap it for details, filter by class to zoom.
+  const [classFilter, setClassFilter] = useState(() => new Set());
 
-  if (data.length === 0) {
+  const allRows = useMemo(
+    () =>
+      (holdings || [])
+        .map((h) => {
+          const value = holdingValueUSD(h, usdBrlRate);
+          return {
+            name: (h.ticker || h.name || "?").toUpperCase(),
+            size: value,
+            dayPct: dayChangePct(h),
+            assetClass: h.assetClassOverride || h.assetClass || "Uncategorized",
+          };
+        })
+        .filter((d) => d.size > 0)
+        .sort((a, b) => b.size - a.size),
+    [holdings, usdBrlRate]
+  );
+
+  const classes = useMemo(
+    () => [...new Set(allRows.map((d) => d.assetClass))].sort(),
+    [allRows]
+  );
+
+  const data = classFilter.size === 0
+    ? allRows
+    : allRows.filter((d) => classFilter.has(d.assetClass));
+
+  function toggleClass(c) {
+    setClassFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+  }
+
+  if (allRows.length === 0) {
     return (
       <div
         style={{
@@ -126,6 +154,55 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
 
   return (
     <>
+      {classes.length > 1 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+          {classes.map((c) => {
+            const active = classFilter.has(c);
+            return (
+              <button
+                key={c}
+                onClick={() => toggleClass(c)}
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  letterSpacing: "0.06em",
+                  padding: "4px 10px",
+                  border: `1px solid ${active ? T.gold : T.border}`,
+                  borderRadius: 4,
+                  background: active ? T.gold : T.cardElev,
+                  color: active ? T.bg : T.textDim,
+                  cursor: "pointer",
+                  transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                }}
+              >
+                {c}
+              </button>
+            );
+          })}
+          {classFilter.size > 0 && (
+            <button
+              onClick={() => setClassFilter(new Set())}
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.06em",
+                padding: "4px 10px",
+                border: "none",
+                background: "transparent",
+                color: T.gold,
+                cursor: "pointer",
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+      {data.length === 0 ? (
+        <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+          No holdings in the selected classes.
+        </div>
+      ) : (
       <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: 8 }}>
         <ResponsiveContainer width="100%" height={300}>
           <Treemap
@@ -168,6 +245,7 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
           </Treemap>
         </ResponsiveContainer>
       </div>
+      )}
       <div
         style={{
           fontFamily: FONT_MONO,

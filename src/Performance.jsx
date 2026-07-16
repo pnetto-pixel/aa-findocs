@@ -68,6 +68,20 @@ function localTodayISO(d = new Date()) {
   return new Date(d.getTime() - tz).toISOString().slice(0, 10);
 }
 
+// ── In-session response cache ────────────────────────────────────────────────
+// Switching tabs unmounts this view; every revisit refetched everything and
+// re-showed the "Fetching performance" spinner. POST responses are cached in
+// module scope (survives remounts, dies with the page reload) keyed by a hash
+// of the request payload — any change in transactions produces a different
+// key, so a stale hit is impossible within a session.
+const sessionCache = new Map();
+function sessionKey(prefix, payload) {
+  const s = JSON.stringify(payload);
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return `${prefix}:${(h >>> 0).toString(36)}`;
+}
+
 async function loadTransactions(auth) {
   const res = await fetch("/api/transactions", { headers: authHeaders(auth) });
   if (res.status === 401) {
@@ -508,6 +522,57 @@ const PERIODS = [
   { label: "5Y",  days: 1825 },
   { label: "MAX", days: Infinity },
 ];
+
+// Per-card period options for the analytics cards (Risk & Drawdown, Monthly
+// Returns, Invested vs Growth, Total Net Worth History). Same windows as
+// PERIODS minus 1M — a month is too short for risk stats to mean anything.
+const ANALYTICS_PERIODS = ["6M", "YTD", "1Y", "5Y", "MAX"];
+
+// Slice rows (each carrying an ISO `date`) down to a period window.
+function sliceByPeriod(rows, periodLabel) {
+  if (!rows?.length || periodLabel === "MAX") return rows || [];
+  const p = PERIODS.find((x) => x.label === periodLabel);
+  if (!p) return rows;
+  let cutoff = null;
+  if (p.ytd) cutoff = `${new Date().getFullYear()}-01-01`;
+  else if (p.days !== Infinity) {
+    cutoff = new Date(Date.now() - p.days * 86400000).toISOString().slice(0, 10);
+  }
+  if (!cutoff) return rows;
+  return rows.filter((r) => r.date >= cutoff);
+}
+
+// Gold-solid period selector shared by the analytics cards (same visual as
+// the main chart's PERIODS selector).
+function PeriodPills({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 2, marginBottom: 16, flexWrap: "wrap" }}>
+      {ANALYTICS_PERIODS.map((label) => {
+        const active = value === label;
+        return (
+          <button
+            key={label}
+            onClick={() => onChange(label)}
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              letterSpacing: "0.08em",
+              padding: "5px 12px",
+              border: `1px solid ${active ? T.gold : T.border}`,
+              borderRadius: 4,
+              background: active ? T.gold : T.cardElev,
+              color: active ? T.bg : T.textDim,
+              cursor: "pointer",
+              transition: "color 0.15s, background 0.15s, border-color 0.15s",
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function getWindowData(rawData, period, divEvents) {
   if (!rawData.length) return { data: [], lastPortfolio: null, lastSpy: null, lastUSD: null, lastTotalReturn: null };
@@ -1821,6 +1886,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [monthlyOpen, setMonthlyOpen] = useState(false);
   const [investedOpen, setInvestedOpen] = useState(false);
   const [nwHistOpen, setNwHistOpen] = useState(false);
+  // Per-card period windows (Asset Class/Ticker scope comes from the page's
+  // global filter chips, which feed filteredTransactions → rawData → here).
+  const [riskPeriod, setRiskPeriod] = useState("MAX");
+  const [monthlyPeriod, setMonthlyPeriod] = useState("MAX");
+  const [investedPeriod, setInvestedPeriod] = useState("MAX");
+  const [nwPeriod, setNwPeriod] = useState("MAX");
   // Monthly TOTAL net-worth snapshots (all assets, incl. Cash / BRA Fixed
   // Income) written by App.jsx on load; accumulates organically month by month.
   const [nwHistory, setNwHistory] = useState([]); // [{ month: "YYYY-MM", value }]
@@ -1865,14 +1936,22 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         setTransactionsLoaded(true);
 
         let divJson = null;
-        try {
-          const r = await fetch("/api/dividends", {
-            method: "POST",
-            headers: { ...authHeaders(auth), "Content-Type": "application/json" },
-            body: JSON.stringify({ transactions: txs, bondIncome, todayISO: localTodayISO() }),
-          });
-          if (r.ok) divJson = await r.json();
-        } catch {}
+        const divKey = sessionKey("div", { txs, bondIncome, day: localTodayISO() });
+        if (sessionCache.has(divKey)) {
+          divJson = sessionCache.get(divKey);
+        } else {
+          try {
+            const r = await fetch("/api/dividends", {
+              method: "POST",
+              headers: { ...authHeaders(auth), "Content-Type": "application/json" },
+              body: JSON.stringify({ transactions: txs, bondIncome, todayISO: localTodayISO() }),
+            });
+            if (r.ok) {
+              divJson = await r.json();
+              sessionCache.set(divKey, divJson);
+            }
+          } catch {}
+        }
 
         if (cancelled) return;
 
@@ -2034,34 +2113,45 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   useEffect(() => {
     if (!transactionsLoaded) return;
     let cancelled = false;
+
+    const applyPerfResponse = ({ dates, portfolio, portfolioUSD, spy, meta: respMeta }) => {
+      setMeta(respMeta || null);
+      if (!dates?.length) {
+        setState("done");
+        setRawData([]);
+        return;
+      }
+      setRawData(
+        dates.map((d, i) => ({
+          date: d,
+          portfolio: portfolio[i],
+          usd: portfolioUSD?.[i] ?? null,
+          spy: spy[i],
+        }))
+      );
+      setState("done");
+    };
+
+    // Session-cache hit: hydrate synchronously, no spinner, no network.
+    const perfKey = sessionKey("perf", filteredTransactions);
+    const cachedPerf = sessionCache.get(perfKey);
+    if (cachedPerf) {
+      applyPerfResponse(cachedPerf);
+      return () => { cancelled = true; };
+    }
+
     setState("loading");
     setError(null);
 
     (async () => {
       try {
-        const { dates, portfolio, portfolioUSD, spy, meta: respMeta } = await postPerfHistory(auth, {
+        const resp = await postPerfHistory(auth, {
           transactions: filteredTransactions,
         });
 
         if (cancelled) return;
-
-        setMeta(respMeta || null);
-
-        if (!dates?.length) {
-          setState("done");
-          setRawData([]);
-          return;
-        }
-
-        setRawData(
-          dates.map((d, i) => ({
-            date: d,
-            portfolio: portfolio[i],
-            usd: portfolioUSD?.[i] ?? null,
-            spy: spy[i],
-          }))
-        );
-        setState("done");
+        sessionCache.set(perfKey, resp);
+        applyPerfResponse(resp);
       } catch (err) {
         if (cancelled) return;
         if (err.code === 401 && onAuthFail) {
@@ -2087,6 +2177,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     if (!transactionsLoaded) return;
     let cancelled = false;
 
+    const compKey = sessionKey("comp", transactions);
+    const cachedComp = sessionCache.get(compKey);
+    if (cachedComp) {
+      setCompositionRaw(cachedComp);
+      return () => { cancelled = true; };
+    }
+
     (async () => {
       try {
         const { composition: compResp } = await postPerfHistory(auth, {
@@ -2094,11 +2191,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           allTransactions: transactions,
         });
         if (cancelled) return;
-        setCompositionRaw(
+        const value =
           compResp && Array.isArray(compResp.dates)
             ? compResp
-            : { dates: [], tickerValues: {}, tickerClass: {} }
-        );
+            : { dates: [], tickerValues: {}, tickerClass: {} };
+        sessionCache.set(compKey, value);
+        setCompositionRaw(value);
       } catch {
         // Silent — Composition Evolution simply keeps its last good series;
         // the shared error UI is owned by Effect B.
@@ -2167,25 +2265,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   }, [holdings]);
 
   // ── Analytics (Risk & Drawdown / Monthly Returns / Invested vs Growth) ──
-  // All computed SINCE INCEPTION over the full rawData series (deliberately
-  // not coupled to the period selector — mixed scopes confuse the reading).
-  const analytics = useMemo(() => {
+  // Asset Class/Ticker scope comes from the page's global filter chips (they
+  // feed filteredTransactions → rawData); the time window is per-card via
+  // ANALYTICS_PERIODS. XIRR stays since-inception regardless of the window —
+  // a money-weighted return over a partial window would need a synthetic
+  // opening cashflow and reads like a different metric.
+  const analyticsBase = useMemo(() => {
     if (rawData.length < 2) return null;
     const dates = rawData.map((d) => d.date);
-    const twr = rawData.map((d) => d.portfolio);
-    const wealth = wealthFromTwr(twr);
-    const rp = dailyReturns(wealth);
-    const rb = dailyReturns(wealthFromTwr(rawData.map((d) => d.spy)));
-    const vol = annualizedVolatility(rp);
-    const annReturn = cagr(dates, twr);
-    const sharpe = sharpeRatio(annReturn, vol);
-    const beta = betaVsBenchmark(rp, rb);
-    const mdd = maxDrawdown(dates, twr);
-    const underwater = underwaterSeries(dates, twr).map((p) => ({
-      ...p,
-      dateTs: Date.parse(p.date),
-    }));
-    const monthly = monthlyReturns(dates, twr);
 
     // Cashflows use the same transaction subset that produced the TWR series
     // (page filters ∩ perf-eligible classes). BRL txs convert at the CURRENT
@@ -2201,6 +2288,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     };
     const invested = investedSeries(dates, eligibleTxs, resolveFx);
     const investedChart = rawData.map((d, i) => ({
+      date: d.date,
       dateTs: Date.parse(d.date),
       usd: d.usd,
       invested: invested.series[i],
@@ -2212,13 +2300,6 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         : null;
 
     return {
-      vol,
-      annReturn,
-      sharpe,
-      beta,
-      mdd,
-      underwater,
-      monthly,
       investedChart,
       investedSkipped: invested.skipped,
       xirrPct,
@@ -2226,13 +2307,58 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     };
   }, [rawData, filteredTransactions, priceMap]);
 
+  const riskStats = useMemo(() => {
+    const rows = sliceByPeriod(rawData, riskPeriod);
+    if (rows.length < 2) return null;
+    const dates = rows.map((d) => d.date);
+    const twr = rows.map((d) => d.portfolio);
+    const wealth = wealthFromTwr(twr);
+    const rp = dailyReturns(wealth);
+    const rb = dailyReturns(wealthFromTwr(rows.map((d) => d.spy)));
+    const vol = annualizedVolatility(rp);
+    const annReturn = cagr(dates, twr);
+    return {
+      vol,
+      annReturn,
+      sharpe: sharpeRatio(annReturn, vol),
+      beta: betaVsBenchmark(rp, rb),
+      mdd: maxDrawdown(dates, twr),
+      underwater: underwaterSeries(dates, twr).map((p) => ({
+        ...p,
+        dateTs: Date.parse(p.date),
+      })),
+    };
+  }, [rawData, riskPeriod]);
+
+  const monthlyData = useMemo(() => {
+    const rows = sliceByPeriod(rawData, monthlyPeriod);
+    if (rows.length < 2) return { years: [], table: {} };
+    return monthlyReturns(rows.map((d) => d.date), rows.map((d) => d.portfolio));
+  }, [rawData, monthlyPeriod]);
+
+  const investedWindow = useMemo(
+    () => sliceByPeriod(analyticsBase?.investedChart || [], investedPeriod),
+    [analyticsBase, investedPeriod]
+  );
+
+  const nwHistoryWindow = useMemo(() => {
+    if (nwPeriod === "MAX" || !nwHistory.length) return nwHistory;
+    const p = PERIODS.find((x) => x.label === nwPeriod);
+    let cutoff = null;
+    if (p?.ytd) cutoff = `${new Date().getFullYear()}-01`;
+    else if (p && p.days !== Infinity) {
+      cutoff = new Date(Date.now() - p.days * 86400000).toISOString().slice(0, 7);
+    }
+    return cutoff ? nwHistory.filter((r) => r.month >= cutoff) : nwHistory;
+  }, [nwHistory, nwPeriod]);
+
   const uwXAxis = useMemo(
-    () => computeXAxis(analytics?.underwater || [], "MAX"),
-    [analytics]
+    () => computeXAxis(riskStats?.underwater || [], riskPeriod),
+    [riskStats, riskPeriod]
   );
   const investedXAxis = useMemo(
-    () => computeXAxis(analytics?.investedChart || [], "MAX"),
-    [analytics]
+    () => computeXAxis(investedWindow, investedPeriod),
+    [investedWindow, investedPeriod]
   );
 
   const positionRows = useMemo(() => {
@@ -2861,8 +2987,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         />
       )}
 
-      {/* Risk & Drawdown card — since inception, decoupled from the period selector */}
-      {state === "done" && analytics && (
+      {/* Risk & Drawdown card — Asset Class/Ticker scope from the global chips; time window per-card */}
+      {state === "done" && analyticsBase && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setRiskOpen((o) => !o)} style={cardHeaderStyle(riskOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -2873,41 +2999,48 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           </button>
           {riskOpen && (
             <div style={cardBodyStyle}>
+              <PeriodPills value={riskPeriod} onChange={setRiskPeriod} />
+              {!riskStats ? (
+                <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                  Not enough data in this window.
+                </div>
+              ) : (
+                <>
               <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
                 <KpiCard
-                  label="XIRR (Money-Weighted)"
-                  value={fmt(analytics.xirrPct)}
-                  color={kpiColor(analytics.xirrPct)}
+                  label="XIRR (Since Inception)"
+                  value={fmt(analyticsBase.xirrPct)}
+                  color={kpiColor(analyticsBase.xirrPct)}
                 />
                 <KpiCard
                   label="CAGR (TWR)"
-                  value={fmt(analytics.annReturn)}
-                  color={kpiColor(analytics.annReturn)}
+                  value={fmt(riskStats.annReturn)}
+                  color={kpiColor(riskStats.annReturn)}
                 />
                 <KpiCard
                   label="Volatility (Ann.)"
-                  value={analytics.vol == null ? "—" : `${analytics.vol.toFixed(1)}%`}
+                  value={riskStats.vol == null ? "—" : `${riskStats.vol.toFixed(1)}%`}
                   color={T.text}
                 />
                 <KpiCard
                   label="Sharpe (rf=0)"
-                  value={analytics.sharpe == null ? "—" : analytics.sharpe.toFixed(2)}
-                  color={kpiColor(analytics.sharpe)}
+                  value={riskStats.sharpe == null ? "—" : riskStats.sharpe.toFixed(2)}
+                  color={kpiColor(riskStats.sharpe)}
                 />
                 <KpiCard
                   label="Beta vs SPY"
-                  value={analytics.beta == null ? "—" : analytics.beta.toFixed(2)}
+                  value={riskStats.beta == null ? "—" : riskStats.beta.toFixed(2)}
                   color={T.text}
                 />
                 <KpiCard
                   label="Max Drawdown"
-                  value={analytics.mdd ? `${analytics.mdd.ddPct.toFixed(1)}%` : "—"}
+                  value={riskStats.mdd ? `${riskStats.mdd.ddPct.toFixed(1)}%` : "—"}
                   color={T.red}
                 />
               </div>
-              {analytics.mdd && analytics.mdd.ddPct < 0 && (
+              {riskStats.mdd && riskStats.mdd.ddPct < 0 && (
                 <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginBottom: 16, letterSpacing: "0.04em" }}>
-                  Deepest drawdown: {fmtDateLabel(analytics.mdd.peakDate)} → {fmtDateLabel(analytics.mdd.troughDate)}
+                  Deepest drawdown: {fmtDateLabel(riskStats.mdd.peakDate)} → {fmtDateLabel(riskStats.mdd.troughDate)}
                 </div>
               )}
               <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
@@ -2915,7 +3048,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   Underwater — % Below Peak
                 </div>
                 <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={analytics.underwater} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                  <AreaChart data={riskStats.underwater} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                     <XAxis
                       dataKey="dateTs"
@@ -2953,16 +3086,19 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 </ResponsiveContainer>
               </div>
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                All metrics since inception, from the daily TWR series (same asset universe as the chart above).
-                XIRR weighs your actual contribution timing; BRL cashflows convert at each ticker's current FX rate.
+                Metrics over the selected window, from the daily TWR series (same asset universe
+                as the chart above — the Asset Class/Ticker chips up top apply here too).
+                XIRR is always since inception; BRL cashflows convert at each ticker's current FX rate.
               </div>
+                </>
+              )}
             </div>
           )}
         </section>
       )}
 
       {/* Monthly Returns heatmap card */}
-      {state === "done" && analytics && analytics.monthly.years.length > 0 && (
+      {state === "done" && rawData.length > 1 && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setMonthlyOpen((o) => !o)} style={cardHeaderStyle(monthlyOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -2973,6 +3109,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           </button>
           {monthlyOpen && (
             <div style={cardBodyStyle}>
+              <PeriodPills value={monthlyPeriod} onChange={setMonthlyPeriod} />
+              {monthlyData.years.length === 0 ? (
+                <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                  Not enough data in this window.
+                </div>
+              ) : (
+                <>
               <ScrollHintTable>
                 <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
                   <thead>
@@ -2991,8 +3134,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     </tr>
                   </thead>
                   <tbody>
-                    {analytics.monthly.years.map((y) => {
-                      const row = analytics.monthly.table[y] || {};
+                    {monthlyData.years.map((y) => {
+                      const row = monthlyData.table[y] || {};
                       return (
                         <tr key={y}>
                           <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "6px 10px", borderBottom: `1px solid ${T.borderSoft}` }}>
@@ -3019,15 +3162,18 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 </table>
               </ScrollHintTable>
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                TWR % per calendar month, since inception. The first month may be partial.
+                TWR % per calendar month over the selected window. The first month shown may be partial.
+                YTD compounds only the months visible in the window.
               </div>
+                </>
+              )}
             </div>
           )}
         </section>
       )}
 
       {/* Invested vs Growth card */}
-      {state === "done" && analytics && analytics.hasUsdSeries && (
+      {state === "done" && analyticsBase && analyticsBase.hasUsdSeries && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setInvestedOpen((o) => !o)} style={cardHeaderStyle(investedOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -3038,12 +3184,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
           </button>
           {investedOpen && (
             <div style={cardBodyStyle}>
+              <PeriodPills value={investedPeriod} onChange={setInvestedPeriod} />
               <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
                 <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: T.textDim, marginBottom: 8, paddingLeft: 8 }}>
                   Portfolio Value vs Capital Invested
                 </div>
                 <ResponsiveContainer width="100%" height={280}>
-                  <ComposedChart data={analytics.investedChart} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                  <ComposedChart data={investedWindow} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                     <XAxis
                       dataKey="dateTs"
@@ -3090,8 +3237,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               </div>
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
                 The gap between the lines is market gain on top of what you put in (net of sells).
-                {analytics.investedSkipped > 0 &&
-                  ` ${analytics.investedSkipped} BRL transaction${analytics.investedSkipped !== 1 ? "s" : ""} skipped (no live FX rate for the ticker).`}
+                Invested is cumulative since inception even in shorter windows.
+                {analyticsBase.investedSkipped > 0 &&
+                  ` ${analyticsBase.investedSkipped} BRL transaction${analyticsBase.investedSkipped !== 1 ? "s" : ""} skipped (no live FX rate for the ticker).`}
               </div>
             </div>
           )}
@@ -3109,6 +3257,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         </button>
         {nwHistOpen && (
           <div style={cardBodyStyle}>
+            {nwHistory.length > 0 && <PeriodPills value={nwPeriod} onChange={setNwPeriod} />}
             {nwHistory.length === 0 ? (
               <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                 No snapshots yet. Your TOTAL net worth (including Cash, Unallocated and BRA
@@ -3119,7 +3268,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               <>
                 <div style={{ background: T.cardElev, border: `1px solid ${T.borderSoft}`, borderRadius: 4, padding: "20px 8px 8px" }}>
                   <ResponsiveContainer width="100%" height={240}>
-                    <BarChart data={nwHistory} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
+                    <BarChart data={nwHistoryWindow} margin={{ top: 4, right: 20, left: 8, bottom: 4 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
                       <XAxis
                         dataKey="month"
