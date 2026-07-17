@@ -2851,16 +2851,6 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
         )}
       </section>
 
-      {/* ── Dividends Monthly Map ── */}
-      {state === "done" && (
-        <DividendsMonthlyMap
-          events={allEvents}
-          valuesHidden={valuesHidden}
-          open={mapOpen}
-          onToggle={() => setMapOpen((v) => !v)}
-        />
-      )}
-
       {/* ── Position Dividends ── */}
       {state === "done" && (
         <PositionDividendsTable
@@ -2880,6 +2870,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           valuesHidden={valuesHidden}
           open={yoyOpen}
           onToggle={() => setYoyOpen((v) => !v)}
+        />
+      )}
+
+      {/* ── Dividends Monthly Map ── */}
+      {state === "done" && (
+        <DividendsMonthlyMap
+          events={allEvents}
+          valuesHidden={valuesHidden}
+          open={mapOpen}
+          onToggle={() => setMapOpen((v) => !v)}
         />
       )}
 
