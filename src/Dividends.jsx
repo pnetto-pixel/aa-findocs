@@ -7,7 +7,7 @@
 // Dividend History: full audit table of every payment.
 
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
-import { ChevronDown, ChevronRight, TrendingUp, BarChart2, Receipt, Filter } from "lucide-react";
+import { ChevronDown, ChevronRight, TrendingUp, BarChart2, Receipt, Filter, Calendar } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -1345,6 +1345,178 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
   );
 }
 
+// ── Dividends Monthly Map (heatmap: year rows x month columns) ───────────────
+
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const MONTH_MAP_YEAR_COL_WIDTH = 64;
+
+// Single-hue gold heat scale (not the green/red bicolor heatColor() from
+// Performance.jsx — that one encodes sign, this one just encodes magnitude).
+// Alpha scales with value/maxValue; zero/empty months stay fully transparent
+// (no cell background, no "0" text).
+function heatColorAmount(value, maxValue) {
+  if (!value || value <= 0 || !maxValue || maxValue <= 0) return "transparent";
+  const alpha = Math.min(1, value / maxValue);
+  return `rgba(201, 169, 97, ${(0.1 + alpha * 0.7).toFixed(3)})`;
+}
+
+function DividendsMonthlyMap({ events, valuesHidden, open, onToggle }) {
+  // Rows: one per year with dividend/interest activity, months = 12 sums.
+  const data = useMemo(() => {
+    const byYear = {};
+    for (const e of events) {
+      if (!e || !e.date) continue;
+      const y = e.date.slice(0, 4);
+      const mIdx = parseInt(e.date.slice(5, 7), 10) - 1;
+      if (!y || mIdx < 0 || mIdx > 11) continue;
+      if (!byYear[y]) byYear[y] = new Array(12).fill(0);
+      byYear[y][mIdx] += e.totalReceived;
+    }
+    return Object.keys(byYear)
+      .sort((a, b) => b.localeCompare(a)) // most recent year first
+      .map((y) => {
+        const months = byYear[y];
+        const total = months.reduce((s, v) => s + v, 0); // simple sum, not TWR
+        return { year: y, months, total };
+      });
+  }, [events]);
+
+  // Recomputed whenever the displayed months change (i.e. whenever events change).
+  const maxValue = useMemo(() => {
+    let max = 0;
+    for (const row of data) {
+      for (const v of row.months) {
+        if (v > max) max = v;
+      }
+    }
+    return max;
+  }, [data]);
+
+  const thStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 10,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    fontWeight: 500,
+    padding: "8px 10px",
+    borderBottom: `1px solid ${T.border}`,
+    whiteSpace: "nowrap",
+    color: T.textFaint,
+    textAlign: "right",
+  };
+  const yearThStyle = {
+    ...thStyle,
+    position: "sticky",
+    left: 0,
+    zIndex: 3,
+    background: T.card,
+    textAlign: "left",
+    width: MONTH_MAP_YEAR_COL_WIDTH,
+    minWidth: MONTH_MAP_YEAR_COL_WIDTH,
+    borderRight: `1px solid ${T.border}`,
+  };
+  const yearTdStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 12,
+    fontWeight: 600,
+    padding: "9px 10px",
+    position: "sticky",
+    left: 0,
+    zIndex: 1,
+    background: T.card,
+    color: T.gold,
+    borderBottom: `1px solid ${T.borderSoft}`,
+    borderRight: `1px solid ${T.border}`,
+    width: MONTH_MAP_YEAR_COL_WIDTH,
+    minWidth: MONTH_MAP_YEAR_COL_WIDTH,
+  };
+  const monthTdStyle = {
+    fontFamily: FONT_MONO,
+    fontSize: 11,
+    padding: "9px 8px",
+    textAlign: "right",
+    borderBottom: `1px solid ${T.borderSoft}`,
+    color: T.text,
+    whiteSpace: "nowrap",
+  };
+  const totalTdStyle = {
+    ...monthTdStyle,
+    fontWeight: 700,
+    color: T.gold,
+    borderLeft: `1px solid ${T.border}`,
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button onClick={onToggle} style={cardHeaderStyle(open)}>
+        <CardTitle icon={<Calendar size={14} strokeWidth={2} />}>Dividends Monthly Map</CardTitle>
+        <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            background: T.card,
+            border: `1px solid ${T.borderSoft}`,
+            borderTop: "none",
+            borderRadius: "0 0 4px 4px",
+            marginTop: -1,
+            overflow: "hidden",
+          }}
+        >
+          {events.length === 0 ? (
+            <div style={{ padding: "20px", fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>
+              No dividends recorded yet.
+            </div>
+          ) : (
+            <ScrollHintTable leftFadeOffset={MONTH_MAP_YEAR_COL_WIDTH}>
+              <table style={{ width: "100%", minWidth: 760, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={yearThStyle}>Year</th>
+                    {MONTH_LABELS.map((m) => (
+                      <th key={m} style={thStyle}>{m}</th>
+                    ))}
+                    <th style={{ ...thStyle, borderLeft: `1px solid ${T.border}` }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map((row) => (
+                    <tr key={row.year}>
+                      <td style={yearTdStyle}>{row.year}</td>
+                      {row.months.map((v, i) => (
+                        <td
+                          key={i}
+                          style={{ ...monthTdStyle, background: heatColorAmount(v, maxValue) }}
+                        >
+                          {v > 0 ? fmtUSD0(v, valuesHidden) : ""}
+                        </td>
+                      ))}
+                      <td style={totalTdStyle}>{fmtUSD0(row.total, valuesHidden)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ScrollHintTable>
+          )}
+          <div
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              color: T.textFaint,
+              padding: "10px 16px 14px",
+              letterSpacing: "0.04em",
+            }}
+          >
+            Total dividends received per calendar month. Darker = higher month.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Bond Projections (future coupon payments) ─────────────────────────────────
 // Projects upcoming coupon payment dates for open bank bond positions.
 // Uses the same byCusip shape as buildBondEvents to extract per-CUSIP metadata.
@@ -2248,6 +2420,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
   const [histOpen, setHistOpen] = useState(false);
   const [yoyOpen, setYoyOpen] = useState(false);
   const [bondProjOpen, setBondProjOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
 
   const todayISO = useMemo(() => localTodayISO(), []);
 
@@ -2677,6 +2850,16 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           </div>
         )}
       </section>
+
+      {/* ── Dividends Monthly Map ── */}
+      {state === "done" && (
+        <DividendsMonthlyMap
+          events={allEvents}
+          valuesHidden={valuesHidden}
+          open={mapOpen}
+          onToggle={() => setMapOpen((v) => !v)}
+        />
+      )}
 
       {/* ── Position Dividends ── */}
       {state === "done" && (
