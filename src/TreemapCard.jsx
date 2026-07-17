@@ -4,7 +4,7 @@
 // Tile size = current USD value; tile color = day change (green/red) for
 // ticker-backed holdings with a previous close; neutral for manual holdings.
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Treemap, ResponsiveContainer, Tooltip } from "recharts";
 
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -61,6 +61,137 @@ function fmtUSD(n) {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(n);
+}
+
+// Multi-select class filter as a single dropdown trigger (same pattern as
+// FilterMultiSelect in Dividends.jsx — duplicated locally per the project's
+// no-shared-UI-module convention).
+function ClassFilterDropdown({ options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [open]);
+
+  const active = selected.size > 0;
+  const triggerText = active ? [...selected].sort().join(", ") : "All Classes";
+
+  return (
+    <div ref={ref} style={{ position: "relative", marginBottom: 12 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          background: T.cardElev,
+          border: `1px solid ${active ? T.gold : T.border}`,
+          borderRadius: 4,
+          color: T.text,
+          fontFamily: FONT_MONO,
+          fontSize: 12,
+          padding: "6px 10px",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: 260,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {triggerText}
+        </span>
+        <span style={{ color: T.textDim, fontSize: 9 }}>▾</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            zIndex: 50,
+            width: 220,
+            maxHeight: 280,
+            overflowY: "auto",
+            background: T.cardElev,
+            border: `1px solid ${T.border}`,
+            borderRadius: 4,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "8px 10px",
+              borderBottom: `1px solid ${T.border}`,
+              position: "sticky",
+              top: 0,
+              background: T.cardElev,
+            }}
+          >
+            <button
+              onClick={() => onChange(new Set())}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.gold,
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => setOpen(false)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.textDim,
+                fontSize: 16,
+                lineHeight: 1,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+          {options.map((opt) => (
+            <label
+              key={opt}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", borderBottom: `1px solid ${T.border}` }}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt)}
+                onChange={() => {
+                  const next = new Set(selected);
+                  if (next.has(opt)) next.delete(opt);
+                  else next.add(opt);
+                  onChange(next);
+                }}
+                style={{ accentColor: T.gold }}
+              />
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>{opt}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Custom tile renderer — recharts spreads each datum's fields into props.
@@ -126,15 +257,6 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
     ? allRows
     : allRows.filter((d) => classFilter.has(d.assetClass));
 
-  function toggleClass(c) {
-    setClassFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(c)) next.delete(c);
-      else next.add(c);
-      return next;
-    });
-  }
-
   if (allRows.length === 0) {
     return (
       <div
@@ -155,48 +277,7 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
   return (
     <>
       {classes.length > 1 && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-          {classes.map((c) => {
-            const active = classFilter.has(c);
-            return (
-              <button
-                key={c}
-                onClick={() => toggleClass(c)}
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.06em",
-                  padding: "4px 10px",
-                  border: `1px solid ${active ? T.gold : T.border}`,
-                  borderRadius: 4,
-                  background: active ? T.gold : T.cardElev,
-                  color: active ? T.bg : T.textDim,
-                  cursor: "pointer",
-                  transition: "color 0.15s, background 0.15s, border-color 0.15s",
-                }}
-              >
-                {c}
-              </button>
-            );
-          })}
-          {classFilter.size > 0 && (
-            <button
-              onClick={() => setClassFilter(new Set())}
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 10,
-                letterSpacing: "0.06em",
-                padding: "4px 10px",
-                border: "none",
-                background: "transparent",
-                color: T.gold,
-                cursor: "pointer",
-              }}
-            >
-              Clear
-            </button>
-          )}
-        </div>
+        <ClassFilterDropdown options={classes} selected={classFilter} onChange={setClassFilter} />
       )}
       {data.length === 0 ? (
         <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>

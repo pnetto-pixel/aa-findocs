@@ -3323,11 +3323,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               }}
             >
               <div style={{ display: "flex", gap: 6 }}>
-                {/* Deployed build id (commit · build date), injected by Vite
-                    from VERCEL_GIT_COMMIT_SHA — confirms which version is
-                    live after each deploy. "dev" outside Vercel. */}
+                {/* App version (package.json "version", format v0.0.0),
+                    injected by Vite at build time. Bump the version on every
+                    deploy so this number always identifies what's live —
+                    see docs/CONTEXT.md "Versionamento". */}
                 <span
-                  title="Deployed build: commit · build date"
+                  title="App version — bumped on every deploy"
                   style={{
                     alignSelf: "center",
                     marginRight: 4,
@@ -3338,7 +3339,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {__APP_BUILD__}
+                  {__APP_VERSION__}
                 </span>
                 <button
                   onClick={refreshAll}
