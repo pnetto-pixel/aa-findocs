@@ -15,10 +15,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 1. Implementar na branch de feature
 2. Build verde confirmado (`npm run build`)
-3. `git checkout -B main origin/main` → `git merge --no-ff <branch>` → `git push origin main`
-4. Vercel rebuilda automaticamente em ~1-2 min
+3. **Bump de versão em `package.json`** (ver "Versionamento" abaixo) — sempre, todo deploy
+4. `git checkout -B main origin/main` → `git merge --no-ff <branch>` → `git push origin main`
+5. Vercel rebuilda automaticamente em ~1-2 min
 
-**Não criar PR** a menos que o usuário peça explicitamente.
+**Não criar PR** a menos que o usuário peça explicitamente. **Exceção observada (jul/2026):** um push direto no `main` não disparou deploy na Vercel (causa não diagnosticada — possível problema pontual da integração Git do projeto); abrir um PR e mergeá-lo pela UI do GitHub disparou o deploy normalmente. Se um push direto não gerar deployment, tentar via PR antes de investigar mais fundo.
+
+### Versionamento (obrigatório em todo deploy)
+
+O app exibe a versão atual no header, ao lado esquerdo do botão "Refresh all" — formato **`v0.0.0`** (semver), lida de `package.json` em build-time via `vite.config.js` (`define: { __APP_VERSION__ }`). É o mecanismo do usuário pra confirmar visualmente, depois de qualquer deploy, que a versão nova de fato está no ar (sem precisar comparar hash de commit).
+
+**Antes de todo merge/deploy:**
+1. Bumpar `"version"` em `package.json` — `npm version patch|minor|major --no-git-tag-version` ou editar direto.
+   - **patch** (`1.1.0 → 1.1.1`): bugfix, ajuste visual, refactor sem feature nova.
+   - **minor** (`1.1.0 → 1.2.0`): feature nova ou lote de features (padrão da maioria das sessions deste projeto).
+   - **major** (`1.x.x → 2.0.0`): mudança estrutural grande — raro, só com decisão explícita do usuário.
+2. Incluir o bump no mesmo commit/branch da feature (não precisa de commit separado).
+3. Conferir no app após o deploy: o número no header deve bater com o `version` do `package.json` que foi mergeado.
 
 ## Commands
 
