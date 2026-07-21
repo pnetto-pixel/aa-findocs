@@ -1,6 +1,7 @@
 # Plano — Feed SimpleFin → Fidelity (evolução do item 38)
 
-> Status: **PLANO** (nada implementado). Assessment feito em 21/jul/2026.
+> Status: Fases 0-3 **ENTREGUES** (jul/2026, ultima em commit `fbc9a15`). Fase 4
+> (multi-usuario) permanece pendente. Assessment original feito em 21/jul/2026.
 > Contexto novo: o usuário criou uma conta no **SimpleFin Bridge** e já consegue puxar
 > dados da conta Fidelity dele (tem um *access URL* ativo). Este plano substitui o
 > caminho "scraper Playwright + TOTP em GitHub Actions" do
@@ -341,10 +342,31 @@ a Fase 1.
   config por usuário nesta fase.
 - Cobre os alvos **1 e 2**.
 
-### Fase 3 — Hardening + limpeza
-- Heartbeat no painel de Alerts (Bell): "SimpleFin sync falhou há N dias".
-- Deletar `api/ingest-fidelity.js` + `docs/plans/scraper/` (se aprovado no §7).
-- Atualizar CONTEXT.md / Features_Roadmap (item 38 → superseded por este plano).
+### Fase 3 — Hardening + limpeza — ✅ ENTREGUE (jul/2026, commit `fbc9a15`, merged em main)
+- **Heartbeat no painel de Alerts (Bell):** nova função `refreshSimplefinHeartbeat()` em
+  `src/App.jsx`, admin-only (reusa `isAdmin`), chamada no load effect logo após
+  `refreshAlerts(txs, loadedBondIncome)`. Consulta `GET /api/fidelity-pending?resource=status`
+  (shape real: `{ ok, connected, lastSync, lastError, nextSyncAt }`, sem `simplefinErrors`).
+  Dispara alerta se `lastError` está presente na última tentativa, OU se `lastSync` é
+  nulo/mais antigo que 48h — três mensagens: erro real, nunca sincronizado, ou stale com
+  contagem de dias. Reusa `mergeAlerts`/`setAlertLog` (novo `type: "simplefin_heartbeat"`),
+  mas com `id` **estável** (sem data embutida) — ao contrário dos demais tipos de alerta
+  (id embute a data e "some" sozinho), esse precisa de remoção **explícita** do log quando
+  o sync volta a ficar saudável.
+- **Deletado `api/ingest-fidelity.js` + `docs/plans/scraper/`** (aprovado no §7): scraper
+  Playwright/TOTP nunca foi ativado em produção (sem `INGEST_TOKEN` setado), superado pelo
+  SimpleFin Bridge desde a Fase 1. Libera 1 slot de Serverless Function (11/12 no limite do
+  Vercel Hobby). `api/fidelity-pending.js` teve o comentário de cabeçalho atualizado — não
+  referencia mais `ingest-fidelity.js` como endpoint companheiro ativo; documenta que o
+  staging é populado só via `?resource=sync`. `constantTimeEqual` (usado pelo endpoint
+  deletado) já vivia em `lib/auth.js` desde o hardening batch — nada ficou órfão. Grep
+  full-repo confirmou zero referências restantes a `ingest-fidelity` em `api/`, `lib/`,
+  `src/`, `vercel.json` — só em docs históricos (`item-38-fidelity-export-automation.md`,
+  `item-38-activation-runbook.md`, mantidos intencionalmente).
+- **CONTEXT.md / Features_Roadmap atualizados** (este commit de docs): item 38 →
+  superseded por este plano, seção "SimpleFin Feed — Fase 3" em `CONTEXT.md`.
+- `package.json` `1.3.1 -> 1.4.0` (minor). Build (`npm run build`) e suite completa
+  `test/*.test.mjs` (70 casos) verdes.
 
 ### Fase 4 — Multi-usuário (futuro, quando quiser abrir pros amigos)
 - `POST ?resource=connect` (claim de setup token server-side → Redis por usuário),
