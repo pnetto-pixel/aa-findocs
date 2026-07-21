@@ -65,7 +65,10 @@ function txKeyFromAuth(auth) {
 }
 
 const SIMPLEFIN_TIMEOUT_MS = 8000;
-const SIMPLEFIN_WINDOW_DAYS = 90;
+// SimpleFin's hard limit is 90 days; requesting exactly 90 gets capped (with a
+// warning in payload.errors) because a few seconds of request latency push the
+// server-side "now" past our computed startDate. Stay a day under the limit.
+const SIMPLEFIN_WINDOW_DAYS = 89;
 const SIMPLEFIN_MAX_ACCOUNTS = 50;
 // Fidelity accounts get full detail (not just a sample) — a real probe run
 // (jul/2026) showed a SimpleFin connection returns EVERY linked institution,
