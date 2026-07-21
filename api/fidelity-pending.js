@@ -21,38 +21,35 @@
 //               the other arrays.
 //   DELETE  -> clears the entire staging area (after the client has approved/discarded)
 //
-// ?resource=probe / ?resource=sync / ?resource=status route to SimpleFin feed
-// operations (see docs/plans/simplefin-fidelity-feed.md) instead of adding new
-// files under api/ — the Vercel Hobby plan caps a deployment at 12 Serverless
-// Functions (same rationale as api/contributions-history.js's ?resource routes).
-//
-// ?resource=probe (Fase 0): read-only inspection of the raw SimpleFin `/accounts`
-// payload. Never touches Redis. Admin-only.
-//   GET -> { ok, fetchedAt, simplefinErrors, accountCount, accounts: [...] }
+// ?resource=sync / ?resource=status route to SimpleFin feed operations (see
+// docs/plans/simplefin-fidelity-feed.md) instead of adding new files under
+// api/ — the Vercel Hobby plan caps a deployment at 12 Serverless Functions
+// (same rationale as api/contributions-history.js's ?resource routes).
+// (?resource=probe, the Fase 0 raw-payload diagnostic, was removed in the
+// SimpleFin Fase 3 cleanup once the sync path proved reliable — see §6.)
 //
 // ?resource=sync (Fase 1): fetches SimpleFin for real, maps the payload via
 // lib/simplefin-map.js, and merges the result into the `:fidelity-pending`
 // staging blob (deduped against both live transactions/bondIncome and
-// whatever's already staged). Admin-only (same access-URL-holder assumption
-// as the probe — see docs/plans/simplefin-fidelity-feed.md §4.2). Throttled to
-// one real SimpleFin fetch per SYNC_THROTTLE_MS; calls inside the window
-// return the current staging state without re-fetching.
+// whatever's already staged). Admin-only (same access-URL-holder assumption —
+// see docs/plans/simplefin-fidelity-feed.md §4.2). Throttled to one real
+// SimpleFin fetch per SYNC_THROTTLE_MS; calls inside the window return the
+// current staging state without re-fetching.
 //   POST -> { ok, synced, throttled, added, addedBond, addedBalance, addedUnmapped, lastSync, lastError, nextSyncAt }
 //
 // ?resource=status: cheap read of sync metadata, no fetch.
-//   GET -> { connected, lastSync, lastError, nextSyncAt, simplefinErrors }
+//   GET -> { connected, lastSync, lastError, nextSyncAt }
 //
 // A SimpleFin connection returns EVERY linked institution, not just Fidelity
 // (confirmed jul/2026: 22 accounts, only 1 Fidelity — 21 personal Chase/
-// Capital One accounts). Non-Fidelity accounts only get metadata (balance/
-// counts) from the probe; the sync mapper (lib/simplefin-map.js) filters to
+// Capital One accounts). The sync mapper (lib/simplefin-map.js) filters to
 // Fidelity internally and never touches other accounts' holdings/transactions.
 // This filter is load-bearing, not cosmetic — it's the only thing standing
 // between this endpoint and leaking unrelated personal banking data.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
-import { mapSimplefinPayload, isFidelityOrg } from '../lib/simplefin-map.js';
+import { mapSimplefinPayload } from '../lib/simplefin-map.js';
 
 function pendingKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
@@ -73,14 +70,6 @@ const SIMPLEFIN_TIMEOUT_MS = 8000;
 // (Fase 3) both surface as if it were a real failure. Stay comfortably under
 // the lower, "recommended" threshold so neither warning ever fires.
 const SIMPLEFIN_WINDOW_DAYS = 44;
-const SIMPLEFIN_MAX_ACCOUNTS = 50;
-// Fidelity accounts get full detail (not just a sample) — a real probe run
-// (jul/2026) showed a SimpleFin connection returns EVERY linked institution,
-// not just Fidelity (22 accounts, only 1 was Fidelity — the other 21 were
-// personal Chase/Capital One banking). Non-Fidelity accounts get metadata
-// only (balance/counts), never transaction or holding detail, so this
-// diagnostic endpoint doesn't surface unrelated personal spending data.
-const PROBE_FIDELITY_MAX_ITEMS = 200;
 // Sync is on-demand (button click), not a cron — but throttled server-side so
 // a chatty client (or a user mashing the button) can't hammer the Bridge.
 const SYNC_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h
@@ -99,107 +88,6 @@ function parseSimplefinUrl(raw) {
     url: u.toString(),
     authHeader: 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64'),
   };
-}
-
-function unixToISO(sec) {
-  if (typeof sec !== 'number' || !isFinite(sec)) return null;
-  try {
-    return new Date(sec * 1000).toISOString();
-  } catch {
-    return null;
-  }
-}
-
-async function handleProbe(req, res, auth) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-  if (!auth.admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
-  const rawUrl = process.env.SIMPLEFIN_ACCESS_URL;
-  if (!rawUrl) {
-    return res.status(503).json({ error: 'SimpleFin not configured (SIMPLEFIN_ACCESS_URL unset)' });
-  }
-
-  let url, authHeader;
-  try {
-    ({ url, authHeader } = parseSimplefinUrl(rawUrl));
-  } catch {
-    return res.status(500).json({ error: 'SIMPLEFIN_ACCESS_URL is malformed' });
-  }
-
-  const startDate = Math.floor((Date.now() - SIMPLEFIN_WINDOW_DAYS * 24 * 60 * 60 * 1000) / 1000);
-  const accountsUrl = `${url.replace(/\/+$/, '')}/accounts?start-date=${startDate}`;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SIMPLEFIN_TIMEOUT_MS);
-
-  let payload;
-  try {
-    const upstream = await fetch(accountsUrl, {
-      headers: { Authorization: authHeader },
-      signal: controller.signal,
-    });
-    if (!upstream.ok) {
-      return res.status(502).json({
-        error: `SimpleFin returned HTTP ${upstream.status}`,
-      });
-    }
-    payload = await upstream.json();
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      return res.status(504).json({ error: 'SimpleFin request timed out' });
-    }
-    return res.status(502).json({ error: `SimpleFin fetch failed: ${err.message}` });
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
-  const summarized = accounts.slice(0, SIMPLEFIN_MAX_ACCOUNTS).map((acct) => {
-    const org = acct.org ? { name: acct.org.name, domain: acct.org.domain } : null;
-    const holdings = Array.isArray(acct.holdings) ? acct.holdings : [];
-    const transactions = Array.isArray(acct.transactions) ? acct.transactions : [];
-    const base = {
-      id: acct.id,
-      name: acct.name,
-      currency: acct.currency,
-      org,
-      balance: acct.balance,
-      availableBalance: acct['available-balance'],
-      balanceDate: acct['balance-date'],
-      balanceDateISO: unixToISO(acct['balance-date']),
-      holdingsCount: holdings.length,
-      transactionsCount: transactions.length,
-    };
-    if (!isFidelityOrg(org)) {
-      // Metadata only — no holdings/transaction detail for unrelated
-      // institutions linked to the same SimpleFin connection.
-      return base;
-    }
-    const sortedTx = [...transactions].sort(
-      (a, b) => (b.posted || b.transacted_at || 0) - (a.posted || a.transacted_at || 0)
-    );
-    return {
-      ...base,
-      holdingsSample: holdings.slice(0, PROBE_FIDELITY_MAX_ITEMS),
-      transactionsSample: sortedTx.slice(0, PROBE_FIDELITY_MAX_ITEMS).map((tx) => ({
-        ...tx,
-        postedISO: unixToISO(tx.posted),
-        transactedAtISO: unixToISO(tx.transacted_at),
-      })),
-    };
-  });
-
-  return res.status(200).json({
-    ok: true,
-    fetchedAt: new Date().toISOString(),
-    simplefinErrors: Array.isArray(payload?.errors) ? payload.errors : [],
-    accountCount: accounts.length,
-    accounts: summarized,
-  });
 }
 
 function readBlob(raw) {
@@ -455,9 +343,6 @@ export default async function handler(req, res) {
     return res.status(auth.status).json({ error: auth.error });
   }
 
-  if (req.query?.resource === 'probe') {
-    return handleProbe(req, res, auth);
-  }
   if (req.query?.resource === 'status') {
     return handleStatus(req, res, auth);
   }

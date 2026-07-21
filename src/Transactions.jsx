@@ -44,7 +44,7 @@ function authHeaders(auth) {
   return h;
 }
 
-// Admin gate for the SimpleFin probe card (Fase 0, docs/plans/simplefin-fidelity-feed.md).
+// Admin gate for the SimpleFin sync controls (docs/plans/simplefin-fidelity-feed.md).
 // Duplicated from App.jsx's isUserAdmin/getAdminEmails (project convention: small
 // helpers are duplicated per file rather than shared).
 function getAdminEmails() {
@@ -4097,6 +4097,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
+  // Master collapse for the whole sync/automation region (Fidelity Import +
+  // Balance Updates + Unmapped + Splits/Groupings) — collapsed by default so
+  // it doesn't push the actual transaction table below the fold when there's
+  // nothing needing attention.
+  const [syncCardOpen, setSyncCardOpen] = useState(false);
   const [splitCardOpen, setSplitCardOpen] = useState(false);
   const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
   // Fidelity automation (item 38): trades staged by the scraper, awaiting approval.
@@ -4119,7 +4124,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // shown read-only so nothing is ever silently discarded.
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
   const [pendingUnmappedOpen, setPendingUnmappedOpen] = useState(false);
-  // Sync controls (admin-only, mirrors the SimpleFin Probe card gate).
+  // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
   const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, nextSyncAt }
   const [fidSyncMessage, setFidSyncMessage] = useState(null);
@@ -4134,69 +4139,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     }
   });
   const [checkingTickers, setCheckingTickers] = useState(() => new Set());
-  // SimpleFin probe (Fase 0, docs/plans/simplefin-fidelity-feed.md): admin-only,
-  // read-only inspection of the raw SimpleFin payload shape. Nothing here is
-  // staged/persisted — result only lives in this component's state.
   const isAdmin = isUserAdmin(auth);
-  const [probeOpen, setProbeOpen] = useState(false);
-  const [probeLoading, setProbeLoading] = useState(false);
-  const [probeError, setProbeError] = useState(null);
-  const [probeResult, setProbeResult] = useState(null);
-  const [probeCopied, setProbeCopied] = useState(false);
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
   }, [onAuthFail]);
-
-  async function copyProbeResult() {
-    const text = JSON.stringify(probeResult, null, 2);
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Clipboard API unavailable/denied (e.g. non-HTTPS or permission) — fall
-      // back to a hidden textarea + execCommand, which works in more contexts.
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      } catch {
-        return;
-      }
-    }
-    setProbeCopied(true);
-    setTimeout(() => setProbeCopied(false), 2000);
-  }
-
-  async function runSimplefinProbe() {
-    setProbeLoading(true);
-    setProbeError(null);
-    try {
-      const res = await fetch("/api/fidelity-pending?resource=probe", {
-        headers: authHeaders(auth),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401 && typeof onAuthFailRef.current === "function") {
-        onAuthFailRef.current();
-      }
-      if (!res.ok) {
-        setProbeError(data.error || `HTTP ${res.status}`);
-        setProbeResult(null);
-        return;
-      }
-      setProbeResult(data);
-    } catch (e) {
-      setProbeError(e.message || "Network error");
-      setProbeResult(null);
-    } finally {
-      setProbeLoading(false);
-    }
-  }
 
   // Persist ticker status cache.
   useEffect(() => {
@@ -4733,6 +4680,60 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           </div>
         )}
       </div>
+
+      {/* Sync & automation — Fidelity Import (trades/income/balance updates/
+          unmapped) plus Splits/Groupings, folded behind one master toggle so
+          this admin/utility clutter doesn't stand between the toolbar and the
+          actual transaction table below. Individual sub-sections keep their
+          own collapse state once this is open. */}
+      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingBalance.length > 0 || pendingUnmapped.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setSyncCardOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              background: T.card,
+              border: `1px solid ${T.border}`,
+              borderRadius: syncCardOpen ? "4px 4px 0 0" : 4,
+              padding: "10px 14px",
+              cursor: "pointer",
+              color: T.textDim,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+            }}
+          >
+            <ChevronDown
+              size={12}
+              style={{
+                transform: syncCardOpen ? "none" : "rotate(-90deg)",
+                transition: "transform 0.2s",
+              }}
+            />
+            Sync & Automation
+            {(pendingFid.length + pendingFidBond.length + pendingBalance.length + pendingUnmapped.length + pendingSplits.length) > 0 && (
+              <span
+                style={{
+                  marginLeft: 8,
+                  background: T.gold,
+                  color: "#0b0d10",
+                  fontFamily: FONT_MONO,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                }}
+              >
+                {pendingFid.length + pendingFidBond.length + pendingBalance.length + pendingUnmapped.length + pendingSplits.length}
+              </span>
+            )}
+          </button>
+          {syncCardOpen && (
+            <div style={{ padding: "14px 0 0" }}>
 
       {/* Fidelity Import — staged by the automation (item 38), extended for the
           SimpleFin sync (docs/plans/simplefin-fidelity-feed.md Fase 1): trades,
@@ -5424,135 +5425,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       )}
       {/* end Fidelity Import group */}
 
-      {/* SimpleFin probe (Fase 0) — admin-only diagnostic, read-only, nothing persisted */}
-      {isAdmin && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setProbeOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: T.card,
-              border: `1px solid ${T.border}`,
-              borderRadius: probeOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.textDim,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: probeOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            SimpleFin Probe (admin)
-          </button>
-
-          {probeOpen && (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderTop: "none",
-                borderRadius: "0 0 4px 4px",
-                padding: 14,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 11,
-                  color: T.textDim,
-                  marginBottom: 12,
-                  lineHeight: 1.5,
-                }}
-              >
-                Read-only inspection of the raw SimpleFin feed payload (Fase 0). Fetches
-                directly from SimpleFin — nothing is saved. Requires SIMPLEFIN_ACCESS_URL
-                configured in Vercel.
-              </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                <button
-                  onClick={runSimplefinProbe}
-                  disabled={probeLoading}
-                  style={{
-                    background: T.gold,
-                    color: "#0b0d10",
-                    border: "none",
-                    borderRadius: 4,
-                    padding: "8px 14px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    cursor: probeLoading ? "default" : "pointer",
-                  }}
-                >
-                  {probeLoading ? "Fetching…" : "Run Probe"}
-                </button>
-                {probeResult && (
-                  <button
-                    onClick={copyProbeResult}
-                    style={{
-                      background: "transparent",
-                      color: probeCopied ? T.green : T.textDim,
-                      border: `1px solid ${probeCopied ? T.green : T.border}`,
-                      borderRadius: 4,
-                      padding: "8px 14px",
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      letterSpacing: "0.1em",
-                      textTransform: "uppercase",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {probeCopied ? "Copied ✓" : "Copy JSON"}
-                  </button>
-                )}
-              </div>
-              {probeError && (
-                <div
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    color: T.red,
-                    marginBottom: 12,
-                  }}
-                >
-                  {probeError}
-                </div>
-              )}
-              {probeResult && (
-                <pre
-                  style={{
-                    background: "#0b0d10",
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 4,
-                    padding: 10,
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    color: T.text,
-                    maxHeight: 480,
-                    overflow: "auto",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {JSON.stringify(probeResult, null, 2)}
-                </pre>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Splits / Groupings inline card */}
       {(pendingSplits.length > 0 || splitEvents.length > 0) && (
@@ -5933,6 +5805,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   )}
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
             </div>
           )}
         </div>
