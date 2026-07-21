@@ -1727,6 +1727,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             );
           });
           refreshAlerts(txs, loadedBondIncome);
+          // SimpleFin/Fidelity feed heartbeat (Fase 3) — admin-only, same
+          // fire-and-forget spot as the other alert refreshers above.
+          if (isAdmin) refreshSimplefinHeartbeat();
           // Warm the tabs the user visits next: preload the lazy JS chunks
           // and fire the exact POSTs Performance/Dividends will make, so the
           // server-side Redis caches (candles, dividends, composition) are
@@ -2368,6 +2371,60 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       });
     } catch {
       /* silent — alerts are best-effort */
+    }
+  }
+
+  // Admin-only heartbeat check for the SimpleFin/Fidelity sync feed (Fase 3).
+  // Cheap read of ?resource=status (no fetch to SimpleFin itself, no throttle
+  // hit). Surfaces a stable-id alert ("simplefin_heartbeat") when the last
+  // sync attempt errored, or when the feed hasn't synced in over 48h (or
+  // never has). Update-in-place follows the same mergeAlerts pattern as the
+  // other alert types above; when healthy again the alert is explicitly
+  // pruned from the log (its id is stable across days, unlike dividend/
+  // earnings ids which embed the event date and so simply stop being
+  // re-detected once resolved).
+  async function refreshSimplefinHeartbeat() {
+    try {
+      const res = await fetch("/api/fidelity-pending?resource=status", {
+        headers: authHeaders(auth),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const todayISO = localTodayISO();
+      const HEARTBEAT_ID = "simplefin_heartbeat";
+      const STALE_MS = 48 * 60 * 60 * 1000;
+      const lastSyncMs = data.lastSync ? new Date(data.lastSync).getTime() : null;
+      const isStale = lastSyncMs == null || Date.now() - lastSyncMs > STALE_MS;
+      const hasError = !!data.lastError;
+      if (hasError || isStale) {
+        let message;
+        if (hasError) {
+          message = `SimpleFin: falha ao sincronizar — ${data.lastError}`;
+        } else if (!data.lastSync) {
+          message = "SimpleFin: nunca sincronizado";
+        } else {
+          const days = Math.floor((Date.now() - lastSyncMs) / 86400000);
+          message = `SimpleFin: sem sincronizar ha ${days} dia${days === 1 ? "" : "s"}`;
+        }
+        mergeAlerts(
+          [
+            {
+              id: HEARTBEAT_ID,
+              type: "simplefin_heartbeat",
+              ticker: "SimpleFin",
+              message,
+              detail: data.lastSync || null,
+            },
+          ],
+          todayISO
+        );
+      } else {
+        setAlertLog((prev) =>
+          prev.some((a) => a.id === HEARTBEAT_ID) ? prev.filter((a) => a.id !== HEARTBEAT_ID) : prev
+        );
+      }
+    } catch {
+      /* silent — heartbeat is best-effort, same as split/dividend/earnings detection */
     }
   }
 

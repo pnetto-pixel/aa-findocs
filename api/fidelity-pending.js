@@ -1,10 +1,14 @@
 // api/fidelity-pending.js
 //
-// USER-authenticated companion to api/ingest-fidelity.js (item 38).
-// The scraper writes staged trades via the service-token endpoint; THIS endpoint
-// lets the logged-in user (Google/password auth) read and clear that staging area
-// from inside the app. Approval (merging into live transactions) happens client-side
-// through the existing persist() path, so holdings sync keeps working unchanged.
+// USER-authenticated staging area for Fidelity trade import (item 38 origin).
+// Originally paired with a service-token scraper endpoint (api/ingest-fidelity.js,
+// removed in the SimpleFin Fase 3 cleanup — see docs/plans/simplefin-fidelity-feed.md
+// section 6) that wrote staged trades from a headless browser scrape. That path is gone;
+// staging is now populated exclusively by ?resource=sync below (SimpleFin Bridge).
+// THIS endpoint lets the logged-in user (Google/password auth) read and clear that
+// staging area from inside the app. Approval (merging into live transactions)
+// happens client-side through the existing persist() path, so holdings sync keeps
+// working unchanged.
 //
 // Reads/writes the `:fidelity-pending` key. Never modifies `:transactions`
 // directly (only reads it, read-only, to skip rows already imported when
