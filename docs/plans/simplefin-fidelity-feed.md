@@ -186,14 +186,27 @@ Decisões de arquitetura e porquês:
 
 ## 6. Fases de execução (cada uma = 1 rodada do feature-workflow, buildável e deployável)
 
-### Fase 0 — Probe do payload real (pré-requisito de tudo)
-- Env `SIMPLEFIN_ACCESS_URL` no Vercel (usuário seta pelo iPhone).
-- Rota `?resource=sync` em modo **inspect** (admin-only): fetch + retorna/stageia um
-  **dump bruto resumido** (contas, saldos, N transações de amostra, holdings se houver)
-  visível numa view simples no app — sem mapper ainda.
-- Saída: usuário cola/screenshota o dump numa session Claude → decide-se o mapeamento
-  real (resolve a incerteza nº 1) e os go/no-go dos itens 4–5.
-- Esforço: pequeno. Risco: ~zero (read-only, admin-gated, nada toca live).
+### Fase 0 — Probe do payload real (pré-requisito de tudo) — ✅ ENTREGUE (jul/2026)
+- Env `SIMPLEFIN_ACCESS_URL` no Vercel (usuário seta pelo iPhone — fora do escopo do código).
+- Implementado como `GET /api/fidelity-pending?resource=probe` (não `?resource=sync` como
+  o rascunho original propunha — nome `probe` escolhido para deixar explícito que é
+  read-only/inspect-only, sem colidir com o `?resource=sync` real da Fase 1). Admin-only
+  (`auth.admin`), timeout de 8s (cabe no limite de 10s do Hobby), fetch direto no SimpleFin
+  `/accounts?start-date=<90d atrás>` com Basic Auth extraído do access URL. Retorna dump
+  resumido por conta: id/name/org/currency/balance/balanceDate, holdings (count + sample de
+  até 15) e transactions (count + sample das 15 mais recentes, ordenadas por `posted` desc) —
+  **sem** filtrar campos dentro dos itens da amostra, para preservar o shape real. Nada é
+  gravado no Redis; nenhum arquivo novo em `api/` (dispatch por query-param em
+  `api/fidelity-pending.js`, mesmo padrão de `api/contributions-history.js`).
+- UI: card colapsável "SimpleFin Probe (admin)" em `src/Transactions.jsx`, gated por
+  `isUserAdmin(auth)` (helper duplicado de `App.jsx`, mesma convenção do projeto), com botão
+  "Run Probe" e `<pre>` mostrando o JSON completo da resposta.
+- Saída esperada: usuário seta `SIMPLEFIN_ACCESS_URL` no Vercel, abre Transactions logado
+  como admin, clica "Run Probe", e cola o JSON resultante numa session nova → resolve a
+  incerteza nº 1 (§2) e os go/no-go dos itens 4–5, destravando a Fase 1.
+- Build (`npm run build`) e os 3 suites de teste (54/54: analytics + fidelity-parser +
+  perf-history) verdes. Nenhum teste novo — nada aqui tem lógica pura a testar ainda
+  (é I/O puro); o mapper da Fase 1 é que ganha testes com fixtures do dump real.
 
 ### Fase 1 — Mapper + staging de income e trades
 - `lib/simplefin-map.js` + testes com fixtures da Fase 0.
