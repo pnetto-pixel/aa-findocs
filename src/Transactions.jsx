@@ -4102,6 +4102,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // it doesn't push the actual transaction table below the fold when there's
   // nothing needing attention.
   const [syncCardOpen, setSyncCardOpen] = useState(false);
+  // Transaction history table — open by default (it's the main content of
+  // this tab), collapsible so it can be skipped to reach BondIncomeAudit/
+  // the rest of the screen without scrolling past hundreds of rows.
+  const [historyOpen, setHistoryOpen] = useState(true);
   const [splitCardOpen, setSplitCardOpen] = useState(false);
   const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
   // Fidelity automation (item 38): trades staged by the scraper, awaiting approval.
@@ -4121,9 +4125,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [pendingBalance, setPendingBalance] = useState([]);
   const [balanceActionId, setBalanceActionId] = useState(null); // id of row mid Approve/Dismiss
   // Transactions whose description SimpleFin couldn't map to anything known —
-  // shown read-only so nothing is ever silently discarded.
+  // shown for review, with a per-row Dismiss for ones that don't need manual
+  // entry (e.g. external transfers already captured by the Cash balance).
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
   const [pendingUnmappedOpen, setPendingUnmappedOpen] = useState(false);
+  const [unmappedActionId, setUnmappedActionId] = useState(null); // id of row mid Dismiss
   // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
   const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, nextSyncAt }
@@ -4466,6 +4472,20 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setPendingBalance(remaining);
     } finally {
       setBalanceActionId(null);
+    }
+  }
+
+  // Unmapped rows are keyed by simplefinId when present, else their index in
+  // pendingUnmapped (same fallback used for the table's React `key`).
+  async function dismissUnmappedItem(item, index) {
+    const rowId = item.simplefinId || index;
+    setUnmappedActionId(rowId);
+    try {
+      const remaining = pendingUnmapped.filter((u, i) => (u.simplefinId || i) !== rowId);
+      await patchPendingFidelity(auth, { unmapped: remaining });
+      setPendingUnmapped(remaining);
+    } finally {
+      setUnmappedActionId(null);
     }
   }
 
@@ -5303,9 +5323,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
 
       {/* Unmapped — SimpleFin rows that matched no known pattern (or matched
           one but couldn't be completed, e.g. a trade with no structured
-          qty/price). Read-only: never silently discarded, just not
-          auto-imported. Clearing them happens via each section's Discard
-          above, or the per-row Dismiss for balance updates. */}
+          qty/price). Never auto-imported; each row gets a Dismiss for cases
+          that don't need manual entry (e.g. an external transfer already
+          captured by the Cash balance update). */}
       {pendingUnmapped.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <button
@@ -5376,12 +5396,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                 import above.
               </div>
               <ScrollHintTable>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                   <thead>
                     <tr>
-                      {["Date", "Description", "Amount", "Reason"].map((h) => (
+                      {["Date", "Description", "Amount", "Reason", ""].map((h, hi) => (
                         <th
-                          key={h}
+                          key={h || hi}
                           style={{
                             textAlign: h === "Amount" ? "right" : "left",
                             fontFamily: FONT_MONO,
@@ -5398,22 +5418,48 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                     </tr>
                   </thead>
                   <tbody>
-                    {pendingUnmapped.map((u, i) => (
-                      <tr key={u.simplefinId || i} style={{ borderTop: `1px solid ${T.border}` }}>
-                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                          {u.date || "—"}
-                        </td>
-                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                          {u.description}
-                        </td>
-                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
-                          {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
-                        </td>
-                        <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
-                          {u.reason}
-                        </td>
-                      </tr>
-                    ))}
+                    {pendingUnmapped.map((u, i) => {
+                      const rowId = u.simplefinId || i;
+                      const inFlight = unmappedActionId === rowId;
+                      return (
+                        <tr key={rowId} style={{ borderTop: `1px solid ${T.border}` }}>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                            {u.date || "—"}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                            {u.description}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                            {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
+                          </td>
+                          <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
+                            {u.reason}
+                          </td>
+                          <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                            <button
+                              onClick={() => dismissUnmappedItem(u, i)}
+                              disabled={inFlight}
+                              style={{
+                                background: "transparent",
+                                color: T.textDim,
+                                border: `1px solid ${T.border}`,
+                                borderRadius: 4,
+                                padding: "4px 8px",
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                letterSpacing: "0.1em",
+                                textTransform: "uppercase",
+                                cursor: inFlight ? "default" : "pointer",
+                                opacity: inFlight ? 0.5 : 1,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {inFlight ? "…" : "Dismiss"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </ScrollHintTable>
@@ -5835,17 +5881,63 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         />
       )}
 
-      <TransactionTable
-        transactions={transactions}
-        onUpdate={handleUpdate}
-        onDelete={handleDelete}
-        onBulkDelete={handleBulkDelete}
-        onBulkAssetClass={handleBulkAssetClass}
-        busy={saving}
-        valuesHidden={valuesHidden}
-        tickerStatus={tickerStatus}
-        checkingTickers={checkingTickers}
-      />
+      <div style={{ marginBottom: 16 }}>
+        <button
+          onClick={() => setHistoryOpen((v) => !v)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+            background: T.card,
+            border: `1px solid ${T.border}`,
+            borderRadius: historyOpen ? "4px 4px 0 0" : 4,
+            padding: "10px 14px",
+            cursor: "pointer",
+            color: T.textDim,
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            letterSpacing: "0.15em",
+            textTransform: "uppercase",
+          }}
+        >
+          <ChevronDown
+            size={12}
+            style={{
+              transform: historyOpen ? "none" : "rotate(-90deg)",
+              transition: "transform 0.2s",
+            }}
+          />
+          Transaction History
+          <span
+            style={{
+              marginLeft: 8,
+              background: T.border,
+              color: T.textDim,
+              fontFamily: FONT_MONO,
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "1px 6px",
+              borderRadius: 8,
+            }}
+          >
+            {transactions.length}
+          </span>
+        </button>
+        {historyOpen && (
+          <TransactionTable
+            transactions={transactions}
+            onUpdate={handleUpdate}
+            onDelete={handleDelete}
+            onBulkDelete={handleBulkDelete}
+            onBulkAssetClass={handleBulkAssetClass}
+            busy={saving}
+            valuesHidden={valuesHidden}
+            tickerStatus={tickerStatus}
+            checkingTickers={checkingTickers}
+          />
+        )}
+      </div>
 
       <BondIncomeAudit
         bondIncome={bondIncome}
