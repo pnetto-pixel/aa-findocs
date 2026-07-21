@@ -284,20 +284,50 @@ e compra de bond (a conta não teve nenhum trade na janela de 90 dias) — heur�
 defensiva + bucket `unmapped` cobre esse caso na Fase 1. Fase 0 encerrada — próximo passo é
 a Fase 1.
 
-### Fase 1 — Mapper + staging de income e trades
-- `lib/simplefin-map.js` + testes com fixtures da Fase 0.
-- `?resource=sync` real: mapeia → merge+dedupe no `:fidelity-pending`
-  (`simplefinId` + `dupKey`), throttle, `?resource=status`.
-- Card "Fidelity Import": seção própria pra income (dividend/interest/tax) com
-  checkboxes; botão "Sync Fidelity" + "last sync" (admin-only).
-- Cobre os alvos **3, 4, 5** (4/5 no nível que o payload permitir).
+### Fase 1 — Mapper + staging de income e trades — ✅ ENTREGUE (jul/2026, PR #136)
+- `lib/simplefin-map.js` (módulo puro, `lib/` — não `src/lib/`): `mapSimplefinPayload()`
+  + `isFidelityOrg()`. Reconhece, em ordem, o ciclo INTEREST EARNED CASH/REINVESTMENT
+  CASH (excluído), DISTRIBUTION (excluído), FOREIGN TAX (antes de DIVIDEND), DIVIDEND
+  (exceto REINVEST), INTEREST de bond/CD, REDEMPTION PAYOUT (→ sell de Bank Bonds a
+  valor de face) e YOU BOUGHT/SOLD (heurística — mas SimpleFin só reporta `amount`
+  total sem qty/price estruturados, então vai pra `unmapped` em vez de inventar
+  números). Qualquer description não reconhecida também cai em `unmapped` — nunca
+  descartada silenciosamente. 16 testes em `test/simplefin-map.test.mjs` (fixtures
+  sintéticas).
+- `POST /api/fidelity-pending?resource=sync` (admin-only): fetch real + mapeia +
+  merge/dedupe no `:fidelity-pending` — dedupe forte por `simplefinId` nativo +
+  fallback `dupKey`/`bondKey` contra live e o que já está staged; throttle de 6h via
+  timestamp gravado no próprio blob (persiste mesmo em falha, nunca martela o Bridge).
+  `GET ?resource=status` → `{ connected, lastSync, lastError, nextSyncAt }`. Novo `PUT`
+  (parcial, só substitui os arrays presentes no body) permite ao client remover só as
+  linhas aprovadas/dispensadas do staging sem zerar o resto.
+- Card "Fidelity Import" virou 4 seções: Trades (existente), **Income**
+  (dividend/interest/tax, ganhou checkboxes + Approve/Discard própria — antes era
+  aprovado junto com trades sem listagem), **Balance Updates** (adiantado da Fase 2,
+  ver abaixo) e **Unmapped** (somente leitura). Botão "Sync Fidelity" + "Last sync"
+  admin-only.
+- Cobre os alvos **3, 4, 5** (4/5 no nível que o payload permitir) e adianta boa parte
+  do alvo **1/2** da Fase 2 (ver abaixo).
 
-### Fase 2 — Balance updates (Cash + Bank Bonds)
-- Staging ganha `balanceUpdates[]`: `{ id, kind: "cash"|"bank-bonds", accountId,
-  accountName, current, proposed, asOf }`.
-- Seção "Balance updates" no card com Approve/Dismiss; aprovar Cash aplica
-  `manualValue` via fluxo normal de holdings; Bank Bonds conforme decisão do §7.
-- Mapa conta→holding: começa hardcoded-por-config no Redis do usuário (editável depois).
+### Fase 2 — Balance updates (Cash + Bank Bonds) — ⚠️ PARCIALMENTE ENTREGUE (jul/2026, PR #136)
+- Staging ganhou `balanceCandidates[]`: `{ id, kind: "cash"|"bank-bonds", accountId,
+  accountName, proposed, asOf }` (upsert por `id` a cada sync, não acumula duplicata).
+  `current` não é gravado no staging — a UI lê direto do `holdings` do usuário (prop
+  já disponível em `Transactions.jsx`) no momento de exibir a linha.
+- Seção "Balance Updates" no card com Approve/Dismiss por linha. Aprovar Cash aplica
+  `manualValue` via `applyFidelityBalanceUpdate` (`App.jsx`) — efeito imediato no
+  Dashboard, mesmo fluxo normal de holdings.
+- **Bank Bonds — só parcialmente resolvido.** `manualValue` do holding
+  `bank-bonds-aggregate` é recalculado a cada mudança de transação por
+  `applyBankBondsHolding` (principal derivado das transações) — gravar o valor de
+  mercado ali seria sobrescrito na próxima transação. Aprovar grava, em vez disso, um
+  campo aditivo `marketValueOverride`/`marketValueOverrideAsOf` no holding — mas
+  **nada ainda lê esse campo**, então não há efeito visível no Dashboard. Falta:
+  decidir onde/como exibir a reconciliação (badge no card do holding? nota
+  "valor de mercado: $X, mercado vs. principal"?) — fica para uma sessão futura.
+- Mapa conta→holding: não foi necessário — o mapper já resolve isso implicitamente
+  (uma conta Fidelity só tem um Cash e um agregado de Bank Bonds), sem precisar de
+  config por usuário nesta fase.
 - Cobre os alvos **1 e 2**.
 
 ### Fase 3 — Hardening + limpeza
