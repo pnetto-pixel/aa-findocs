@@ -200,6 +200,21 @@ async function fetchPendingFidelity(auth) {
   }
 }
 
+// Drops balance candidates that already match the current holding value.
+// The sync merge (api/fidelity-pending.js) upserts by id on every run with no
+// memory of prior approve/dismiss decisions — it can't compare against
+// `holdings` (server has no access to it), so a value already applied (or
+// coincidentally unchanged) keeps reappearing as "pending" every sync unless
+// filtered here, where `holdings` is actually available.
+function pruneUnchangedBalanceCandidates(candidates, holdings) {
+  return (candidates || []).filter((c) => {
+    const holdingId = c.kind === "cash" ? "cash-permanent" : "bank-bonds-aggregate";
+    const current = holdings.find((h) => h.id === holdingId)?.manualValue;
+    if (current == null || c.proposed == null) return true;
+    return Math.round(current * 100) !== Math.round(c.proposed * 100);
+  });
+}
+
 async function clearPendingFidelity(auth) {
   try {
     await fetch("/api/fidelity-pending", { method: "DELETE", headers: authHeaders(auth) });
@@ -4308,12 +4323,16 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const freshBond = (p.bondIncome || []).filter(
         (e) => !liveBondKeys.has(`${e.date}|${e.ticker}|${e.amount}`)
       );
+      const freshBalance = pruneUnchangedBalanceCandidates(p.balanceCandidates, holdings);
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
-      setPendingBalance(p.balanceCandidates || []);
+      setPendingBalance(freshBalance);
       setPendingUnmapped(p.unmapped || []);
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
       setPendingFidBondChecked(new Set(freshBond.map((e) => e.id)));
+      if (freshBalance.length !== (p.balanceCandidates || []).length) {
+        patchPendingFidelity(auth, { balanceCandidates: freshBalance });
+      }
     });
     return () => {
       cancelled = true;
@@ -4372,12 +4391,16 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const freshBond = (p.bondIncome || []).filter(
         (e) => !liveBondKeys.has(`${e.date}|${e.ticker}|${e.amount}`)
       );
+      const freshBalance = pruneUnchangedBalanceCandidates(p.balanceCandidates, holdings);
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
-      setPendingBalance(p.balanceCandidates || []);
+      setPendingBalance(freshBalance);
       setPendingUnmapped(p.unmapped || []);
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
       setPendingFidBondChecked(new Set(freshBond.map((e) => e.id)));
+      if (freshBalance.length !== (p.balanceCandidates || []).length) {
+        patchPendingFidelity(auth, { balanceCandidates: freshBalance });
+      }
     } catch (e) {
       setFidSyncMessage(e.message || "Network error");
     } finally {

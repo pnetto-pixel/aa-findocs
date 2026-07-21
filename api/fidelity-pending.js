@@ -65,10 +65,14 @@ function txKeyFromAuth(auth) {
 }
 
 const SIMPLEFIN_TIMEOUT_MS = 8000;
-// SimpleFin's hard limit is 90 days; requesting exactly 90 gets capped (with a
-// warning in payload.errors) because a few seconds of request latency push the
-// server-side "now" past our computed startDate. Stay a day under the limit.
-const SIMPLEFIN_WINDOW_DAYS = 89;
+// SimpleFin has a hard cap at 90 days (requesting exactly that got capped, per
+// a warning seen in payload.errors) AND a lower "recommended" range of 45 days
+// — going over 45 already produces a payload.errors advisory ("may be capped
+// in the future") even though nothing is actually capped yet. Either warning
+// becomes `lastError` here, which the Transactions tab and the sync heartbeat
+// (Fase 3) both surface as if it were a real failure. Stay comfortably under
+// the lower, "recommended" threshold so neither warning ever fires.
+const SIMPLEFIN_WINDOW_DAYS = 44;
 const SIMPLEFIN_MAX_ACCOUNTS = 50;
 // Fidelity accounts get full detail (not just a sample) — a real probe run
 // (jul/2026) showed a SimpleFin connection returns EVERY linked institution,
