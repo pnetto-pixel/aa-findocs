@@ -44,6 +44,22 @@ function authHeaders(auth) {
   return h;
 }
 
+// Admin gate for the SimpleFin probe card (Fase 0, docs/plans/simplefin-fidelity-feed.md).
+// Duplicated from App.jsx's isUserAdmin/getAdminEmails (project convention: small
+// helpers are duplicated per file rather than shared).
+function getAdminEmails() {
+  if (typeof window === "undefined") return [];
+  const meta = document.querySelector('meta[name="admin-emails"]');
+  const raw = meta?.content || "";
+  if (!raw || raw.includes("%")) return [];
+  return raw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+}
+
+function isUserAdmin(auth) {
+  if (!auth || auth.kind !== "google" || !auth.email) return false;
+  return getAdminEmails().includes(auth.email.toLowerCase());
+}
+
 // Verify a ticker resolves against a price source (api/price).
 // Returns "ok" (price found), "error" (source resolved but no such ticker),
 // or "unknown" (transient/network failure — don't flag, retry later).
@@ -4055,10 +4071,43 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     }
   });
   const [checkingTickers, setCheckingTickers] = useState(() => new Set());
+  // SimpleFin probe (Fase 0, docs/plans/simplefin-fidelity-feed.md): admin-only,
+  // read-only inspection of the raw SimpleFin payload shape. Nothing here is
+  // staged/persisted — result only lives in this component's state.
+  const isAdmin = isUserAdmin(auth);
+  const [probeOpen, setProbeOpen] = useState(false);
+  const [probeLoading, setProbeLoading] = useState(false);
+  const [probeError, setProbeError] = useState(null);
+  const [probeResult, setProbeResult] = useState(null);
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
   }, [onAuthFail]);
+
+  async function runSimplefinProbe() {
+    setProbeLoading(true);
+    setProbeError(null);
+    try {
+      const res = await fetch("/api/fidelity-pending?resource=probe", {
+        headers: authHeaders(auth),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && typeof onAuthFailRef.current === "function") {
+        onAuthFailRef.current();
+      }
+      if (!res.ok) {
+        setProbeError(data.error || `HTTP ${res.status}`);
+        setProbeResult(null);
+        return;
+      }
+      setProbeResult(data);
+    } catch (e) {
+      setProbeError(e.message || "Network error");
+      setProbeResult(null);
+    } finally {
+      setProbeLoading(false);
+    }
+  }
 
   // Persist ticker status cache.
   useEffect(() => {
@@ -4637,6 +4686,116 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   Discard
                 </button>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SimpleFin probe (Fase 0) — admin-only diagnostic, read-only, nothing persisted */}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setProbeOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              background: T.card,
+              border: `1px solid ${T.border}`,
+              borderRadius: probeOpen ? "4px 4px 0 0" : 4,
+              padding: "10px 14px",
+              cursor: "pointer",
+              color: T.textDim,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+            }}
+          >
+            <ChevronDown
+              size={12}
+              style={{
+                transform: probeOpen ? "none" : "rotate(-90deg)",
+                transition: "transform 0.2s",
+              }}
+            />
+            SimpleFin Probe (admin)
+          </button>
+
+          {probeOpen && (
+            <div
+              style={{
+                background: T.card,
+                border: `1px solid ${T.border}`,
+                borderTop: "none",
+                borderRadius: "0 0 4px 4px",
+                padding: 14,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  color: T.textDim,
+                  marginBottom: 12,
+                  lineHeight: 1.5,
+                }}
+              >
+                Read-only inspection of the raw SimpleFin feed payload (Fase 0). Fetches
+                directly from SimpleFin — nothing is saved. Requires SIMPLEFIN_ACCESS_URL
+                configured in Vercel.
+              </div>
+              <button
+                onClick={runSimplefinProbe}
+                disabled={probeLoading}
+                style={{
+                  background: T.gold,
+                  color: "#0b0d10",
+                  border: "none",
+                  borderRadius: 4,
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  cursor: probeLoading ? "default" : "pointer",
+                  marginBottom: 12,
+                }}
+              >
+                {probeLoading ? "Fetching…" : "Run Probe"}
+              </button>
+              {probeError && (
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    color: T.red,
+                    marginBottom: 12,
+                  }}
+                >
+                  {probeError}
+                </div>
+              )}
+              {probeResult && (
+                <pre
+                  style={{
+                    background: "#0b0d10",
+                    border: `1px solid ${T.border}`,
+                    borderRadius: 4,
+                    padding: 10,
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    color: T.text,
+                    maxHeight: 480,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {JSON.stringify(probeResult, null, 2)}
+                </pre>
+              )}
             </div>
           )}
         </div>
