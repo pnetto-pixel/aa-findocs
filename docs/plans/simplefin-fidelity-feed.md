@@ -46,41 +46,55 @@ modelo do app, (b) estender o staging/aprovação para cobrir também **updates 
   privado + GitHub Actions + fragilidade de seletores. O risco de ToS sai da Fidelity e
   vira uma relação suportada (agregador).
 
-### ⚠️→✅ Incerteza nº 1 — resolvida parcialmente via probe real (jul/2026)
+### ✅ Incerteza nº 1 — resolvida via probe real (jul/2026, 2 rodadas)
 
-Rodada real do probe (Fase 0) contra a conta Fidelity do usuário. Achados (sem dados
-sensíveis reais neste documento — só o shape estrutural):
+Duas rodadas reais do probe (Fase 0) contra a conta Fidelity do usuário — a segunda com a
+conta Fidelity retornando a lista **completa** de holdings/transactions (não mais amostra).
+Achados (sem dados sensíveis reais neste documento — só o shape estrutural, com exemplos
+ilustrativos genéricos em vez dos valores/tickers reais do usuário):
 
-1. **Cash → resolvido, mapeamento direto.** O campo `available-balance` da conta Fidelity
-   é o core/cash sweep — não precisa parsing de texto. `balance` é o valor total da conta
-   (títulos + cash), não confundir com Cash.
-2. **Bank Bonds → resolvido, melhor que o esperado.** O array `holdings` já traz
-   `market_value` calculado por posição, inclusive para CDs (`shares` = valor de face em
-   dólares, `market_value` = valor de mercado atual em dólares — direto, sem a conversão
-   `qty/1000`/`price×10` que o parser do CSV precisa fazer). **Não tem CUSIP** (`symbol: ""`
-   para os CDs) — mas como o holding `bank-bonds-aggregate` do app já é um agregado único
-   (não rastreia CUSIP individual na UI), basta somar `market_value` de todo holding com
-   `symbol === ""` e comparar com o principal já derivado das transações. Simplifica a
-   decisão do §7 (reconciliação sem precisar linkar por CUSIP).
-3. **Dividendos/interest → resolvido, alta reutilização.** As `description` das
-   transações de investimento reproduzem quase literalmente as Actions do CSV Fidelity:
-   `"DIVIDEND RECEIVED <empresa> (<TICKER>) (Cash)"`, `"INTEREST <emissor do CD> (Cash)"`.
-   Ticker extraível via regex simples (`\(([A-Z]{1,5})\)` antes do `(Cash)` final). Boa
-   parte dos guards de `src/lib/parsing.js` (FOREIGN TAX antes de DIVIDEND, exclusão de
-   `INTEREST EARNED CASH`, etc.) são adaptáveis.
-4. **Buy/sell e bond purchase/redemption → AINDA em aberto.** A amostra inicial (15 mais
-   recentes de 76 transações) só trouxe dividend/interest — nenhum trade apareceu. O probe
-   foi corrigido (ver nota de segurança abaixo) para retornar a lista completa da conta
-   Fidelity em vez de amostra, o que deve resolver isso na próxima rodada — mas **ainda não
-   confirmado com um exemplo real**. Enquanto não aparecer um BUY/SELL real, a Fase 1 deve
-   tratar os itens 4/5 como "provável, não confirmado": implementar heurística defensiva
-   (procurar por descriptions no padrão `YOU BOUGHT`/`YOU SOLD`/`REDEMPTION`, já que o
-   formato de dividend/interest sugere que SimpleFin espelha o texto de Activity da própria
-   Fidelity) mas jogar qualquer transação não reconhecida num bucket `unmapped` visível na
-   UI, nunca descartar silenciosamente.
-5. **`amount`/`posted`/`transacted_at` confirmados.** `amount` é string decimal assinada
+1. **Cash → resolvido, mapeamento direto (2 fontes redundantes).** O campo
+   `available-balance` da conta Fidelity é o core/cash sweep. O array `holdings` também
+   traz um item sintético com `description: "CASH"`, `symbol: ""`, `market_value` igual ao
+   `available-balance` — mesma informação, duas formas de chegar nela. `balance` é o valor
+   total da conta (títulos + cash), não confundir com Cash.
+2. **Bank Bonds → resolvido, com uma correção importante.** O array `holdings` traz
+   `market_value` calculado por posição, inclusive para CDs/Treasuries (`shares` = valor de
+   face em dólares, `market_value` = valor de mercado atual — direto, sem a conversão
+   `qty/1000`/`price×10` que o parser do CSV precisa fazer). **Não tem CUSIP**
+   (`symbol: ""`) — mas como o holding `bank-bonds-aggregate` do app já é agregado (não
+   rastreia CUSIP individual na UI), basta somar `market_value` de todo holding com
+   `symbol === ""`. **Correção:** o holding sintético `"CASH"` (achado do item 1) *também*
+   tem `symbol: ""` — a regra de identificação precisa ser
+   `symbol === "" && description !== "CASH"`, senão o saldo em dinheiro entra na soma dos
+   bonds por engano.
+3. **Dividendos/interest → resolvido, alta reutilização.** `description` reproduz quase
+   literalmente as Actions do CSV Fidelity: `"DIVIDEND RECEIVED <empresa> (<TICKER>)
+   (Cash)"`, `"INTEREST <emissor do CD/bond> (Cash)"` (às vezes com prefixo
+   `"INTEREST as of YYYY-MM-DD ..."`). Ticker extraível via regex simples
+   (`\(([A-Z]{1,5})\)` antes do `(Cash)` final). Confirmados também, com o mesmo texto já
+   tratado em `src/lib/parsing.js`: `"INTEREST EARNED CASH (<9 dígitos>) (Cash)"` pareado
+   com `"REINVESTMENT CASH (<mesmos 9 dígitos>) (Cash)"` (mesmo valor, sinal oposto — ciclo
+   de juros do sweep, já excluído no parser CSV) e `"DISTRIBUTION <fundo> (Cash)"` (valor
+   pode ser negativo — mesma categoria de "purge" já existente no parser CSV).
+4. **Bond redemption/maturity → confirmado.** `"REDEMPTION PAYOUT <descrição do bond>
+   (Cash)"`, `amount` = valor de face pago (ex: 1000.00 para um CD/Treasury de $1.000).
+   Resolve a metade "maturity" do alvo 5 — vira uma transação `sell` equivalente, mesma
+   lógica que o parser CSV já aplica pra `REDEMPTION`/`REDEEMED`.
+5. **Buy/sell de ações → ainda sem exemplo real, mas alta confiança.** A conta do usuário
+   não teve nenhuma compra/venda de ação nos últimos ~90 dias (só dividendos, juros,
+   redemptions e reinvestimento de cash) — não há como confirmar o texto exato com um
+   exemplo real. Dado o alto grau de fidelidade de todos os outros padrões observados ao
+   vocabulário de Activity da própria Fidelity (`DIVIDEND RECEIVED`, `REDEMPTION PAYOUT`,
+   `DISTRIBUTION`, `INTEREST EARNED CASH`), é uma aposta segura que um trade apareça como
+   `"YOU BOUGHT <empresa> (<TICKER>) (Cash)"` / `"YOU SOLD ..."` — mas a Fase 1 deve tratar
+   isso como heurística, não fato: implementar o reconhecimento por esse padrão, e jogar
+   qualquer `description` de transação não reconhecida (não bate com nenhum padrão
+   conhecido) num bucket `unmapped` visível na UI, nunca descartar silenciosamente.
+6. **`amount`/`posted`/`transacted_at` confirmados.** `amount` é string decimal assinada
    (negativo = saída), `posted`/`transacted_at` são unix seconds. Sem campo `pending`
-   observado nos exemplos vistos.
+   observado. Compra/venda de bonds (não só redemption) ainda não observada — mesma
+   heurística defensiva do item 5 se aplica.
 
 **🔒 Achado de segurança/privacidade (não estava previsto no plano original):** uma
 conexão SimpleFin retorna **todas** as instituições que o usuário linkou no Bridge, não só
@@ -111,8 +125,8 @@ deve tratar isso como informativo (expor via `?resource=status`), não como erro
 | 1 | **Cash** | ✅ Confirmado | `available-balance` da conta Fidelity (não `balance`, que é o total incl. títulos) → proposta de update do `manualValue` do holding Cash (`CASH_ID` em `App.jsx`, `ensureCashAccount`). Vira um novo tipo de item staged ("balance update") com aprovação. Precisa de um mapa conta-SimpleFin → holding do app (config por usuário). |
 | 2 | **Valor atual dos Bank Bonds** | ✅ Confirmado | `holdings[]` traz `market_value` direto por CD (sem CUSIP — `symbol: ""`). Como o holding `bank-bonds-aggregate` já é agregado (não por CUSIP), somar `market_value` de todo holding com `symbol === ""` e comparar/reconciliar com o principal já derivado das transações — sem precisar linkar por CUSIP. |
 | 3 | **Interests / dividendos / tax** | ✅ Confirmado, alta reutilização | `description` reproduz as Actions do CSV Fidelity quase literalmente (`"DIVIDEND RECEIVED ... (TICKER) (Cash)"`, `"INTEREST ... (Cash)"`). Mapear para `bondIncome` com `kind: interest\|dividend\|tax`, `source: "simplefin"` — mesmo shape que o pipeline atual já aceita. Reusar os guards do parser (FOREIGN TAX antes de dividend, excluir INTEREST EARNED CASH, etc.). |
-| 4 | **Transações buy/sell** | ⚠️ Ainda não confirmado com exemplo real | Amostra inicial (15 mais recentes) só trouxe dividend/interest. Probe corrigido pra retornar a conta Fidelity inteira (não mais amostra) — deve resolver na próxima rodada. Enquanto sem confirmação: implementar heurística (`YOU BOUGHT`/`YOU SOLD` na description, mesmo padrão do dividendo) mas qualquer transação não reconhecida cai num bucket `unmapped` visível, nunca é descartada. |
-| 5 | **Transações de bonds (compra/maturity)** | ⚠️ Mesmo caso do item 4 | Mesma pendência + normalização específica (CD `shares`/`market_value` já vêm em dólares diretos no `holdings`, diferente do `qty/1000`/`price×10` do CSV — conferir se `transactions` de compra de CD segue a mesma convenção). |
+| 4 | **Transações buy/sell** | ⚠️ Alta confiança, sem exemplo real ainda | Conta do usuário sem trades nos últimos 90 dias — nenhum exemplo de `"YOU BOUGHT"`/`"YOU SOLD"` observado, mas o vocabulário de todos os outros tipos de evento bate 1:1 com as Actions do CSV Fidelity, então é uma aposta segura. Implementar heurística + bucket `unmapped` pra qualquer description não reconhecida (nunca descartar silenciosamente). |
+| 5 | **Transações de bonds (compra/maturity)** | ✅ Maturity confirmado / ⚠️ compra sem exemplo | `"REDEMPTION PAYOUT <bond> (Cash)"` confirmado com `amount` = valor de face — vira `sell`. Compra de bond ainda não observada (mesma heurística do item 4 se aplica). |
 
 **Dedupe cross-fonte é obrigatório**: o usuário vai continuar podendo importar CSV. Cada
 item staged do SimpleFin deve carregar `simplefinId` (id nativo, dedupe forte) **e** passar
@@ -261,6 +275,14 @@ fechada: **a conexão SimpleFin retorna todas as instituições linkadas, não s
 
 Build + 54/54 testes verdes após o fix. Esse filtro por instituição é **obrigatório na
 Fase 1 também** (mapper real), não específico do probe.
+
+**Segunda rodada (pós-fix) — Fase 0 fechada.** Com a conta Fidelity retornando a lista
+completa, veio confirmação de `REDEMPTION PAYOUT` (bond maturity), `DISTRIBUTION`,
+`INTEREST EARNED CASH`/`REINVESTMENT CASH` pareados, e do holding sintético `"CASH"` — ver
+detalhe completo na "Incerteza nº 1" (§2). Único item sem exemplo real: buy/sell de ações
+e compra de bond (a conta não teve nenhum trade na janela de 90 dias) — heurística
+defensiva + bucket `unmapped` cobre esse caso na Fase 1. Fase 0 encerrada — próximo passo é
+a Fase 1.
 
 ### Fase 1 — Mapper + staging de income e trades
 - `lib/simplefin-map.js` + testes com fixtures da Fase 0.
