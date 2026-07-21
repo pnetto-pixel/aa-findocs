@@ -5975,6 +5975,27 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
 
+  // SimpleFin-reported market value (Bank Bonds only, see applyFidelityBalanceUpdate
+  // in App.jsx). Additive/reference field, does not affect `value` above.
+  const hasMarketValueOverride = holding.marketValueOverride != null;
+  const marketValueDelta = hasMarketValueOverride ? holding.marketValueOverride - value : null;
+  const marketValueDeltaColor =
+    marketValueDelta == null
+      ? T.textDim
+      : marketValueDelta > 0
+      ? T.green
+      : marketValueDelta < 0
+      ? T.red
+      : T.textDim;
+  const marketValueAsOf = holding.marketValueOverrideAsOf
+    ? new Date(holding.marketValueOverrideAsOf.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+      })
+    : null;
+
   const [driftOpen, setDriftOpen] = useState(false);
   const [editingPopupClass, setEditingPopupClass] = useState(false);
   const [draftPopupClass, setDraftPopupClass] = useState("");
@@ -6174,6 +6195,30 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               </div>
             )}
           </div>
+          {hasMarketValueOverride && (
+            <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Market Value (SimpleFin)</span>
+                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>
+                  {maskMoney(holding.marketValueOverride, valuesHidden)}
+                </span>
+              </div>
+              {marketValueDelta != null && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: marketValueAsOf ? 5 : 0 }}>
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>DELTA</span>
+                  <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: marketValueDeltaColor }}>
+                    {marketValueDelta > 0 ? "+" : ""}{maskMoney(marketValueDelta, valuesHidden)}
+                  </span>
+                </div>
+              )}
+              {marketValueAsOf && (
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>As of</span>
+                  <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: T.textDim }}>{marketValueAsOf}</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
