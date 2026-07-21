@@ -2443,6 +2443,57 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     );
   }
 
+  // Applies an approved SimpleFin balance candidate (Cash or Bank Bonds,
+  // see docs/plans/simplefin-fidelity-feed.md Fase 1) to the live holdings.
+  // The staging-side bookkeeping (removing the candidate from
+  // `:fidelity-pending`) is handled by TransactionsView, which owns that
+  // state; this only updates `holdings`, which auto-saves via the existing
+  // debounced effect.
+  //
+  // Cash writes straight to manualValue (the value actually displayed).
+  // Bank Bonds' manualValue is kept in sync with the transaction-derived
+  // principal by applyBankBondsHolding on every transaction change, so
+  // writing it here would just get overwritten — instead this records a
+  // separate marketValueOverride/marketValueOverrideAsOf pair (additive,
+  // doesn't affect the transaction-derived value shown on the Dashboard;
+  // a later phase can surface it there per the plan's §7 decision).
+  function applyFidelityBalanceUpdate(candidate) {
+    if (!candidate) return;
+    const asOf = candidate.asOf || new Date().toISOString();
+    if (candidate.kind === "cash") {
+      setHoldings((prev) =>
+        prev.map((h) =>
+          h.id === CASH_ID
+            ? { ...h, manualValue: candidate.proposed, manualCurrency: "USD", lastUpdated: asOf }
+            : h
+        )
+      );
+      setToast({ kind: "success", message: `Cash updated to ${candidate.proposed}` });
+      return;
+    }
+    if (candidate.kind === "bank-bonds") {
+      const found = holdings.some((h) => h.id === BANK_BONDS_ID);
+      if (!found) {
+        setToast({
+          kind: "error",
+          message: "No Bank Bonds holding to update — add Bank Bonds transactions first.",
+        });
+        return;
+      }
+      setHoldings((prev) =>
+        prev.map((h) =>
+          h.id === BANK_BONDS_ID
+            ? { ...h, marketValueOverride: candidate.proposed, marketValueOverrideAsOf: asOf }
+            : h
+        )
+      );
+      setToast({
+        kind: "success",
+        message: "Bank Bonds market value recorded (reference only for now).",
+      });
+    }
+  }
+
   function removeHolding(id) {
     if (id === CASH_ID) return; // cash account is permanent
     setHoldings((prev) => prev.filter((h) => h.id !== id));
@@ -3569,6 +3620,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               splitActionInFlight={splitActionInFlight}
               onApproveSplit={approveSplit}
               onDismissSplit={dismissSplit}
+              holdings={holdings}
+              onApproveFidelityBalance={applyFidelityBalanceUpdate}
+              onDismissFidelityBalance={() => {}}
             />
           )}
 

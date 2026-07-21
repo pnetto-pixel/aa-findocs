@@ -636,6 +636,19 @@ Graficos (`recharts`), tab bar do view switcher (`App.jsx`), pills de filtro de 
 
 -----
 
+### SimpleFin Feed — Fidelity automation, Fase 1 (jul/2026)
+
+Plano completo em [`docs/plans/simplefin-fidelity-feed.md`](./plans/simplefin-fidelity-feed.md) (ver §6 pra fases, §2 pro shape do payload real). Fase 0 (probe) entregou o dump do payload real; esta fase entrega o mapper + staging + UI.
+
+- **`lib/simplefin-map.js` (módulo puro, novo arquivo em `lib/` — não `src/lib/`):** `mapSimplefinPayload(payload)` filtra por `isFidelityOrg` (org.name/domain contendo "fidelity" — obrigatório, uma conexão SimpleFin traz todas as instituições linkadas) e retorna `{ transactions, bondIncome, balanceCandidates, unmapped }`. Reconhece por regex sobre `description`, na ordem: ciclo INTEREST EARNED CASH/REINVESTMENT CASH (excluído), DISTRIBUTION (excluído), FOREIGN TAX (checado antes de DIVIDEND), DIVIDEND (exceto REINVEST), INTEREST (bond/CD — vira `bondIncome`), REDEMPTION PAYOUT (vira `sell` de Bank Bonds, qty=amount/1000, price=1000, ticker = texto da description já que o feed não traz CUSIP), YOU BOUGHT/SOLD (heurística, mas SimpleFin só reporta `amount` total sem qty/price estruturados — vai pra `unmapped`, nunca inventa números), qualquer outra coisa → `unmapped`. `balanceCandidates`: Cash de `account['available-balance']` (fallback pro holding sintético `CASH`); Bank Bonds soma `market_value` de holdings com `symbol === "" && description !== "CASH"`. 16 testes em `test/simplefin-map.test.mjs` (fixtures sintéticas, sem dados reais do usuário).
+- **`api/fidelity-pending.js` estendido** (sem arquivo novo — limite de 12 functions do Vercel Hobby): `POST ?resource=sync` (admin-only) faz o fetch real, mapeia, e faz merge/dedupe no `:fidelity-pending` — dedupe forte por `simplefinId` nativo + fallback `dupKey`/`bondKey` contra live (`:transactions`) e o que já está staged; throttle de 6h via `lastSyncAttempt` gravado no próprio blob (aplica mesmo em falha, pra nunca martelar o Bridge). `GET ?resource=status` expõe `{ connected, lastSync, lastError, nextSyncAt }` sem fazer fetch. Novo `PUT` (parcial — só substitui os arrays presentes no body, preserva `lastSync`/`lastError`) é como o client remove linhas aprovadas/dispensadas do staging sem zerar o resto.
+- **Card "Fidelity Import" (`src/Transactions.jsx`) virou um grupo de 4 seções:** Trades (já existia), **Income** (dividend/interest/tax — ganhou checkboxes + Approve/Discard própria; antes era aprovado junto com trades sem listagem visível), **Balance Updates** (Cash/Bank Bonds propostos vs atuais, Approve/Dismiss por linha), **Unmapped** (somente leitura — nunca descartado silenciosamente). Botão "Sync Fidelity" + "Last sync" só pra admin (`isUserAdmin`, mesmo gate do card "SimpleFin Probe" da Fase 0).
+- **Balance Updates — limitação conhecida:** Approve de Cash grava direto em `manualValue` do holding `cash-permanent` (efeito imediato no Dashboard). Approve de Bank Bonds grava `marketValueOverride`/`marketValueOverrideAsOf` no holding `bank-bonds-aggregate` — campo aditivo, **não lido em nenhum outro lugar ainda**, porque `manualValue` daquele holding é recalculado a cada mudança de transação por `applyBankBondsHolding` (App.jsx) a partir do principal derivado das transações, e sobrescreveria qualquer valor de mercado gravado ali. Exibir o override no Dashboard fica pra uma fase futura (decisão §7 do plano).
+- **`src/App.jsx`:** `TransactionsView` ganhou os props `holdings`, `onApproveFidelityBalance`, `onDismissFidelityBalance`. Nova função `applyFidelityBalanceUpdate(candidate)` aplica Cash/Bank Bonds aprovados ao state `holdings` (que já auto-salva via o efeito debounced existente).
+- Build + as 4 suites de teste (analytics + fidelity-parser + perf-history + simplefin-map, 70/70) verdes.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
