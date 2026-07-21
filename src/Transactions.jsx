@@ -4079,10 +4079,36 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [probeLoading, setProbeLoading] = useState(false);
   const [probeError, setProbeError] = useState(null);
   const [probeResult, setProbeResult] = useState(null);
+  const [probeCopied, setProbeCopied] = useState(false);
   const onAuthFailRef = useRef(onAuthFail);
   useEffect(() => {
     onAuthFailRef.current = onAuthFail;
   }, [onAuthFail]);
+
+  async function copyProbeResult() {
+    const text = JSON.stringify(probeResult, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API unavailable/denied (e.g. non-HTTPS or permission) — fall
+      // back to a hidden textarea + execCommand, which works in more contexts.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        return;
+      }
+    }
+    setProbeCopied(true);
+    setTimeout(() => setProbeCopied(false), 2000);
+  }
 
   async function runSimplefinProbe() {
     setProbeLoading(true);
@@ -4746,25 +4772,45 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                 directly from SimpleFin — nothing is saved. Requires SIMPLEFIN_ACCESS_URL
                 configured in Vercel.
               </div>
-              <button
-                onClick={runSimplefinProbe}
-                disabled={probeLoading}
-                style={{
-                  background: T.gold,
-                  color: "#0b0d10",
-                  border: "none",
-                  borderRadius: 4,
-                  padding: "8px 14px",
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                  cursor: probeLoading ? "default" : "pointer",
-                  marginBottom: 12,
-                }}
-              >
-                {probeLoading ? "Fetching…" : "Run Probe"}
-              </button>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button
+                  onClick={runSimplefinProbe}
+                  disabled={probeLoading}
+                  style={{
+                    background: T.gold,
+                    color: "#0b0d10",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "8px 14px",
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: "0.1em",
+                    textTransform: "uppercase",
+                    cursor: probeLoading ? "default" : "pointer",
+                  }}
+                >
+                  {probeLoading ? "Fetching…" : "Run Probe"}
+                </button>
+                {probeResult && (
+                  <button
+                    onClick={copyProbeResult}
+                    style={{
+                      background: "transparent",
+                      color: probeCopied ? T.green : T.textDim,
+                      border: `1px solid ${probeCopied ? T.green : T.border}`,
+                      borderRadius: 4,
+                      padding: "8px 14px",
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {probeCopied ? "Copied ✓" : "Copy JSON"}
+                  </button>
+                )}
+              </div>
               {probeError && (
                 <div
                   style={{

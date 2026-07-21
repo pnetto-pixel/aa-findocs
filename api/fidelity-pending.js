@@ -20,6 +20,13 @@
 // (qty/price on transactions? holdings array? description format?) can be
 // confirmed before writing the real mapper. Never touches Redis. Admin-only.
 //   GET -> { ok, fetchedAt, simplefinErrors, accountCount, accounts: [...] }
+// A SimpleFin connection returns EVERY linked institution, not just Fidelity
+// (confirmed jul/2026: 22 accounts, only 1 Fidelity — 21 personal Chase/
+// Capital One accounts). Non-Fidelity accounts only get metadata (balance/
+// counts) in the response; only the Fidelity account(s) get full holdings/
+// transactions detail. This filter is load-bearing, not cosmetic — it's the
+// only thing standing between this endpoint and leaking unrelated personal
+// banking data. The real mapper (Fase 1) must apply the same filter.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
@@ -31,9 +38,20 @@ function pendingKeyFromAuth(auth) {
 
 const PROBE_TIMEOUT_MS = 8000;
 const PROBE_WINDOW_DAYS = 90;
-const PROBE_MAX_ACCOUNTS = 10;
-const PROBE_MAX_TX_SAMPLE = 15;
-const PROBE_MAX_HOLDINGS_SAMPLE = 15;
+const PROBE_MAX_ACCOUNTS = 50;
+// Fidelity accounts get full detail (not just a sample) — a real probe run
+// (jul/2026) showed a SimpleFin connection returns EVERY linked institution,
+// not just Fidelity (22 accounts, only 1 was Fidelity — the other 21 were
+// personal Chase/Capital One banking). Non-Fidelity accounts get metadata
+// only (balance/counts), never transaction or holding detail, so this
+// diagnostic endpoint doesn't surface unrelated personal spending data.
+const PROBE_FIDELITY_MAX_ITEMS = 200;
+const FIDELITY_ORG_HINTS = ['fidelity'];
+
+function isFidelityOrg(org) {
+  const haystack = `${org?.name || ''} ${org?.domain || ''}`.toLowerCase();
+  return FIDELITY_ORG_HINTS.some((hint) => haystack.includes(hint));
+}
 
 // SimpleFin access URLs embed Basic Auth credentials in the userinfo part
 // (https://user:pass@bridge.simplefin.org/simplefin/...). Some fetch
@@ -109,24 +127,33 @@ async function handleProbe(req, res, auth) {
 
   const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
   const summarized = accounts.slice(0, PROBE_MAX_ACCOUNTS).map((acct) => {
+    const org = acct.org ? { name: acct.org.name, domain: acct.org.domain } : null;
     const holdings = Array.isArray(acct.holdings) ? acct.holdings : [];
     const transactions = Array.isArray(acct.transactions) ? acct.transactions : [];
-    const sortedTx = [...transactions].sort(
-      (a, b) => (b.posted || b.transacted_at || 0) - (a.posted || a.transacted_at || 0)
-    );
-    return {
+    const base = {
       id: acct.id,
       name: acct.name,
       currency: acct.currency,
-      org: acct.org ? { name: acct.org.name, domain: acct.org.domain } : null,
+      org,
       balance: acct.balance,
       availableBalance: acct['available-balance'],
       balanceDate: acct['balance-date'],
       balanceDateISO: unixToISO(acct['balance-date']),
       holdingsCount: holdings.length,
-      holdingsSample: holdings.slice(0, PROBE_MAX_HOLDINGS_SAMPLE),
       transactionsCount: transactions.length,
-      transactionsSample: sortedTx.slice(0, PROBE_MAX_TX_SAMPLE).map((tx) => ({
+    };
+    if (!isFidelityOrg(org)) {
+      // Metadata only — no holdings/transaction detail for unrelated
+      // institutions linked to the same SimpleFin connection.
+      return base;
+    }
+    const sortedTx = [...transactions].sort(
+      (a, b) => (b.posted || b.transacted_at || 0) - (a.posted || a.transacted_at || 0)
+    );
+    return {
+      ...base,
+      holdingsSample: holdings.slice(0, PROBE_FIDELITY_MAX_ITEMS),
+      transactionsSample: sortedTx.slice(0, PROBE_FIDELITY_MAX_ITEMS).map((tx) => ({
         ...tx,
         postedISO: unixToISO(tx.posted),
         transactedAtISO: unixToISO(tx.transacted_at),

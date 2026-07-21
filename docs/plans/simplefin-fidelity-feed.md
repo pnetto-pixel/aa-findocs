@@ -46,25 +46,61 @@ modelo do app, (b) estender o staging/aprovação para cobrir também **updates 
   privado + GitHub Actions + fragilidade de seletores. O risco de ToS sai da Fidelity e
   vira uma relação suportada (agregador).
 
-### ⚠️ Incerteza nº 1 — verificar ANTES de codar o mapper
+### ⚠️→✅ Incerteza nº 1 — resolvida parcialmente via probe real (jul/2026)
 
-O shape exato do payload da **Fidelity via SimpleFin** precisa ser inspecionado com dados
-reais. Perguntas que o payload responde:
+Rodada real do probe (Fase 0) contra a conta Fidelity do usuário. Achados (sem dados
+sensíveis reais neste documento — só o shape estrutural):
 
-1. As transações de investimento vêm com **qty e price estruturados**, ou só
-   `amount` + `description` texto-livre (ex: `"YOU BOUGHT REALTY INCOME CORP…"`)?
-   - Se for texto no formato das Actions do CSV Fidelity, boa parte do
-     `src/lib/parsing.js` é reaproveitável para extrair side/ticker.
-   - Se qty/price não forem recuperáveis, os itens 4 e 5 (transações buy/sell e de
-     bonds) degradam para "detectar e alertar" em vez de "importar" — mesmo limite
-     estrutural já documentado para parsing de e-mail no item 38.
-2. Existe array `holdings` (com `symbol`, `shares`, `market_value`, `cost_basis`)?
-   Ele destrava os itens 2 (valor dos Bank Bonds) e reconciliação de posições.
-3. Como aparecem **core cash / sweep**, dividendos, juros de bond, foreign tax,
-   redemptions? Com que `description`?
-4. Sinais de `amount`, campo `pending`, e granularidade de datas (`posted` unix).
+1. **Cash → resolvido, mapeamento direto.** O campo `available-balance` da conta Fidelity
+   é o core/cash sweep — não precisa parsing de texto. `balance` é o valor total da conta
+   (títulos + cash), não confundir com Cash.
+2. **Bank Bonds → resolvido, melhor que o esperado.** O array `holdings` já traz
+   `market_value` calculado por posição, inclusive para CDs (`shares` = valor de face em
+   dólares, `market_value` = valor de mercado atual em dólares — direto, sem a conversão
+   `qty/1000`/`price×10` que o parser do CSV precisa fazer). **Não tem CUSIP** (`symbol: ""`
+   para os CDs) — mas como o holding `bank-bonds-aggregate` do app já é um agregado único
+   (não rastreia CUSIP individual na UI), basta somar `market_value` de todo holding com
+   `symbol === ""` e comparar com o principal já derivado das transações. Simplifica a
+   decisão do §7 (reconciliação sem precisar linkar por CUSIP).
+3. **Dividendos/interest → resolvido, alta reutilização.** As `description` das
+   transações de investimento reproduzem quase literalmente as Actions do CSV Fidelity:
+   `"DIVIDEND RECEIVED <empresa> (<TICKER>) (Cash)"`, `"INTEREST <emissor do CD> (Cash)"`.
+   Ticker extraível via regex simples (`\(([A-Z]{1,5})\)` antes do `(Cash)` final). Boa
+   parte dos guards de `src/lib/parsing.js` (FOREIGN TAX antes de DIVIDEND, exclusão de
+   `INTEREST EARNED CASH`, etc.) são adaptáveis.
+4. **Buy/sell e bond purchase/redemption → AINDA em aberto.** A amostra inicial (15 mais
+   recentes de 76 transações) só trouxe dividend/interest — nenhum trade apareceu. O probe
+   foi corrigido (ver nota de segurança abaixo) para retornar a lista completa da conta
+   Fidelity em vez de amostra, o que deve resolver isso na próxima rodada — mas **ainda não
+   confirmado com um exemplo real**. Enquanto não aparecer um BUY/SELL real, a Fase 1 deve
+   tratar os itens 4/5 como "provável, não confirmado": implementar heurística defensiva
+   (procurar por descriptions no padrão `YOU BOUGHT`/`YOU SOLD`/`REDEMPTION`, já que o
+   formato de dividend/interest sugere que SimpleFin espelha o texto de Activity da própria
+   Fidelity) mas jogar qualquer transação não reconhecida num bucket `unmapped` visível na
+   UI, nunca descartar silenciosamente.
+5. **`amount`/`posted`/`transacted_at` confirmados.** `amount` é string decimal assinada
+   (negativo = saída), `posted`/`transacted_at` são unix seconds. Sem campo `pending`
+   observado nos exemplos vistos.
 
-**Fase 0 do plano existe exatamente pra isso** (ver §6).
+**🔒 Achado de segurança/privacidade (não estava previsto no plano original):** uma
+conexão SimpleFin retorna **todas** as instituições que o usuário linkou no Bridge, não só
+a que motivou a criação daquele "Setup Token"/app. No caso real: 22 contas vieram no
+payload, sendo 21 pessoais (Chase, Capital One — cartão de crédito, conta corrente,
+financiamento) e só 1 Fidelity. Ou seja, **criar uma connection separada pra aa-findocs
+isola a credencial (revogação/auditoria), mas não isola os dados** — o app sempre vai
+receber a lista completa de contas linkadas. Consequência obrigatória pro mapper (Fase 1)
+e já aplicada ao probe: **filtrar por `org.domain`/`org.name` contendo "fidelity"
+é mandatório**, não opcional — sem esse filtro, dados bancários pessoais (nomes de
+comerciantes, valores de cartão de crédito) vazariam pro pipeline de staging do app. O
+probe (`api/fidelity-pending.js`) já foi corrigido: contas não-Fidelity retornam só
+metadados (saldo, contagem), nunca amostra de holdings/transactions. Isso é ainda mais
+relevante pra Fase 4 (multi-usuário) — cada amigo que conectar sua própria conta SimpleFin
+provavelmente também terá bancos pessoais misturados.
+
+**Nota lateral:** o `simplefinErrors` retornou `"Requested date range exceeds limit of 90
+days and was capped"` mesmo pedindo exatamente 90 dias — o teto real de alguma instituição
+linkada é menor. Não é bloqueante (SimpleFin capa e retorna o que consegue), mas a Fase 1
+deve tratar isso como informativo (expor via `?resource=status`), não como erro fatal.
 
 ---
 
@@ -72,11 +108,11 @@ reais. Perguntas que o payload responde:
 
 | # | Alvo | Viabilidade | Como |
 |---|---|---|---|
-| 1 | **Cash** | ✅ Alta | `balance` da(s) conta(s) SimpleFin mapeada(s) → proposta de update do `manualValue` do holding Cash (`CASH_ID` em `App.jsx`, `ensureCashAccount`). Vira um novo tipo de item staged ("balance update") com aprovação. Precisa de um mapa conta-SimpleFin → holding do app (config por usuário). |
-| 2 | **Valor atual dos Bank Bonds** | ✅ Média-alta | Se o payload trouxer `holdings` com `market_value` por CUSIP: hoje o holding `bank-bonds-aggregate` é **derivado das transações** (principal, itens 36/37/40) — não sobrescrever isso silenciosamente. Proposta: staged "reconciliation" — mostrar valor SimpleFin vs valor derivado; aprovar grava um campo novo (ex: `marketValueOverride` + data) OU só sinaliza divergência. Decisão de produto na Fase 0 (ver §7). |
-| 3 | **Interests / dividendos / tax** | ✅ Alta (se descriptions preservarem as Actions) | Mapear para `bondIncome` com `kind: interest\|dividend\|tax`, `source: "simplefin"` — mesmo shape que o pipeline atual já aceita (`ingest` já suporta `bondIncome`; card de aprovação já mergeia com dedupe `date\|ticker\|amount`). Reusar os guards do parser (INTEREST + CUSIP, FOREIGN TAX antes de dividend, excluir INTEREST EARNED CASH, etc.). |
-| 4 | **Transações buy/sell** | ⚠️ Condicional à incerteza nº 1 | Se qty/price recuperáveis: mapear para o modelo de transação e stagear — pipeline de aprovação, dedupe (`dupKey` + `simplefinId`) e sync Holdings já existem. Senão: alertar "N trades detectados no feed sem detalhe suficiente — importe o CSV" (o fluxo CSV continua como fonte de verdade). |
-| 5 | **Transações de bonds (compra/maturity)** | ⚠️ Condicional, com normalização | Mesmo caso do item 4 + a normalização específica de bonds (equivalente ao `qty/1000`, `price×10` do CSV — conferir como o SimpleFin reporta CDs) + redemptions → sell (lógica já existe no parser CSV). |
+| 1 | **Cash** | ✅ Confirmado | `available-balance` da conta Fidelity (não `balance`, que é o total incl. títulos) → proposta de update do `manualValue` do holding Cash (`CASH_ID` em `App.jsx`, `ensureCashAccount`). Vira um novo tipo de item staged ("balance update") com aprovação. Precisa de um mapa conta-SimpleFin → holding do app (config por usuário). |
+| 2 | **Valor atual dos Bank Bonds** | ✅ Confirmado | `holdings[]` traz `market_value` direto por CD (sem CUSIP — `symbol: ""`). Como o holding `bank-bonds-aggregate` já é agregado (não por CUSIP), somar `market_value` de todo holding com `symbol === ""` e comparar/reconciliar com o principal já derivado das transações — sem precisar linkar por CUSIP. |
+| 3 | **Interests / dividendos / tax** | ✅ Confirmado, alta reutilização | `description` reproduz as Actions do CSV Fidelity quase literalmente (`"DIVIDEND RECEIVED ... (TICKER) (Cash)"`, `"INTEREST ... (Cash)"`). Mapear para `bondIncome` com `kind: interest\|dividend\|tax`, `source: "simplefin"` — mesmo shape que o pipeline atual já aceita. Reusar os guards do parser (FOREIGN TAX antes de dividend, excluir INTEREST EARNED CASH, etc.). |
+| 4 | **Transações buy/sell** | ⚠️ Ainda não confirmado com exemplo real | Amostra inicial (15 mais recentes) só trouxe dividend/interest. Probe corrigido pra retornar a conta Fidelity inteira (não mais amostra) — deve resolver na próxima rodada. Enquanto sem confirmação: implementar heurística (`YOU BOUGHT`/`YOU SOLD` na description, mesmo padrão do dividendo) mas qualquer transação não reconhecida cai num bucket `unmapped` visível, nunca é descartada. |
+| 5 | **Transações de bonds (compra/maturity)** | ⚠️ Mesmo caso do item 4 | Mesma pendência + normalização específica (CD `shares`/`market_value` já vêm em dólares diretos no `holdings`, diferente do `qty/1000`/`price×10` do CSV — conferir se `transactions` de compra de CD segue a mesma convenção). |
 
 **Dedupe cross-fonte é obrigatório**: o usuário vai continuar podendo importar CSV. Cada
 item staged do SimpleFin deve carregar `simplefinId` (id nativo, dedupe forte) **e** passar
@@ -208,6 +244,24 @@ Decisões de arquitetura e porquês:
   perf-history) verdes. Nenhum teste novo — nada aqui tem lógica pura a testar ainda
   (é I/O puro); o mapper da Fase 1 é que ganha testes com fixtures do dump real.
 
+#### Fase 0 — rodada real + hardening (jul/2026)
+
+Probe executado contra a conta real do usuário. Achados resumidos em detalhe na
+"Incerteza nº 1" (§2) — Cash, Bank Bonds e income confirmados; buy/sell ainda pendente de
+exemplo real. Um achado obrigou correção no próprio endpoint antes de considerar a Fase 0
+fechada: **a conexão SimpleFin retorna todas as instituições linkadas, não só a Fidelity**
+(22 contas, 21 pessoais). Fix aplicado em `api/fidelity-pending.js`:
+- Contas cujo `org.name`/`org.domain` não contém "fidelity" retornam só metadados
+  (balance/counts) — nunca amostra de holdings/transactions.
+- A conta Fidelity passa a retornar a lista **completa** (até um teto de segurança de 200
+  itens) em vez de uma amostra de 15 — o volume real (76 tx, 58 holdings) é pequeno o
+  suficiente, e isso aumenta a chance de capturar um exemplo de buy/sell na próxima rodada.
+- `PROBE_MAX_ACCOUNTS` subiu de 10 para 50 (a SimpleFin Bridge documenta um teto de 25
+  contas por conexão paga — 10 já cortava a lista antes de completar).
+
+Build + 54/54 testes verdes após o fix. Esse filtro por instituição é **obrigatório na
+Fase 1 também** (mapper real), não específico do probe.
+
 ### Fase 1 — Mapper + staging de income e trades
 - `lib/simplefin-map.js` + testes com fixtures da Fase 0.
 - `?resource=sync` real: mapeia → merge+dedupe no `:fidelity-pending`
@@ -238,10 +292,12 @@ Decisões de arquitetura e porquês:
 
 ## 7. Decisões em aberto (responder antes/durante a Fase 0)
 
-1. **Bank Bonds — override ou reconciliação?** O agregado é derivado de transações
-   (principal). Recomendação: **reconciliação com aprovação** (mostrar divergência,
-   aprovar grava market value com data como campo separado, sem quebrar a derivação).
-   Alternativa mais simples: só alertar divergência, sem gravar.
+1. **Bank Bonds — override ou reconciliação?** ✅ Resolvido pelo probe real: como não há
+   CUSIP no `holdings` (`symbol: ""`), linkar por CD individual não é viável mesmo — a
+   única opção sensata já é a recomendada originalmente: **reconciliação agregada com
+   aprovação** (somar `market_value` de todo holding `symbol === ""`, comparar com o
+   principal derivado das transações, aprovar grava um `marketValueOverride` + data
+   separado, sem quebrar a derivação existente).
 2. **Aposentar o caminho scraper** (`api/ingest-fidelity.js` + `docs/plans/scraper/`)?
    Recomendação: sim, na Fase 3 — nunca foi ativado e o SimpleFin o supera; libera 1
    slot das 12 functions.
