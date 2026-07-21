@@ -309,7 +309,7 @@ a Fase 1.
 - Cobre os alvos **3, 4, 5** (4/5 no nível que o payload permitir) e adianta boa parte
   do alvo **1/2** da Fase 2 (ver abaixo).
 
-### Fase 2 — Balance updates (Cash + Bank Bonds) — ⚠️ PARCIALMENTE ENTREGUE (jul/2026, PR #136)
+### Fase 2 — Balance updates (Cash + Bank Bonds) — ✅ ENTREGUE (jul/2026, merge `eecf52c`, v1.3.1)
 - Staging ganhou `balanceCandidates[]`: `{ id, kind: "cash"|"bank-bonds", accountId,
   accountName, proposed, asOf }` (upsert por `id` a cada sync, não acumula duplicata).
   `current` não é gravado no staging — a UI lê direto do `holdings` do usuário (prop
@@ -317,14 +317,25 @@ a Fase 1.
 - Seção "Balance Updates" no card com Approve/Dismiss por linha. Aprovar Cash aplica
   `manualValue` via `applyFidelityBalanceUpdate` (`App.jsx`) — efeito imediato no
   Dashboard, mesmo fluxo normal de holdings.
-- **Bank Bonds — só parcialmente resolvido.** `manualValue` do holding
-  `bank-bonds-aggregate` é recalculado a cada mudança de transação por
-  `applyBankBondsHolding` (principal derivado das transações) — gravar o valor de
-  mercado ali seria sobrescrito na próxima transação. Aprovar grava, em vez disso, um
-  campo aditivo `marketValueOverride`/`marketValueOverrideAsOf` no holding — mas
-  **nada ainda lê esse campo**, então não há efeito visível no Dashboard. Falta:
-  decidir onde/como exibir a reconciliação (badge no card do holding? nota
-  "valor de mercado: $X, mercado vs. principal"?) — fica para uma sessão futura.
+- **Bank Bonds.** `manualValue` do holding `bank-bonds-aggregate` é recalculado a cada
+  mudança de transação por `applyBankBondsHolding` (principal derivado das transações)
+  — gravar o valor de mercado ali seria sobrescrito na próxima transação. Aprovar grava,
+  em vez disso, um campo aditivo `marketValueOverride`/`marketValueOverrideAsOf` no
+  holding.
+- **Exibição do override — resolvida num commit de follow-up (jul/2026, merge
+  `eecf52c`, v1.3.1, branch `feature/simplefin-fase2-bank-bonds-display`).**
+  Decisão de UX: o valor vive dentro do **accordion expandido** do holding
+  (`ManualHoldingRow`, `src/App.jsx`, `driftOpen`), não num badge no card
+  compacto/fechado — é informação secundária de reconciliação, não um número primário
+  do Dashboard, e só aparece quando o campo está de fato setado (hoje só o holding
+  `bank-bonds-aggregate` grava). Mostra "Market Value (SimpleFin)" + valor (mascarável
+  via `valuesHidden`/`maskMoney`) + delta ($ mercado − $ principal) + data "as of"
+  (parse aceita `YYYY-MM-DD` ou ISO timestamp completo). Decisão técnica: o delta usa
+  uma variável local nova (`marketValueDeltaColor`, verde/vermelho por sinal) em vez de
+  reaproveitar o prop `deltaColor` já existente no componente — aquele é o drift de
+  rebalanceamento (peso atual vs. peso alvo), semântica diferente de "valor de mercado
+  SimpleFin vs. principal das transações"; misturar os dois acoplaria conceitos não
+  relacionados. Mudança 100% de exibição — sem endpoint/schema/cache novo.
 - Mapa conta→holding: não foi necessário — o mapper já resolve isso implicitamente
   (uma conta Fidelity só tem um Cash e um agregado de Bank Bonds), sem precisar de
   config por usuário nesta fase.
