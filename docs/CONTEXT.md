@@ -697,6 +697,22 @@ Extensao pontual sobre as Fases 1-3 (nao uma nova fase do plano `docs/plans/simp
 
 -----
 
+### SimpleFin Feed — Auto-discard silencioso de "Electronic Funds Transfer Received" (jul/2026, sha `7a11f40`, merged em main, v1.7.1)
+
+Transacoes Fidelity com description "Electronic Funds Transfer Received" caiam em `unmapped` (reason "unrecognized description") a cada sync. Como a dedupe em `api/fidelity-pending.js` so compara contra o staging atual, nao contra o historico de decisoes ja tomadas (dentro da janela de 44 dias, `SIMPLEFIN_WINDOW_DAYS`), o mesmo item reaparecia sync apos sync exigindo Dismiss manual repetido.
+
+- **`lib/simplefin-map.js`:** terceiro padrao de exclusao silenciosa, `EXCLUDE_EFT_RECEIVED_RX = /^ELECTRONIC FUNDS TRANSFER RECEIVED/i`, aplicado em `mapOneTransaction()` no mesmo bloco de excludes ja existente (`EXCLUDE_CASH_CYCLE_RX` para EARNED CASH/REINVESTMENT CASH, `DISTRIBUTION_RX`), antes de qualquer classificacao (foreign tax, dividend, interest, redemption, trade) e antes do fallback `unmapped`. `{ excluded: true }` — nunca chega a `unmapped`, nunca aparece na UI.
+- **Escopo:** so "Received", nao "Sent" — decisao explicita do usuario. Um EFT enviado pode representar saida real de capital que vale rastrear; um EFT recebido ja e capturado pelo balance update de Cash (auto-apply, ver secao acima), entao e puro ruido de staging.
+- Teste novo em `test/simplefin-map.test.mjs` (bloco "excluded cycles"), cobrindo o caso real `'Electronic Funds Transfer Received (Cash)'`.
+- Sem mudanca em `api/fidelity-pending.js`, sem bump de cache.
+
+**Observacoes levantadas na mesma sessao (pesquisa, sem mudanca de codigo — ver detalhes em `docs/Features_Roadmap.md`, secao Pendentes/SimpleFin):**
+1. Bank Bonds na tab Holdings e derivado do replay de transacoes (`computeBankBondsPrincipal`), independente do valor de mercado real do SimpleFin (`marketValueOverride`, so exibido como referencia). Ponto cego identificado e nunca testado: multiplas contas Fidelity gerando `balanceCandidate` de bank-bonds cada uma escrevem no mesmo holding agregado, sem somar.
+2. Matching de bonds por CUSIP individual permanece fora de escopo — decisao de design permanente ja documentada (Fase 2), nao um gap novo.
+3. Inferir trades via diff pre/pos-sync do SimpleFin nao existe hoje (sem mecanismo de snapshot/diff de holdings) — seria feature nova, nao mapeada; SimpleFin nao expoe cost basis por holding individual.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -848,6 +864,7 @@ Extensao pontual sobre as Fases 1-3 (nao uma nova fase do plano `docs/plans/simp
 |**Chave composta `id:proposed` (nao so `id`) em `appliedBalanceIdsRef` (jul/2026, commit `62161f1`)**|O `id` de um balance candidate e deterministico por conta+tipo e nunca muda entre syncs — usar so `id` como guard de double-apply travaria o candidate permanentemente apos a primeira aplicacao, descartando atualizacoes reais de saldo em syncs seguintes. A chave composta com o valor proposto permite reaplicar quando o saldo muda e ainda bloqueia reprocessamento do mesmo valor numa janela de corrida.|
 |**Cash travado para admin independente da saude do sync SimpleFin (jul/2026, commit `62161f1`)**|Decisao consciente do usuario: sem destrava condicional automatica quando o sync falha ou fica stale — simplicidade sobre resiliencia. Se o sync quebrar, a correcao do valor exige intervencao fora do app. O heartbeat de Alerts so notifica sobre o problema, nao desbloqueia o campo.|
 |**`valueLocked` em `ManualHoldingRow` gated por admin, nao global (jul/2026, commit `62161f1`)**|Usuario nao-admin (sem SimpleFin conectado) nunca tem Cash travado — travar globalmente removeria a unica forma dele manter o proprio saldo de Cash atualizado.|
+|**EFT Received excluido silenciosamente so no sentido "Received", nao "Sent" (jul/2026, sha `7a11f40`)**|Um EFT enviado pode ser uma saida real de capital que vale rastrear; um EFT recebido ja e capturado pelo balance update automatico de Cash — excluir so o lado redundante evita esconder um evento potencialmente relevante.|
 
 -----
 
@@ -1042,6 +1059,7 @@ Extensao pontual sobre as Fases 1-3 (nao uma nova fase do plano `docs/plans/simp
 - **Filtros que podem esvaziar resultados devem manter a barra de controle sempre renderizada, independente do dataset filtrado (jul/2026, commit a60bb9f)** — a barra de filtros Asset Class/Ticker do grafico Performance dependia de `rawData.length > 0` para renderizar; uma combinacao de filtros que zerasse os resultados escondia os proprios controles (incluindo o botao "Clear filters"), travando o usuario num estado vazio irrecuperavel sem forma de resetar via UI. Mesma familia de bug do PR #126 (thead escondido em Position Performance/Position Dividends). Regra reforcada: qualquer UI de filtro (chip, popover, botao Clear) deve viver fora de blocos condicionados ao dataset ja filtrado. Pego na rodada 1 de auditoria, corrigido antes do merge.
 - **Ref de double-apply deve incluir o valor, nao so o id do candidate (jul/2026, commit `62161f1`, achado da rodada 1 do auditor)** — `appliedBalanceIdsRef` usava so `c.id` como chave; como o `id` de um balance candidate e deterministico por conta+tipo (nunca muda entre syncs), a primeira aplicacao travava o candidate para sempre — atualizacoes reais de saldo em syncs seguintes eram silenciosamente descartadas, apesar do toast de sync reportar sucesso. Regra: ao guardar um Set/Ref para evitar reprocessar um item cujo valor pode mudar ao longo do tempo, a chave deve incluir o valor (ou um hash dele), nao so um identificador estavel do item.
 - **Alerta de estado continuo precisa de `id` estavel + remocao explicita, nao o padrao de id-com-data dos demais alertas (jul/2026, Fase 3 SimpleFin, commit `fbc9a15`)** — os alertas existentes (split, dividendo, earnings, bond maturity) usam `id` com a data embutida, entao naturalmente "somem" quando a data muda (o alerta seguinte tem um id diferente). O heartbeat de sync SimpleFin representa um ESTADO ("sync com problema"), nao um evento datado — copiar o padrao de id-com-data faria o alerta nunca sumir do log ativo mesmo apos o sync se recuperar, ou geraria um alerta novo por dia enquanto o problema persistisse. Fix: `id` fixo (`simplefin_heartbeat`) e remocao explicita via `filter` quando a condicao deixa de ser verdadeira. Regra: antes de copiar o padrao de alerta existente, perguntar se o novo alerta e um evento pontual (id-com-data serve) ou um estado continuo (precisa de id estavel + logica de remocao dedicada).
+- **Dedupe de staging que so olha o staging atual reintroduz itens ja dispensados pelo usuario (jul/2026, sha `7a11f40`)** — `api/fidelity-pending.js` deduplica `unmapped` novos contra o que ja esta staged e contra `:transactions`, mas nao contra decisoes historicas de Dismiss (dentro da janela de sync, `SIMPLEFIN_WINDOW_DAYS`). Transacoes recorrentes e irrelevantes (ex: "Electronic Funds Transfer Received", ja capturado pelo balance update de Cash) reapareciam em `unmapped` a cada sync, exigindo Dismiss manual repetido. Fix aplicado foi exclusao silenciosa no mapper (`lib/simplefin-map.js`), nao um fix generico de dedupe-contra-historico — regra: para qualquer description recorrente e comprovadamente irrelevante, preferir excluir na fonte (padrao ja estabelecido por `EXCLUDE_CASH_CYCLE_RX`/`DISTRIBUTION_RX`) a resolver via memoria de decisoes passadas, que exigiria armazenar e comparar contra um historico crescente.
 
 -----
 
