@@ -2521,7 +2521,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       setHoldings((prev) =>
         prev.map((h) =>
           h.id === CASH_ID
-            ? { ...h, manualValue: candidate.proposed, manualCurrency: "USD", lastUpdated: asOf }
+            ? {
+                ...h,
+                manualValue: candidate.proposed,
+                manualCurrency: "USD",
+                lastUpdated: asOf,
+                // Dedicated field for the "Last Synced (SimpleFin)" info block —
+                // lastUpdated is generic (bumped by any edit, including Target%),
+                // so it can't be reused to show sync recency specifically.
+                simplefinSyncedAt: asOf,
+              }
             : h
         )
       );
@@ -3679,7 +3688,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
               onDismissSplit={dismissSplit}
               holdings={holdings}
               onApproveFidelityBalance={applyFidelityBalanceUpdate}
-              onDismissFidelityBalance={() => {}}
             />
           )}
 
@@ -4319,6 +4327,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         onUpdate={(patch) => updateManualHolding(h.id, patch)}
                         onRemove={() => removeHolding(h.id)}
                         locked={h.id === CASH_ID}
+                        valueLocked={h.id === CASH_ID && isAdmin}
                       />
                     </div>
                   ))}
@@ -6006,7 +6015,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked }) {
+function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -6053,6 +6062,18 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
       })
     : null;
 
+  // SimpleFin-reported Cash balance sync recency (see applyFidelityBalanceUpdate
+  // in App.jsx). `simplefinSyncedAt` is dedicated (unlike `lastUpdated`, which
+  // is bumped by any edit including Target%), so this only reflects sync writes.
+  const simplefinSyncedAsOf = holding.simplefinSyncedAt
+    ? new Date(holding.simplefinSyncedAt.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+      })
+    : null;
+
   const [driftOpen, setDriftOpen] = useState(false);
   const [editingPopupClass, setEditingPopupClass] = useState(false);
   const [draftPopupClass, setDraftPopupClass] = useState("");
@@ -6080,7 +6101,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
       patch.assetClass = draftClass.trim() || "Manual";
       patch.assetClassOverride = draftClass.trim() || null;
     }
-    if (!isBankBonds) {
+    if (!isBankBonds && !valueLocked) {
       if (holding.manualMode === "value") {
         const v = parseFloat(draftValue);
         patch.manualValue = isNaN(v) ? 0 : v;
@@ -6276,6 +6297,14 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               )}
             </div>
           )}
+          {simplefinSyncedAsOf && (
+            <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Last Synced (SimpleFin)</span>
+                <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: T.textDim }}>{simplefinSyncedAsOf}</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -6293,6 +6322,10 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
           {isBankBonds ? (
             <div style={{ marginBottom: 8 }}>
               <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Auto-calculated from transactions</span>
+            </div>
+          ) : valueLocked ? (
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Synced automatically via SimpleFin</span>
             </div>
           ) : holding.manualMode === "value" ? (
             <div style={{ marginBottom: 8 }}>
