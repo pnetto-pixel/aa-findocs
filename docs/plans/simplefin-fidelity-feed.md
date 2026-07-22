@@ -1,7 +1,9 @@
 # Plano — Feed SimpleFin → Fidelity (evolução do item 38)
 
-> Status: Fases 0-3 **ENTREGUES** (jul/2026, ultima em commit `fbc9a15`). Fase 4
-> (multi-usuario) permanece pendente. Assessment original feito em 21/jul/2026.
+> Status: Fases 0-3 **ENTREGUES** (jul/2026, ultima em commit `fbc9a15`). Ajuste
+> pos-Fase 3 (auto-apply de Balance Updates, jul/2026, commit `62161f1`) tambem
+> entregue — ver secao dedicada no §6. Fase 4 (multi-usuario) permanece pendente.
+> Assessment original feito em 21/jul/2026.
 > Contexto novo: o usuário criou uma conta no **SimpleFin Bridge** e já consegue puxar
 > dados da conta Fidelity dele (tem um *access URL* ativo). Este plano substitui o
 > caminho "scraper Playwright + TOTP em GitHub Actions" do
@@ -367,6 +369,36 @@ a Fase 1.
   superseded por este plano, seção "SimpleFin Feed — Fase 3" em `CONTEXT.md`.
 - `package.json` `1.3.1 -> 1.4.0` (minor). Build (`npm run build`) e suite completa
   `test/*.test.mjs` (70 casos) verdes.
+
+### Ajuste pós-Fase 3 — Auto-apply de Balance Updates, sem revisão manual (jul/2026, commit `62161f1`, v1.7.0)
+
+Não é uma fase nova — mudança de política pontual pedida pelo usuário sobre o
+comportamento entregue na Fase 1/2 (seção "Balance Updates" com Approve/Dismiss por
+linha). Decisão: abrir mão da revisão manual **especificamente** para Cash e Bank
+Bonds (Trades e Income do card "Fidelity Import" continuam manuais, intocados).
+
+- `src/Transactions.jsx`: os pontos que computavam `freshBalance` (load on-mount e
+  `runFidelitySync()`) agora chamam `onApproveFidelityBalance?.(c)` automaticamente
+  para cada candidate fresco, sempre limpando `balanceCandidates` no staging remoto.
+  Seção "Balance Updates" (Approve/Dismiss por linha, descrita na Fase 1/2 acima)
+  removida do card — não sobra nada para aprovar.
+- Proteção contra double-apply: `appliedBalanceIdsRef` com chave composta
+  `` `${candidate.id}:${candidate.proposed}` `` (não só `id`, que é determinístico
+  por conta+tipo e nunca muda entre syncs — sem o valor no key, o candidate travaria
+  permanentemente após a primeira aplicação).
+- Fix junto: `pruneUnchangedBalanceCandidates` comparava Bank Bonds contra
+  `manualValue` (campo errado) em vez de `marketValueOverride`.
+- `src/App.jsx`: novo campo `simplefinSyncedAt` + bloco "Last Synced (SimpleFin)" no
+  accordion do holding Cash; nova prop `valueLocked` (`h.id === CASH_ID && isAdmin`)
+  trava a edição manual do valor de Cash para o admin — Target% continua editável.
+  Gate por admin (não global): usuário não-admin sem SimpleFin conectado nunca tem
+  Cash travado.
+- Decisão consciente do usuário: Cash fica sempre travado independente da saúde do
+  sync (sem destrava automática se o SimpleFin falhar/ficar stale) — correção nesse
+  cenário exige intervenção fora do app. Sem mudança em `api/fidelity-pending.js`,
+  sem bump de cache.
+- Auditoria (2 rodadas): rodada 1 reprovou pelo bug do `appliedBalanceIdsRef` sem o
+  valor no key; fix aprovado na rodada 2. Merge direto em `main`, sem PR.
 
 ### Fase 4 — Multi-usuário (futuro, quando quiser abrir pros amigos)
 - `POST ?resource=connect` (claim de setup token server-side → Redis por usuário),
