@@ -209,7 +209,12 @@ async function fetchPendingFidelity(auth) {
 function pruneUnchangedBalanceCandidates(candidates, holdings) {
   return (candidates || []).filter((c) => {
     const holdingId = c.kind === "cash" ? "cash-permanent" : "bank-bonds-aggregate";
-    const current = holdings.find((h) => h.id === holdingId)?.manualValue;
+    const h = holdings.find((h) => h.id === holdingId);
+    // Cash writes straight to manualValue; Bank Bonds writes to the additive
+    // marketValueOverride field (see applyFidelityBalanceUpdate in App.jsx) —
+    // comparing Bank Bonds against manualValue (the transaction-derived
+    // principal) would always look "changed" and reapply on every load.
+    const current = c.kind === "cash" ? h?.manualValue : h?.marketValueOverride;
     if (current == null || c.proposed == null) return true;
     return Math.round(current * 100) !== Math.round(c.proposed * 100);
   });
@@ -4085,7 +4090,7 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
   );
 }
 
-export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange, pendingSplits = [], splitEvents = [], splitActionInFlight = null, onApproveSplit, onDismissSplit, holdings = [], onApproveFidelityBalance, onDismissFidelityBalance, fidelityBalanceActionInFlight = null }) {
+export default function TransactionsView({ auth, onAuthFail, knownTickers = [], valuesHidden, onTransactionsChange, pendingSplits = [], splitEvents = [], splitActionInFlight = null, onApproveSplit, onDismissSplit, holdings = [], onApproveFidelityBalance }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
@@ -4121,9 +4126,13 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [pendingFidBondChecked, setPendingFidBondChecked] = useState(() => new Set());
   const [pendingFidBondOpen, setPendingFidBondOpen] = useState(true);
   const [approvingFidBond, setApprovingFidBond] = useState(false);
-  // Cash / Bank Bonds balance snapshots proposed by the SimpleFin sync.
-  const [pendingBalance, setPendingBalance] = useState([]);
-  const [balanceActionId, setBalanceActionId] = useState(null); // id of row mid Approve/Dismiss
+  // Cash / Bank Bonds balance snapshots proposed by the SimpleFin sync now
+  // auto-apply (no approval queue — see applyFidelityBalanceUpdate in
+  // App.jsx). This ref tracks candidate ids already applied in this
+  // component's lifetime, guarding against double-apply if the load/sync
+  // effects re-fire before the `holdings` prop round-trips back down to
+  // reflect the write (see effects below).
+  const appliedBalanceIdsRef = useRef(new Set());
   // Transactions whose description SimpleFin couldn't map to anything known —
   // shown for review, with a per-row Dismiss for ones that don't need manual
   // entry (e.g. external transfers already captured by the Cash balance).
@@ -4279,12 +4288,21 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const freshBalance = pruneUnchangedBalanceCandidates(p.balanceCandidates, holdings);
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
-      setPendingBalance(freshBalance);
       setPendingUnmapped(p.unmapped || []);
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
       setPendingFidBondChecked(new Set(freshBond.map((e) => e.id)));
-      if (freshBalance.length !== (p.balanceCandidates || []).length) {
-        patchPendingFidelity(auth, { balanceCandidates: freshBalance });
+      // Cash / Bank Bonds balances auto-apply — no approval queue.
+      // Key includes the proposed value (not just id) so a real value change
+      // re-applies even though the candidate id is deterministic per account.
+      const toApply = freshBalance.filter(
+        (c) => !appliedBalanceIdsRef.current.has(`${c.id}:${c.proposed}`)
+      );
+      for (const c of toApply) {
+        appliedBalanceIdsRef.current.add(`${c.id}:${c.proposed}`);
+        onApproveFidelityBalance?.(c);
+      }
+      if ((p.balanceCandidates || []).length > 0) {
+        patchPendingFidelity(auth, { balanceCandidates: [] });
       }
     });
     return () => {
@@ -4347,12 +4365,21 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const freshBalance = pruneUnchangedBalanceCandidates(p.balanceCandidates, holdings);
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
-      setPendingBalance(freshBalance);
       setPendingUnmapped(p.unmapped || []);
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
       setPendingFidBondChecked(new Set(freshBond.map((e) => e.id)));
-      if (freshBalance.length !== (p.balanceCandidates || []).length) {
-        patchPendingFidelity(auth, { balanceCandidates: freshBalance });
+      // Cash / Bank Bonds balances auto-apply — no approval queue.
+      // Key includes the proposed value (not just id) so a real value change
+      // re-applies even though the candidate id is deterministic per account.
+      const toApply = freshBalance.filter(
+        (c) => !appliedBalanceIdsRef.current.has(`${c.id}:${c.proposed}`)
+      );
+      for (const c of toApply) {
+        appliedBalanceIdsRef.current.add(`${c.id}:${c.proposed}`);
+        onApproveFidelityBalance?.(c);
+      }
+      if ((p.balanceCandidates || []).length > 0) {
+        patchPendingFidelity(auth, { balanceCandidates: [] });
       }
     } catch (e) {
       setFidSyncMessage(e.message || "Network error");
@@ -4448,30 +4475,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setPendingFidBondChecked(new Set());
     } finally {
       setApprovingFidBond(false);
-    }
-  }
-
-  async function approveBalanceCandidate(candidate) {
-    setBalanceActionId(candidate.id);
-    try {
-      onApproveFidelityBalance?.(candidate);
-      const remaining = pendingBalance.filter((c) => c.id !== candidate.id);
-      await patchPendingFidelity(auth, { balanceCandidates: remaining });
-      setPendingBalance(remaining);
-    } finally {
-      setBalanceActionId(null);
-    }
-  }
-
-  async function dismissBalanceCandidate(candidate) {
-    setBalanceActionId(candidate.id);
-    try {
-      onDismissFidelityBalance?.(candidate);
-      const remaining = pendingBalance.filter((c) => c.id !== candidate.id);
-      await patchPendingFidelity(auth, { balanceCandidates: remaining });
-      setPendingBalance(remaining);
-    } finally {
-      setBalanceActionId(null);
     }
   }
 
@@ -4706,7 +4709,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           this admin/utility clutter doesn't stand between the toolbar and the
           actual transaction table below. Individual sub-sections keep their
           own collapse state once this is open. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingBalance.length > 0 || pendingUnmapped.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
+      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           <button
             onClick={() => setSyncCardOpen((v) => !v)}
@@ -4735,7 +4738,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
               }}
             />
             Sync & Automation
-            {(pendingFid.length + pendingFidBond.length + pendingBalance.length + pendingUnmapped.length + pendingSplits.length) > 0 && (
+            {(pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length) > 0 && (
               <span
                 style={{
                   marginLeft: 8,
@@ -4748,7 +4751,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   borderRadius: 8,
                 }}
               >
-                {pendingFid.length + pendingFidBond.length + pendingBalance.length + pendingUnmapped.length + pendingSplits.length}
+                {pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length}
               </span>
             )}
           </button>
@@ -4760,7 +4763,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           income, balance updates and unmapped rows each get their own section.
           The whole group renders for admin (so the Sync button is reachable
           even with nothing staged yet) or for anyone with staged content. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingBalance.length > 0 || pendingUnmapped.length > 0) && (
+      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           {isAdmin && (
             <div
@@ -5183,143 +5186,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         </div>
       )}
 
-      {/* Balance updates (Cash / Bank Bonds) proposed by the SimpleFin sync —
-          current vs proposed, Approve/Dismiss per row. Approve delegates the
-          actual holdings write to the parent (App.jsx owns `holdings` state);
-          this component only manages the staging list. */}
-      {pendingBalance.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <div
-            style={{
-              background: "rgba(201,169,97,0.06)",
-              border: `1px solid ${T.gold}55`,
-              borderRadius: "4px 4px 0 0",
-              padding: "10px 14px",
-              color: T.gold,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            Balance Updates
-            <span
-              style={{
-                marginLeft: 8,
-                background: T.gold,
-                color: "#0b0d10",
-                fontFamily: FONT_MONO,
-                fontSize: 9,
-                fontWeight: 700,
-                padding: "1px 6px",
-                borderRadius: 8,
-              }}
-            >
-              {pendingBalance.length}
-            </span>
-          </div>
-          <div
-            style={{
-              background: T.card,
-              border: `1px solid ${T.border}`,
-              borderTop: "none",
-              borderRadius: "0 0 4px 4px",
-              padding: 14,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: 12,
-                color: T.textDim,
-                marginBottom: 12,
-                lineHeight: 1.5,
-              }}
-            >
-              Cash and Bank Bonds balances reported by SimpleFin, compared against
-              your current holding value. Bank Bonds is derived from your
-              transaction history — approving here records a reference value
-              only; the Dashboard total keeps using the transaction-derived
-              value until a later phase wires it in.
-            </div>
-            {pendingBalance.map((c) => {
-              const current =
-                c.kind === "cash"
-                  ? holdings.find((h) => h.id === "cash-permanent")?.manualValue ?? null
-                  : holdings.find((h) => h.id === "bank-bonds-aggregate")?.manualValue ?? null;
-              const inFlight = balanceActionId === c.id || fidelityBalanceActionInFlight === c.id;
-              return (
-                <div
-                  key={c.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 10,
-                    flexWrap: "wrap",
-                    padding: "8px 0",
-                    borderTop: `1px solid ${T.borderSoft}`,
-                  }}
-                >
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
-                    <span style={{ textTransform: "capitalize", color: T.gold }}>
-                      {c.kind === "cash" ? "Cash" : "Bank Bonds"}
-                    </span>
-                    {": "}
-                    {valuesHidden ? "•••" : fmtMoney(current, "USD")}
-                    {" → "}
-                    {valuesHidden ? "•••" : fmtMoney(c.proposed, "USD")}
-                    <span style={{ color: T.textFaint, marginLeft: 8 }}>
-                      {c.accountName}
-                      {c.asOf ? ` · as of ${c.asOf}` : ""}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      onClick={() => approveBalanceCandidate(c)}
-                      disabled={inFlight}
-                      style={{
-                        background: T.gold,
-                        color: "#0b0d10",
-                        border: "none",
-                        borderRadius: 4,
-                        padding: "6px 12px",
-                        fontFamily: FONT_MONO,
-                        fontSize: 9,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        fontWeight: 700,
-                        cursor: inFlight ? "default" : "pointer",
-                        opacity: inFlight ? 0.5 : 1,
-                      }}
-                    >
-                      {inFlight ? "Working…" : "Approve"}
-                    </button>
-                    <button
-                      onClick={() => dismissBalanceCandidate(c)}
-                      disabled={inFlight}
-                      style={{
-                        background: "transparent",
-                        color: T.textDim,
-                        border: `1px solid ${T.border}`,
-                        borderRadius: 4,
-                        padding: "6px 12px",
-                        fontFamily: FONT_MONO,
-                        fontSize: 9,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        cursor: inFlight ? "default" : "pointer",
-                      }}
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* Balance Updates (Cash / Bank Bonds) — removed: these now auto-apply
+          from the SimpleFin sync with no approval queue. See the "Last
+          Synced (SimpleFin)" / "Market Value (SimpleFin)" info blocks in
+          ManualHoldingRow's accordion (App.jsx) for the equivalent status
+          surface. */}
 
       {/* Unmapped — SimpleFin rows that matched no known pattern (or matched
           one but couldn't be completed, e.g. a trade with no structured
