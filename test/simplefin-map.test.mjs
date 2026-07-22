@@ -255,6 +255,27 @@ await test('DISTRIBUTION rows are excluded entirely', () => {
   assert.equal(out.unmapped.length, 0);
 });
 
+await test('ELECTRONIC FUNDS TRANSFER RECEIVED rows are excluded entirely', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-eft-1',
+            posted: 1752900650,
+            amount: '500.00',
+            description: 'Electronic Funds Transfer Received (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
 console.log('\n— mapSimplefinPayload: unmapped —');
 
 await test('an unrecognized description lands in unmapped, never silently dropped', () => {
