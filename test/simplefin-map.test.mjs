@@ -615,5 +615,141 @@ await test('a Bank Bonds candidate can still surface even when the only symbol-l
   assert.equal(out.unmapped[0].description, 'BROKEN CD WITH NO MARKET VALUE');
 });
 
+console.log('\n— mapSimplefinPayload: bondHoldings (item 41 Bond Matching) —');
+
+await test('bond-shaped holdings are extracted into bondHoldings, with descKey when the description parses', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'HOLD-cash', symbol: '', description: 'CASH', market_value: '100.00' },
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+          { id: 'HOLD-aapl', symbol: 'AAPL', description: 'APPLE INC', market_value: '5000.00' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  // CASH and the ticker-backed AAPL holding are not bank-bonds-shaped —
+  // excluded from bondHoldings same as from the Bank Bonds balance sum.
+  assert.equal(out.bondHoldings.length, 1);
+  const h = out.bondHoldings[0];
+  assert.equal(h.description, 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030');
+  assert.equal(h.marketValue, 1010.2);
+  assert.equal(h.descKey, 'WELLS FARGO BANK NATL ASSN CD|4.2|2030-07-08');
+  assert.equal(h.couponRate, 4.2);
+  assert.equal(h.maturityDate, '2030-07-08');
+  assert.equal(h.accountId, 'ACT-fidelity-1');
+});
+
+await test('a bond-shaped holding whose description does not parse still appears, with descKey null', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd-weird',
+            symbol: '',
+            description: 'SOME UNUSUAL BOND TEXT NO COUPON HERE',
+            market_value: '500.00',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondHoldings.length, 1);
+  const h = out.bondHoldings[0];
+  assert.equal(h.descKey, null);
+  assert.equal(h.couponRate, null);
+  assert.equal(h.maturityDate, null);
+  assert.equal(h.description, 'SOME UNUSUAL BOND TEXT NO COUPON HERE');
+});
+
+console.log('\n— bondHoldings auto-bind against knownBondsByDescKey (item 41) —');
+
+// The actual auto-bind loop lives server-side (api/fidelity-pending.js
+// handleSync, no network/Redis in this test suite's scope), but its whole
+// job is to look up each bondHoldings[i].descKey in knownBondsByDescKey — a
+// one-line lookup this test exercises directly against the real
+// mapSimplefinPayload output, so a regression in either the descKey format
+// (this file) or the CUSIP map format (lib/bond-meta.js) is caught here.
+function autoBind(bondHoldings, knownBondsByDescKey) {
+  const bindings = {};
+  for (const h of bondHoldings) {
+    if (!h.descKey) continue;
+    const cusip = knownBondsByDescKey.get(h.descKey);
+    if (cusip) bindings[h.descKey] = cusip;
+  }
+  return bindings;
+}
+
+await test('auto-bind resolves when descKey matches a known buy CUSIP', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const knownBondsByDescKey = new Map([
+    ['WELLS FARGO BANK NATL ASSN CD|4.2|2030-07-08', '949764WE0'],
+  ]);
+  const bindings = autoBind(out.bondHoldings, knownBondsByDescKey);
+  assert.equal(bindings['WELLS FARGO BANK NATL ASSN CD|4.2|2030-07-08'], '949764WE0');
+});
+
+await test('no auto-bind when descKey has no match in knownBondsByDescKey', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const knownBondsByDescKey = new Map([
+    ['SOME OTHER ISSUER|3|2029-01-01', 'XYZ12345'],
+  ]);
+  const bindings = autoBind(out.bondHoldings, knownBondsByDescKey);
+  assert.equal(Object.keys(bindings).length, 0);
+});
+
+await test('no auto-bind attempted for an unparseable holding (descKey null)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'HOLD-weird', symbol: '', description: 'UNUSUAL TEXT NO COUPON', market_value: '500.00' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const knownBondsByDescKey = new Map([['ANYTHING|1|2030-01-01', 'ABC']]);
+  const bindings = autoBind(out.bondHoldings, knownBondsByDescKey);
+  assert.equal(Object.keys(bindings).length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
