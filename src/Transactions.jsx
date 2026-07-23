@@ -5262,9 +5262,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
               >
                 SimpleFin transactions the sync couldn't map to a known category
                 (or matched a pattern but couldn't build a valid entry, e.g. a
-                stock trade — SimpleFin reports only a total amount, not
-                qty/price). Enter these manually if needed via the form or CSV
-                import above.
+                stock trade or a new bond/CD purchase — SimpleFin has no
+                structured qty/price for trades of any kind, so it always
+                needs manual entry). Enter these manually if needed via the
+                form or CSV import above.
               </div>
               <ScrollHintTable>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>

@@ -392,5 +392,63 @@ await test('no Bank Bonds candidate when there are no symbol-less non-cash holdi
   assert.equal(out.balanceCandidates.some((c) => c.kind === 'bank-bonds'), false);
 });
 
+await test('a bank-bonds-shaped holding with an invalid market_value is excluded from the sum and surfaced in unmapped, not silently dropped', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'HOLD-cash', symbol: '', description: 'CASH', market_value: '100.00' },
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+          {
+            id: 'HOLD-cd-bad',
+            symbol: '',
+            description: 'BROKEN CD WITH NO MARKET VALUE',
+            market_value: null,
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const bonds = out.balanceCandidates.find((c) => c.kind === 'bank-bonds');
+  assert.ok(bonds);
+  // Only the valid holding counts toward the total.
+  assert.equal(bonds.proposed, 1010.2);
+  assert.equal(out.unmapped.length, 1);
+  const item = out.unmapped[0];
+  assert.equal(item.description, 'BROKEN CD WITH NO MARKET VALUE');
+  assert.match(item.reason, /market_value/);
+  assert.equal(item.accountId, 'ACT-fidelity-1');
+});
+
+await test('a Bank Bonds candidate can still surface even when the only symbol-less non-cash holding has an invalid market_value', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'HOLD-cash', symbol: '', description: 'CASH', market_value: '100.00' },
+          {
+            id: 'HOLD-cd-bad',
+            symbol: '',
+            description: 'BROKEN CD WITH NO MARKET VALUE',
+            market_value: undefined,
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  // No valid bank-bonds holding was found, so no candidate is proposed...
+  assert.equal(out.balanceCandidates.some((c) => c.kind === 'bank-bonds'), false);
+  // ...but the broken holding is still visible for manual review.
+  assert.equal(out.unmapped.length, 1);
+  assert.equal(out.unmapped[0].description, 'BROKEN CD WITH NO MARKET VALUE');
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
