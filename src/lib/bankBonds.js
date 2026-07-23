@@ -54,12 +54,21 @@ export function computeBankBondsPrincipal(transactions) {
 // against known buys. Falls back to the raw (uppercased) ticker when nothing
 // resolves - manually-entered bonds, or text that doesn't parse - preserving
 // the pre-fix orphan-position behavior for those cases.
-function resolvedTickerFor(tx, knownTickers, knownBondsByDescKey) {
+// `bondBindings` (descKey -> CUSIP, item 41 "Bond Matching" reconciliation,
+// api/fidelity-pending.js) is an ADDITIONAL resolution source, tried only
+// when `knownBondsByDescKey` (derived from the user's real buy transactions)
+// doesn't resolve — covers the older Bank Bonds positions that have no
+// couponRate/maturityDate/shortName on their buy transaction (pre-CUSIP-in-
+// CSV holdings) but have since been manually or auto-bound via the Bond
+// Matching UI. Optional, defaults to {} — every existing caller (this file's
+// own two exports below, and their callers in Performance.jsx) keeps working
+// unchanged when it isn't passed.
+function resolvedTickerFor(tx, knownTickers, knownBondsByDescKey, bondBindings = {}) {
   const raw = tx.ticker ? String(tx.ticker).toUpperCase() : null;
   if (!raw) return null;
   if (tx.side === "sell" && tx.redemption === true && !knownTickers.has(raw)) {
     const meta = extractBondMeta(raw);
-    const hit = meta && knownBondsByDescKey.get(meta.descKey);
+    const hit = meta && (knownBondsByDescKey.get(meta.descKey) || bondBindings[meta.descKey]);
     if (hit) return hit;
   }
   return raw;
@@ -70,7 +79,7 @@ function resolvedTickerFor(tx, knownTickers, knownBondsByDescKey) {
 // the Composition Evolution card, which calls this once per historical date
 // in the composition series to build a client-side Bank Bonds value series.
 // `asOfISO` defaults to today.
-export function computeBankBondsValueAt(transactions, asOfISO) {
+export function computeBankBondsValueAt(transactions, asOfISO, bondBindings = {}) {
   const asOf = asOfISO || new Date().toISOString().slice(0, 10);
   const scoped = (transactions || []).filter(
     (tx) => tx?.assetClass === "Bank Bonds" && tx.date && tx.date <= asOf
@@ -91,7 +100,7 @@ export function computeBankBondsValueAt(transactions, asOfISO) {
 
   const positions = {};
   for (const tx of sorted) {
-    const ticker = resolvedTickerFor(tx, knownTickers, knownBondsByDescKey);
+    const ticker = resolvedTickerFor(tx, knownTickers, knownBondsByDescKey, bondBindings);
     if (!ticker) continue;
     if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, lastBuyDate: null, lastBuyNotes: null };
     const pos = positions[ticker];
@@ -143,7 +152,7 @@ export function computeBankBondsValueAt(transactions, asOfISO) {
 // view so a fully matured/redeemed CUSIP keeps its own resolved-CUSIP line
 // (decaying to zero) instead of a phantom line keyed by the SimpleFin
 // redemption's placeholder description text.
-export function listBankBondsTickers(transactions) {
+export function listBankBondsTickers(transactions, bondBindings = {}) {
   const all = (transactions || []).filter((tx) => tx?.assetClass === "Bank Bonds");
   const knownTickers = new Set(
     all
@@ -153,7 +162,7 @@ export function listBankBondsTickers(transactions) {
   const knownBondsByDescKey = buildKnownBondsByDescKey(all);
   const set = new Set();
   for (const tx of all) {
-    const ticker = resolvedTickerFor(tx, knownTickers, knownBondsByDescKey);
+    const ticker = resolvedTickerFor(tx, knownTickers, knownBondsByDescKey, bondBindings);
     if (ticker) set.add(ticker);
   }
   return set;

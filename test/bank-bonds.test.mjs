@@ -125,6 +125,68 @@ await test('(c) redemption with no matching known buy (orphan, no metadata) stay
   assert.ok(!snap.byTicker['SOME OTHER BOND CO 3.50000% 02/01/2025']);
 });
 
+console.log('\n— computeBankBondsValueAt: bondBindings fallback resolution (item 41 Bond Matching) —');
+
+await test('(e) redemption resolves via bondBindings when knownBondsByDescKey has no match (manually/auto-bound in Bond Matching UI)', () => {
+  // A bond bought before Fidelity's CSV carried a CUSIP: no couponRate/
+  // maturityDate/shortName on the buy, so knownBondsByDescKey can't resolve
+  // it — but the user has confirmed a bind for it in the Bond Matching UI.
+  const oldBuy = {
+    id: 'buy-3',
+    date: '2019-05-01',
+    side: 'buy',
+    ticker: 'OLDCUSIP99',
+    assetClass: 'Bank Bonds',
+    qty: 1,
+    price: 1000,
+    currency: 'USD',
+    fee: 0,
+    notes: 'imported before CUSIP-in-CSV era, no metadata',
+    // No couponRate/maturityDate/shortName.
+  };
+  const redemption = {
+    id: 'sell-4',
+    date: '2025-07-08',
+    side: 'sell',
+    ticker: 'CHASE BANK USA NA CD 3.75000% 07/08/2025',
+    assetClass: 'Bank Bonds',
+    qty: 1,
+    price: 1000,
+    currency: 'USD',
+    fee: 0,
+    notes: 'REDEMPTION PAYOUT CHASE BANK USA NA CD 3.75000% 07/08/2025 (Cash)',
+    redemption: true,
+  };
+  const bondBindings = { 'CHASE BANK USA NA CD|3.75|2025-07-08': 'OLDCUSIP99' };
+  const txs = [oldBuy, redemption];
+  // Without bondBindings: the redemption is an orphan (no knownBondsByDescKey
+  // match), so the real position stays open and an orphan pseudo-ticker shows up.
+  const withoutBindings = computeBankBondsValueAt(txs, '2025-12-31');
+  assert.ok(withoutBindings.byTicker['OLDCUSIP99'], 'without bondBindings, the real position stays open (orphan redemption)');
+  // With bondBindings: the redemption resolves to the real CUSIP and closes it out.
+  const withBindings = computeBankBondsValueAt(txs, '2025-12-31', bondBindings);
+  assert.equal(Object.keys(withBindings.byTicker).length, 0, 'resolved via bondBindings, position should be fully closed');
+  assert.equal(withBindings.total, 0);
+});
+
+await test('(f) omitting bondBindings entirely (default {}) keeps existing behavior unchanged', () => {
+  const redemption = {
+    id: 'sell-1',
+    date: '2025-07-08',
+    side: 'sell',
+    ticker: '949764WE0',
+    assetClass: 'Bank Bonds',
+    qty: 1,
+    price: 1000,
+    currency: 'USD',
+    fee: 0,
+    redemption: true,
+  };
+  const txs = [knownBuy, redemption];
+  const snap = computeBankBondsValueAt(txs, '2025-12-31');
+  assert.equal(snap.total, 0);
+});
+
 console.log('\n— computeBankBondsPrincipal: ticker-agnostic reference total —');
 
 await test('(d) buy sums, sell subtracts, regardless of ticker mismatch — canonical reference', () => {
