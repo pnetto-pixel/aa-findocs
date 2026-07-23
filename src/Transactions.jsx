@@ -4146,6 +4146,16 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     }
     return s;
   }, [transactions]);
+  // Bank Bonds reconciliation (item 41, fatia 1): SimpleFin's bond-shaped
+  // holdings (no CUSIP, only a description) staged by the sync, plus the
+  // confirmed descKey -> CUSIP bindings (auto-bound or manually confirmed
+  // via the "Bond Matching" section below). Declared here (ahead of
+  // unboundBondHoldings below) because that useMemo reads both — declaring
+  // them later in source order throws a temporal-dead-zone ReferenceError
+  // on every render, since `const` bindings in the same function scope
+  // aren't hoisted into a usable state before their own declaration line.
+  const [pendingBondHoldings, setPendingBondHoldings] = useState([]);
+  const [bondBindings, setBondBindings] = useState({});
   // Staged bond holdings (item 41 "Bond Matching") still awaiting a bind —
   // either their descKey has no entry in bondBindings yet, or the
   // description didn't parse (descKey null, bound only by its raw-text
@@ -4178,12 +4188,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
   const [pendingUnmappedOpen, setPendingUnmappedOpen] = useState(false);
   const [unmappedActionId, setUnmappedActionId] = useState(null); // id of row mid Dismiss
-  // Bank Bonds reconciliation (item 41, fatia 1): SimpleFin's bond-shaped
-  // holdings (no CUSIP, only a description) staged by the sync, plus the
-  // confirmed descKey -> CUSIP bindings (auto-bound or manually confirmed
-  // via the "Bond Matching" section below).
-  const [pendingBondHoldings, setPendingBondHoldings] = useState([]);
-  const [bondBindings, setBondBindings] = useState({});
+  // Bond Matching section UI state (pendingBondHoldings/bondBindings
+  // themselves are declared earlier, ahead of the unboundBondHoldings
+  // useMemo that reads them — see comment there).
   const [bondMatchingOpen, setBondMatchingOpen] = useState(true);
   const [bondMatchPicks, setBondMatchPicks] = useState({}); // key -> chosen CUSIP
   const [bondMatchConfirmingKey, setBondMatchConfirmingKey] = useState(null);
