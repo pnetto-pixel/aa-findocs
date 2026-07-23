@@ -175,6 +175,171 @@ await test('"INTEREST as of YYYY-MM-DD ..." prefix is stripped', () => {
   assert.equal(out.bondIncome[0].ticker, 'US TREASURY NOTE');
 });
 
+console.log('\n— mapSimplefinPayload: bond interest auto-resolution —');
+
+// NOTE: unlike the REDEMPTION_PAYOUT fixture (which carries the bond's full
+// "Symbol Description" text, including a type suffix like "CD"), the real
+// INTEREST description only ever contains the bare issuer name (see the
+// 'INTEREST <issuer> (Cash)' fixture above: ticker === 'WELLS FARGO BANK
+// NATL ASSN', no "CD"). So holdings fixtures here intentionally omit any
+// type-suffix words in the text before the coupon% too, so shortName lines
+// up exactly with the issuer text extracted from the interest description
+// (the whole point of the exact-match-after-normalization rule).
+const wellsFargoHolding = {
+  id: 'HOLD-cd1',
+  symbol: '',
+  description: 'WELLS FARGO BANK NATL ASSN 4.20000% 07/08/2030',
+  market_value: '1010.20',
+};
+
+await test('single holding match + known CUSIP in knownBondsByDescKey -> ticker resolves to the real CUSIP', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [wellsFargoHolding],
+        transactions: [
+          {
+            id: 'TX-int-resolved-1',
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([
+    ['WELLS FARGO BANK NATL ASSN|4.2|2030-07-08', '949764WE0'],
+  ]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.kind, 'interest');
+  assert.equal(ev.ticker, '949764WE0');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('single holding match but descKey NOT in knownBondsByDescKey -> ticker stays the issuer, descKey hint added', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [wellsFargoHolding],
+        transactions: [
+          {
+            id: 'TX-int-unresolved-1',
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  // No knownBondsByDescKey passed at all -> mapOneTransaction's default empty Map.
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, 'WELLS FARGO BANK NATL ASSN|4.2|2030-07-08');
+});
+
+await test('0 holding matches -> ticker stays the issuer, no descKey', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd-other',
+            symbol: '',
+            description: 'CHASE BANK USA NA 3.75000% 01/01/2029',
+            market_value: '500.00',
+          },
+        ],
+        transactions: [
+          {
+            id: 'TX-int-nomatch-1',
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([
+    ['WELLS FARGO BANK NATL ASSN|4.2|2030-07-08', '949764WE0'],
+  ]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('2+ holding matches (ambiguous issuer) -> ticker stays the issuer, no resolution', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          wellsFargoHolding,
+          {
+            id: 'HOLD-cd2',
+            symbol: '',
+            // Same issuer shortName, different coupon/maturity -> two Wells
+            // Fargo CDs held in the same account.
+            description: 'WELLS FARGO BANK NATL ASSN 5.00000% 03/01/2028',
+            market_value: '2000.00',
+          },
+        ],
+        transactions: [
+          {
+            id: 'TX-int-ambiguous-1',
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([
+    ['WELLS FARGO BANK NATL ASSN|4.2|2030-07-08', '949764WE0'],
+    ['WELLS FARGO BANK NATL ASSN|5|2028-03-01', '949764XX1'],
+  ]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('normalization: extra spaces / different case in the issuer text still resolves correctly', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [wellsFargoHolding],
+        transactions: [
+          {
+            id: 'TX-int-norm-1',
+            posted: 1752900100,
+            amount: '5.10',
+            // Extra internal spaces + lowercase, to exercise the normalization
+            // (issuer text is uppercased/trimmed by extractTicker already,
+            // but internal double-spaces are not collapsed by it).
+            description: 'INTEREST wells  fargo bank natl assn (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([
+    ['WELLS FARGO BANK NATL ASSN|4.2|2030-07-08', '949764WE0'],
+  ]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  assert.equal(out.bondIncome[0].ticker, '949764WE0');
+});
+
 console.log('\n— mapSimplefinPayload: redemption —');
 
 await test('REDEMPTION PAYOUT maps to a sell transaction at face value', () => {

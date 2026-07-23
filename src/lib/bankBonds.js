@@ -13,7 +13,7 @@
 // (see test/bank-bonds.test.mjs), same "pure module" convention as
 // src/lib/parsing.js and lib/simplefin-map.js.
 
-import { extractBondMeta } from "./parsing.js";
+import { extractBondMeta, buildKnownBondsByDescKey } from "../../lib/bond-meta.js";
 
 // Net principal invested in Bank Bonds, derived from transactions:
 //   per CUSIP: Sum(buy qty x price) - Sum(sell qty x price)
@@ -38,22 +38,10 @@ export function computeBankBondsPrincipal(transactions) {
   return Math.max(0, total);
 }
 
-// Bond description (issuer|coupon|maturity) -> known CUSIP, built from Bank
-// Bonds buy transactions that carry couponRate/maturityDate/shortName. Those
-// fields are only populated when the bond was imported via the Fidelity CSV
-// parser (src/lib/parsing.js extractBondMeta) - manually-entered bonds won't
-// have them, so they simply won't be resolvable below (same as today).
-// Same key format Transactions.jsx's knownBondsByDescKey uses.
-function buildKnownBondsByDescKey(transactions) {
-  const m = new Map();
-  for (const tx of transactions || []) {
-    if (!tx || tx.assetClass !== "Bank Bonds" || tx.side !== "buy" || !tx.ticker) continue;
-    if (tx.couponRate == null || !tx.maturityDate || !tx.shortName) continue;
-    const key = `${String(tx.shortName).toUpperCase()}|${tx.couponRate}|${tx.maturityDate}`;
-    m.set(key, String(tx.ticker).trim().toUpperCase());
-  }
-  return m;
-}
+// buildKnownBondsByDescKey (bond description -> known CUSIP) moved to
+// ../../lib/bond-meta.js (jul/2026) so it can be shared with the SimpleFin
+// interest-auto-resolution path (lib/simplefin-map.js). Same key format
+// Transactions.jsx's dropdown fallback uses.
 
 // Resolves the ticker used for grouping in computeBankBondsValueAt below.
 // SimpleFin redemption rows (lib/simplefin-map.js, REDEMPTION_RX branch) use

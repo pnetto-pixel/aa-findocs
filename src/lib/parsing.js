@@ -4,6 +4,12 @@
 // test/fidelity-parser.test.mjs). No React, no DOM — keep it that way.
 
 import Papa from "papaparse";
+// extractBondMeta moved to ../../lib/bond-meta.js (jul/2026) so it can be
+// shared with the backend SimpleFin mapper (lib/simplefin-map.js) without
+// pulling papaparse into a serverless function. Re-exported below with the
+// same name so every existing call site here and elsewhere keeps working
+// unchanged (src/lib/bankBonds.js, test/fidelity-parser.test.mjs).
+import { extractBondMeta } from "../../lib/bond-meta.js";
 
 // UUID — falls back if crypto.randomUUID is unavailable.
 function newId() {
@@ -489,45 +495,6 @@ function parseCSVOrPaste(text, opts = {}) {
     fixedRows,
     unfixableRows,
   };
-}
-
-// Extracts coupon/maturity/issuer metadata from a Fidelity "Symbol Description"
-// bond string (e.g. "WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030").
-// Returns null when the text doesn't match the coupon%+maturity pattern.
-// `descKey` is a stable composite key (issuer|coupon|maturity) used to match
-// a bond across rows even when Fidelity omits the CUSIP in Symbol (jul/2026).
-function extractBondMeta(desc) {
-  const d = String(desc || "");
-  const couponM = d.match(/(\d+(?:\.\d+)?)%/);
-  const maturityM = d.match(/(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!couponM || !maturityM) return null;
-  const couponRate = parseFloat(couponM[1]);
-  const [, mm, dd, yyyy] = maturityM;
-  const maturityDate = `${yyyy}-${mm}-${dd}`;
-  const nameEnd = d.search(/\d+(?:\.\d+)?%/);
-  const shortName = nameEnd > 0 ? d.slice(0, nameEnd).trim().replace(/\s+/g, " ") || null : null;
-  const u = d.toUpperCase();
-  let bondType;
-  if (u.includes("TREASURY") || u.includes("US TREAS")) {
-    bondType = "Treasury";
-  } else if (
-    u.includes("FEDERAL HOME LOAN") || u.includes("FHLB") ||
-    u.includes("FEDERAL FARM") || u.includes("FFCB") ||
-    u.includes("FNMA") || u.includes("FHLMC") ||
-    u.includes("FREDDIE") || u.includes("FANNIE")
-  ) {
-    bondType = "Agency";
-  } else if (
-    u.includes(" INC") || u.includes(" CORP") || u.includes(" LLC") ||
-    u.includes(" LTD") || u.includes(" PLC") || u.includes(" CO.")
-  ) {
-    bondType = "Corporate";
-  } else {
-    bondType = "CD";
-  }
-  const notes = `${couponRate.toFixed(2)}% | ${mm}/${dd}/${yyyy}`;
-  const descKey = `${(shortName || "").toUpperCase()}|${couponRate}|${maturityDate}`;
-  return { couponRate, maturityDate, bondType, shortName, couponFreq: "monthly", notes, descKey };
 }
 
 // Fidelity "Accounts History" CSV parser.
