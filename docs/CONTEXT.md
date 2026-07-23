@@ -782,6 +782,30 @@ Fecha a segunda metade do item 3 da sessao de continuacao SimpleFin ("interests 
 
 -----
 
+### SimpleFin Feed — Matching de Bank Bonds sem CUSIP/descKey conhecido, Fatia 1 de 3 (jul/2026, sha `27cff99`, merged em main, v1.10.0)
+
+Item 3 ("matching de bonds") de uma sessao de continuacao SimpleFin, fatiado em 3 entregas planejadas. Contexto real levantado com o usuario: ele tem 11 Bank Bonds em carteira, mas so 4 tem cupom%/vencimento salvos nas transacoes. Os 7 mais antigos nao tem essa metadata porque foram cadastrados numa epoca em que a Fidelity ainda incluia CUSIP no CSV Accounts History — o usuario nunca precisou digitar cupom/vencimento a mao pra esses. Dois fatos confirmados pelo usuario (conhecimento de uso real, nao pesquisa de API): **(1)** o SimpleFin nao retorna CUSIP em nenhum campo do payload; **(2)** a Fidelity recentemente parou de incluir CUSIP no CSV. As duas ancoras automaticas de que o mecanismo `descKey` ja existente dependia desapareceram as duas ao mesmo tempo, tornando-o incapaz de resolver 7 dos 11 bonds reais do usuario.
+
+**Solucao (Fatia 1):** a unica coisa que os dois lados (SimpleFin e o usuario) compartilham de forma estavel e o par (cupom%, vencimento) — o SimpleFin traz isso completo na description dos holdings de bond (mesmo formato ja usado pra resolver REDEMPTION em `400568e`/v1.8.0).
+
+- **(1) Persistencia da lista individual de holdings do SimpleFin:** `computeBalanceCandidates` so somava o `market_value` de todos os bonds num agregado, descartando a lista individual. Nova funcao `extractBondHoldingsList(account)` (`lib/simplefin-map.js`) extrai `{ accountId, accountName, description, marketValue, descKey, couponRate, maturityDate, shortName }` de cada holding (via `extractBondMeta`, ja existente); propagado como `bondHoldings` no retorno de `mapSimplefinPayload`.
+- **(2) Auto-bind automatico:** em `handleSync` (`api/fidelity-pending.js`), quando o `descKey` de um holding staged ja resolve via `knownBondsByDescKey` (cobre os 4 bonds ja cadastrados com metadata), o par e gravado automaticamente num novo campo `bondBindings` (objeto `descKey -> CUSIP`), sem exigir acao do usuario.
+- **(3) Nova secao "Bond Matching"** no card Fidelity Import (`src/Transactions.jsx`, irma de "Fidelity Income"/"Unmapped — needs review"): lista os holdings do SimpleFin ainda sem bind (os 7 sem metadata), mostra a description + cupom/vencimento quando parseavel, e um dropdown com os CUSIPs de Bank Bonds ja conhecidos do usuario pra confirmar manualmente. Botao "Confirm" grava o par em `bondBindings` via PATCH.
+- **(4) `bondBindings` tratado como dado confirmado, nao staging descartavel:** sobrevive ao `DELETE /api/fidelity-pending` (que zera o resto do blob normalmente); no `PUT`, e sempre merge raso (nunca replace) — protege contra um PATCH parcial apagar bindings ja confirmados.
+- **(5) `src/lib/bankBonds.js`** (`resolvedTickerFor`, `computeBankBondsValueAt`, `listBankBondsTickers`) ganhou parametro opcional `bondBindings = {}` como fonte adicional de resolucao de ticker (fallback quando `knownBondsByDescKey` nao resolve) — default preserva 100% do comportamento anterior; `src/Performance.jsx` nao precisou de nenhuma mudanca.
+- **(6) Chave de fallback** quando `descKey` e null (description nao parseavel pelo `extractBondMeta`): `raw:${description normalizada}` — duplicada server + client, seguindo o precedente ja existente de pequenos helpers duplicados na fronteira API/client do projeto.
+- **Testes novos:** 7 casos em `test/simplefin-map.test.mjs` (extracao de `bondHoldings`, auto-bind resolve/nao-resolve/skip), 2 casos em `test/bank-bonds.test.mjs` (resolucao via `bondBindings`, compatibilidade retroativa). Suite completa (83+ testes) verde.
+
+**Decisoes confirmadas com o usuario nesta sessao:**
+
+- A secao de reconciliacao fica DENTRO do card Fidelity Import (nao na tab Holdings) — mantem o padrao ja estabelecido de "todo staging fica no Fidelity Import".
+- **Fatia 2 (futura, nao codada):** backfill de metadata (preencher cupom/vencimento do bond do usuario a partir de um bind confirmado) — regra ja decidida: "nunca sobrescrever, so preencher quando vazio".
+- **Fatia 3 (futura, nao codada):** desambiguacao de INTEREST por valor esperado quando 2+ holdings batem o mesmo emissor — depende de `freqByCusip` (frequencia calibrada), que so existe depois que ja ha historico real; faz mais sentido apos a Fatia 1 ja ter gerado binds suficientes.
+
+**Nota de UX (auditoria, nao bloqueante):** `bondMatchingOpen` (estado de abertura da nova secao) inicia `true` por default, diferente do padrao fechado-por-default das outras secoes do Fidelity Import (Income, Unmapped) — decisao deliberada pra dar visibilidade imediata aos 7 bonds pendentes reais do usuario na primeira visita pos-deploy. Aceito pelo auditor como razoavel, revisavel numa fatia futura se incomodar na pratica.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -817,6 +841,8 @@ Fecha a segunda metade do item 3 da sessao de continuacao SimpleFin ("interests 
 |**Tesouro Direto = manual em BRL (PR #49)**|Brapi `/treasury` é pago (403); tesourodireto.com.br descontinuado (410); CKAN desativado (400). Nenhuma fonte gratuita viável.|
 |**BRA Fixed Income aceita `manualCurrency: "BRL"` (PR #49)**|Tesouro e CDB são mantidos no NuBank em BRL — entrada natural é BRL, conversão automática via usdBrlRate|
 |**CONTEXT.md + Features_Roadmap.md em `docs/` no repo**|Docs versionados junto com código; Claude Code atualiza diretamente sem intermediário via Chat|
+|**Bond matching via (cupom%, vencimento) em vez de CUSIP (jul/2026, v1.10.0)**|SimpleFin nunca retorna CUSIP e a Fidelity parou de incluir CUSIP no CSV — as duas âncoras automáticas do `descKey` desapareceram. O par (cupom%, vencimento) é o único dado estável compartilhado pelos dois lados, já usado com sucesso para REDEMPTION (v1.8.0).|
+|**`bondBindings` como merge raso sempre, nunca replace, e imune ao DELETE de staging (v1.10.0)**|Diferente do resto do blob `fidelity-pending` (staging descartável), um bind confirmado é dado do usuário — perder um bind já confirmado forçaria reconfirmação manual repetida a cada sync/reset.
 |**Dividendos US via Yahoo `chart?events=div` (Tab Dividends)**|Finnhub `/stock/dividend` é premium (free tier retorna 403). Yahoo retorna histórico completo de dividendos keyless, mesmo endpoint já usado por `perf-history.js` para candles.|
 |**Finnhub como fallback de dividendos para ADRs (PR #94)**|Yahoo retorna HTTP 200 com `dividends: {}` vazio para alguns ADRs US-listados (VALE NYSE confirmado). `fetchFinnhubDividends` usa o mesmo `FINNHUB_API_KEY` já presente; Finnhub inclui `payDate` diretamente, dispensando lookup Polygon. `CACHE_VERSION` v4→v5 para invalidar caches vazios anteriores.|
 |**brapi `dividends=true` rejeitado para BRA Stocks (Tab Dividends)**|HTTP 403 `FEATURE_NOT_AVAILABLE` — dados de dividendos são feature paga na brapi. VALE3 funciona só por ser ação de teste com acesso irrestrito.|
