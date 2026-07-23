@@ -32,6 +32,16 @@ import {
   investedSeries,
   xirrFromTransactions,
 } from "./lib/analytics.js";
+import {
+  computeBankBondsPrincipal,
+  computeBankBondsValueAt,
+  listBankBondsTickers,
+} from "./lib/bankBonds.js";
+
+// Must match App.jsx's BANK_BONDS_ID - the id of the single aggregated "US
+// Bank Bonds" manual holding. Duplicated (not imported) because App.jsx is
+// the parent of this lazy-loaded view, not a shared lib module.
+const BANK_BONDS_ID = "bank-bonds-aggregate";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -394,64 +404,10 @@ function buildBondEvents(transactions, bondIncome, todayISO) {
   return { events, freqByCusip };
 }
 
-// Generalized replay + accrued-interest projection for Bank Bonds, extracted
-// from the Position Performance calculation (positionRows below) so both it
-// and the Composition Evolution card share a single source of truth instead
-// of two divergent implementations of the same math. `asOfISO` defaults to
-// today; the Composition Evolution card calls this once per historical date
-// in the composition series to build a client-side Bank Bonds value series.
-function computeBankBondsValueAt(transactions, asOfISO) {
-  const asOf = asOfISO || new Date().toISOString().slice(0, 10);
-  const sorted = (transactions || [])
-    .filter((tx) => tx?.assetClass === "Bank Bonds" && tx.date && tx.date <= asOf)
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-
-  const positions = {};
-  for (const tx of sorted) {
-    const ticker = tx.ticker?.toUpperCase();
-    if (!ticker) continue;
-    if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, lastBuyDate: null, lastBuyNotes: null };
-    const pos = positions[ticker];
-    const qty = Number(tx.qty) || 0;
-    const price = Number(tx.price) || 0;
-    if (tx.side === "buy") {
-      pos.totalQty += qty;
-      pos.totalCost += qty * price;
-      if (!pos.lastBuyDate || tx.date > pos.lastBuyDate) {
-        pos.lastBuyDate = tx.date;
-        pos.lastBuyNotes = tx.notes || "";
-      }
-    } else if (tx.side === "sell") {
-      const avgBefore = pos.totalQty > 0 ? pos.totalCost / pos.totalQty : 0;
-      pos.totalQty -= qty;
-      pos.totalCost -= avgBefore * qty;
-      if (pos.totalQty < 0.0001) { pos.totalQty = 0; pos.totalCost = 0; }
-    }
-  }
-
-  const byTicker = {};
-  let total = 0;
-  for (const [ticker, pos] of Object.entries(positions)) {
-    if (pos.totalQty < 0.0001) continue;
-    const avgCost = pos.totalCost / pos.totalQty;
-    const totalCost = avgCost * pos.totalQty;
-    let totalValue = totalCost;
-    if (pos.lastBuyNotes && pos.lastBuyDate) {
-      const couponM = pos.lastBuyNotes.match(/(\d+\.\d+)%/);
-      const maturityM = pos.lastBuyNotes.match(/\d{2}\/\d{2}\/\d{4}$/);
-      if (couponM && maturityM) {
-        const annualRate = parseFloat(couponM[1]) / 100;
-        const purchaseTs = new Date(pos.lastBuyDate + "T00:00:00").getTime();
-        const asOfTs = new Date(asOf + "T00:00:00").getTime();
-        const daysSincePurchase = Math.max(0, (asOfTs - purchaseTs) / 86400000);
-        totalValue = totalCost + totalCost * annualRate * (daysSincePurchase / 365);
-      }
-    }
-    byTicker[ticker] = { qty: pos.totalQty, avgCost, totalCost, totalValue };
-    total += totalValue;
-  }
-  return { total, byTicker };
-}
+// computeBankBondsValueAt now lives in ./lib/bankBonds.js, shared with
+// App.jsx's computeBankBondsPrincipal (imported at the top of this file) so
+// Position Performance / Composition Evolution and the Holdings tab's
+// aggregated "US Bank Bonds" holding read from a single source of truth.
 
 function fmtPrice(n) {
   if (n == null || isNaN(n)) return "—";
@@ -2364,6 +2320,22 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const positionRows = useMemo(() => {
     if (!transactions.length) return [];
     const bankBondsSnapshot = computeBankBondsValueAt(transactions);
+    // Position Performance's Bank Bonds Current Value is now consolidated
+    // with the Holdings tab (jul/2026): Cost comes from the transaction
+    // replay above (correct after the redemption-ticker resolution fix in
+    // computeBankBondsValueAt); Current Value comes from the SimpleFin
+    // marketValueOverride recorded on the "US Bank Bonds" aggregated holding
+    // when available, distributed across tickers proportional to cost -
+    // instead of the accrued-interest projection (bb.totalValue), which
+    // stays in computeBankBondsValueAt only for Composition Evolution's
+    // historical series.
+    const bankBondsHolding = (holdings || []).find((h) => h && h.id === BANK_BONDS_ID);
+    const bbMarketValueOverride = bankBondsHolding?.marketValueOverride;
+    const hasBbOverride = bbMarketValueOverride != null && isFinite(bbMarketValueOverride);
+    const bbTotalCostSum = Object.values(bankBondsSnapshot.byTicker).reduce(
+      (s, bb) => s + (bb.totalCost || 0),
+      0
+    );
     const sorted = [...transactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const positions = {};
     for (const tx of sorted) {
@@ -2406,7 +2378,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (assetClass === "Bank Bonds") {
         const bb = bankBondsSnapshot.byTicker[ticker];
         if (!bb) continue;
-        const { avgCost, totalCost, totalValue } = bb;
+        const { avgCost, totalCost } = bb;
+        // No SimpleFin market value on record: Current Value = Cost (no
+        // interest projection), so Gain/Loss reads as 0 - decision from the
+        // Bank Bonds consolidation briefing (jul/2026), rather than the old
+        // accrued-interest estimate which is what caused the two tabs to
+        // disagree.
+        const totalValue = hasBbOverride
+          ? (bbTotalCostSum > 0 ? (totalCost / bbTotalCostSum) * bbMarketValueOverride : 0)
+          : totalCost;
         const totalGainLoss = totalValue - totalCost;
         const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
         const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
@@ -2425,8 +2405,30 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;
       rows.push({ ticker, assetClass, qty: pos.totalQty, avgCost, currentPrice, totalCost, totalValue, totalGainLoss, gainLossPct, divTtm, totalDiv, yoc });
     }
+
+    // Safety net: computeBankBondsPrincipal is ticker-agnostic (sums every
+    // Bank Bonds buy/sell into one accumulator, so it can't be thrown off by
+    // an unresolved redemption ticker) and is the same value that feeds the
+    // Holdings tab's aggregated "US Bank Bonds" holding - the canonical
+    // reference total. If the per-ticker rows above sum to something
+    // meaningfully different, some redemption didn't match a known purchase
+    // (e.g. a manually-entered bond, or a description Fidelity/SimpleFin
+    // formatted unexpectedly). No second correction layer - just surface it.
+    const bbRowsCostSum = rows
+      .filter((r) => r.assetClass === "Bank Bonds")
+      .reduce((s, r) => s + r.totalCost, 0);
+    if (bbRowsCostSum > 0 || transactions.some((tx) => tx?.assetClass === "Bank Bonds")) {
+      const canonical = computeBankBondsPrincipal(transactions);
+      const diff = bbRowsCostSum - canonical;
+      if (Math.abs(diff) > 0.01) {
+        console.warn(
+          `Bank Bonds cost mismatch: per-ticker total ${bbRowsCostSum.toFixed(2)} vs canonical ${canonical.toFixed(2)} — some redemption(s) may not have matched a known purchase`
+        );
+      }
+    }
+
     return rows;
-  }, [transactions, priceMap, divByTicker]);
+  }, [transactions, priceMap, divByTicker, holdings]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
@@ -2496,12 +2498,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     const dates = filteredTickerComposition.dates || [];
     if (!dates.length) return { dates: [], classValues: {} };
     const classValues = { ...filteredTickerComposition.tickerValues };
-    const bbTickers = new Set(
-      compFilteredTransactions
-        .filter((tx) => tx.assetClass === "Bank Bonds")
-        .map((tx) => tx.ticker?.toUpperCase())
-        .filter(Boolean)
-    );
+    // listBankBondsTickers resolves redemption placeholder tickers (SimpleFin
+    // description text) back to the real CUSIP when a matching buy is known,
+    // so a matured/redeemed bond keeps a single decaying-to-zero line instead
+    // of a separate phantom line keyed by the redemption's raw text.
+    const bbTickers = listBankBondsTickers(compFilteredTransactions);
     if (bbTickers.size) {
       const perDate = dates.map((d) => computeBankBondsValueAt(compFilteredTransactions, d).byTicker);
       for (const t of bbTickers) {
