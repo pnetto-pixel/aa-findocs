@@ -50,6 +50,7 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 import { mapSimplefinPayload } from '../lib/simplefin-map.js';
+import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
 
 function pendingKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
@@ -245,13 +246,17 @@ async function handleSync(req, res, auth) {
   }
 
   const simplefinErrors = Array.isArray(payload?.errors) ? payload.errors : [];
-  const mapped = mapSimplefinPayload(payload);
 
   // Live transactions/bondIncome are read ONLY to skip rows already imported
-  // (or already approved from a previous sync). Never written here.
+  // (or already approved from a previous sync) — and, for `liveTx`, to also
+  // build `knownBondsByDescKey` below (bond INTEREST auto-resolution needs to
+  // know which CUSIPs the user already has a Bank Bonds buy for). Never
+  // written here. Read before mapSimplefinPayload so that map can use it.
   const live = readBlob(await redis.get(txKey));
   const liveTx = Array.isArray(live.transactions) ? live.transactions : [];
   const liveBond = Array.isArray(live.bondIncome) ? live.bondIncome : [];
+  const knownBondsByDescKey = buildKnownBondsByDescKey(liveTx);
+  const mapped = mapSimplefinPayload(payload, { knownBondsByDescKey });
   const liveTxKeys = new Set(liveTx.map(dupKey));
   const liveTxSimplefinIds = new Set(liveTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
   const liveBondKeys = new Set(liveBond.map(bondKey));

@@ -18,6 +18,7 @@ import {
   parseCSVOrPaste,
   parseFidelityCSV,
 } from "./lib/parsing.js";
+import { buildKnownBondsByDescKey } from "../lib/bond-meta.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -2557,16 +2558,12 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
   // Bond description (issuer|coupon|maturity) → known CUSIP, from saved Bank
   // Bonds transactions. Recovers the real CUSIP for Fidelity rows that omit
   // Symbol for CD/bond rows (jul/2026 export change) — see extractBondMeta.
-  const knownBondsByDescKey = useMemo(() => {
-    const m = new Map();
-    for (const t of existingTransactions || []) {
-      if (t.assetClass !== "Bank Bonds" || !t.ticker) continue;
-      if (t.couponRate == null || !t.maturityDate) continue;
-      const key = `${(t.shortName || "").toUpperCase()}|${t.couponRate}|${t.maturityDate}`;
-      m.set(key, String(t.ticker).trim().toUpperCase());
-    }
-    return m;
-  }, [existingTransactions]);
+  // Consolidated (jul/2026) into ../lib/bond-meta.js so this and the
+  // SimpleFin interest auto-resolution path share one implementation.
+  const knownBondsByDescKey = useMemo(
+    () => buildKnownBondsByDescKey(existingTransactions),
+    [existingTransactions]
+  );
 
   // Set of dup keys for saved transactions, to flag re-imports of the same row.
   const dupKeySet = useMemo(() => {
@@ -4119,6 +4116,21 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [pendingFidOpen, setPendingFidOpen] = useState(true);
   const [pendingFidChecked, setPendingFidChecked] = useState(() => new Set());
   const [approvingFid, setApprovingFid] = useState(false);
+  // Known Bank Bonds CUSIPs (from saved buy transactions) — options for the
+  // editable ticker dropdown on staged INTEREST rows below, for when the
+  // server-side auto-resolution (lib/simplefin-map.js INTEREST_RX branch)
+  // couldn't resolve a single unambiguous match.
+  const knownBankBondTickers = useMemo(() => {
+    const s = new Set();
+    for (const t of transactions) {
+      if (t.assetClass === "Bank Bonds" && t.side === "buy" && t.ticker) s.add(String(t.ticker).trim().toUpperCase());
+    }
+    return s;
+  }, [transactions]);
+  // id -> ticker the user picked in the Fidelity Income dropdown, overriding
+  // the staged event's own `ticker` (issuer name or server-resolved CUSIP)
+  // only at approval time — never mutates pendingFidBond itself.
+  const [bondTickerEdits, setBondTickerEdits] = useState({});
   // Income (dividend/interest/tax) staged by the SimpleFin sync — own
   // checkboxes + approve/discard, separate from the trades table above
   // (docs/plans/simplefin-fidelity-feed.md Fase 1: "hoje aprovado junto com
@@ -4450,16 +4462,25 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       const seen = new Set(bondIncome.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
       const nextIncome = [...bondIncome];
       for (const e of selected) {
-        const k = `${e.date}|${e.ticker}|${e.amount}`;
+        // Apply any manual ticker override picked in the dropdown (interest
+        // rows only — see the "Fidelity Income" table below) before the
+        // dedupe key/push, so both use the final, user-confirmed ticker.
+        const finalEv = { ...e, ticker: bondTickerEdits[e.id] ?? e.ticker };
+        const k = `${finalEv.date}|${finalEv.ticker}|${finalEv.amount}`;
         if (seen.has(k)) continue;
         seen.add(k);
-        nextIncome.push(e);
+        nextIncome.push(finalEv);
       }
       await persist(transactions, nextIncome);
       const remaining = pendingFidBond.filter((e) => !pendingFidBondChecked.has(e.id));
       await patchPendingFidelity(auth, { bondIncome: remaining });
       setPendingFidBond(remaining);
       setPendingFidBondChecked(new Set(remaining.map((e) => e.id)));
+      setBondTickerEdits((prev) => {
+        const next = { ...prev };
+        for (const e of selected) delete next[e.id];
+        return next;
+      });
     } catch (err) {
       setError(err.message || "Approve failed");
     } finally {
@@ -5129,7 +5150,35 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                             {e.kind}
                           </td>
                           <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {e.ticker}
+                            {e.kind === "interest" ? (
+                              <select
+                                value={bondTickerEdits[e.id] ?? e.ticker}
+                                onChange={(ev) =>
+                                  setBondTickerEdits((prev) => ({ ...prev, [e.id]: ev.target.value }))
+                                }
+                                style={{
+                                  background: T.cardElev,
+                                  border: `1px solid ${T.gold}`,
+                                  color: T.gold,
+                                  padding: "2px 4px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  cursor: "pointer",
+                                  maxWidth: 160,
+                                }}
+                              >
+                                {!knownBankBondTickers.has(String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase()) && (
+                                  <option value={e.ticker}>{`${e.ticker} (unresolved)`}</option>
+                                )}
+                                {[...knownBankBondTickers].sort().map((tk) => (
+                                  <option key={tk} value={tk}>
+                                    {tk}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              e.ticker
+                            )}
                           </td>
                           <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
                             {valuesHidden ? "•••" : fmtMoney(e.amount, "USD")}
