@@ -250,14 +250,21 @@ async function clearPendingFidelity(auth) {
 // sync metadata (lastSync/lastError) is preserved server-side. Used after an
 // approve/dismiss action to remove just the affected rows from staging
 // without wiping everything else still pending.
+// Returns true only when the server confirmed the write (HTTP 2xx). Callers
+// that don't care (fire-and-forget removals) can ignore the return; callers
+// that must not lie to the user (bond-match confirm) check it. Never throws —
+// a network error resolves to false, keeping the un-awaited callers safe.
 async function patchPendingFidelity(auth, patch) {
   try {
-    await fetch("/api/fidelity-pending", {
+    const res = await fetch("/api/fidelity-pending", {
       method: "PUT",
       headers: { ...authHeaders(auth), "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-  } catch {}
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function fetchFidelitySyncStatus(auth) {
@@ -4562,14 +4569,30 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
 
   // Confirms a manual "Bond Matching" bind (key -> CUSIP picked in the
   // dropdown). Merges into `bondBindings` server-side (PUT already merges
-  // key-by-key — see api/fidelity-pending.js) and optimistically updates
-  // local state so the holding drops out of the pending list immediately.
+  // key-by-key — see api/fidelity-pending.js). Rather than optimistically
+  // trusting the write, it re-reads the server's `bondBindings`/`bondHoldings`
+  // afterward and drives the UI from that — so a bind only leaves the pending
+  // list once it has actually persisted (guards against a silently-dropped
+  // write that would look confirmed until the next page refresh).
   async function confirmBondMatch(key, cusip) {
     if (!key || !cusip) return;
     setBondMatchConfirmingKey(key);
+    setFidSyncMessage(null);
     try {
-      await patchPendingFidelity(auth, { bondBindings: { [key]: cusip } });
-      setBondBindings((prev) => ({ ...prev, [key]: cusip }));
+      const ok = await patchPendingFidelity(auth, { bondBindings: { [key]: cusip } });
+      if (!ok) {
+        setFidSyncMessage("Falha ao salvar o match — o servidor não confirmou a gravação. Tente de novo.");
+        return;
+      }
+      const p = await fetchPendingFidelity(auth);
+      setBondBindings(p.bondBindings || {});
+      setPendingBondHoldings(p.bondHoldings || []);
+      if (!(p.bondBindings || {})[key]) {
+        // Write returned OK but the binding isn't in the reloaded state —
+        // surface it instead of silently leaving the row as "unbound".
+        setFidSyncMessage("O match não persistiu no servidor. Reporte isso — a gravação foi aceita mas não gravou.");
+        return;
+      }
       setBondMatchPicks((prev) => {
         const next = { ...prev };
         delete next[key];
