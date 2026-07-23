@@ -523,10 +523,33 @@ function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
     ];
   }
 
-  if (existing.manualValue === principal) return null;
+  // A holding placeholder can exist without any Bank Bonds transactions yet
+  // (e.g. auto-created from a SimpleFin balance candidate — see
+  // applyFidelityBalanceUpdate). Its manualValue there is a real
+  // SimpleFin-reported number, not a placeholder 0 — with no Bank Bonds
+  // transactions the computed `principal` is always 0, so reconciling
+  // normally here would silently zero it back out on every load/refresh.
+  // Skip reconciliation for this holding until a real Bank Bonds transaction
+  // exists to derive a principal from.
+  if (!hasBankBondTx && existing.derivedFromTransactions === false) return null;
+
+  // Reaching here means hasBankBondTx === true (the guard above already
+  // returned for the false case), so this is the moment to graduate a
+  // not-yet-derived holding permanently, even if its manualValue happens to
+  // already equal the freshly computed principal (no value change needed,
+  // but the flag flip still is).
+  const needsGraduation = existing.derivedFromTransactions === false;
+  if (existing.manualValue === principal && !needsGraduation) return null;
   return arr.map((h) =>
     h.id === BANK_BONDS_ID
-      ? { ...h, manualValue: principal, lastUpdated: new Date().toISOString() }
+      ? {
+          ...h,
+          manualValue: principal,
+          // Graduates the holding once a real Bank Bonds transaction shows
+          // up: from then on it reconciles normally, permanently.
+          derivedFromTransactions: true,
+          lastUpdated: new Date().toISOString(),
+        }
       : h
   );
 }
@@ -2526,9 +2549,38 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     if (candidate.kind === "bank-bonds") {
       const found = holdings.some((h) => h.id === BANK_BONDS_ID);
       if (!found) {
+        // No Bank Bonds holding exists yet (no Bank Bonds transactions have
+        // been entered). Rather than discard the SimpleFin-reported value,
+        // create the holding with it directly so it's visible immediately.
+        // derivedFromTransactions: false marks it as not yet backed by a
+        // real transaction — applyBankBondsHolding's guard (see there) must
+        // not zero this back out on the next load/refresh, since with no
+        // Bank Bonds transactions the computed principal is always 0.
+        setHoldings((prev) => [
+          ...prev,
+          {
+            id: BANK_BONDS_ID,
+            type: "manual",
+            manualMode: "value",
+            ticker: "US BANK BONDS",
+            name: "US Bank Bonds",
+            assetClass: "Bank Bonds",
+            assetClassOverride: "Bank Bonds",
+            manualCurrency: "USD",
+            qty: null,
+            manualPrice: null,
+            manualValue: candidate.proposed,
+            price: null,
+            target: 0,
+            marketValueOverride: candidate.proposed,
+            marketValueOverrideAsOf: asOf,
+            derivedFromTransactions: false,
+            lastUpdated: new Date().toISOString(),
+          },
+        ]);
         setToast({
-          kind: "error",
-          message: "No Bank Bonds holding to update — add Bank Bonds transactions first.",
+          kind: "success",
+          message: "Bank Bonds holding created from SimpleFin balance.",
         });
         return;
       }
