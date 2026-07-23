@@ -18,7 +18,7 @@ import {
   parseCSVOrPaste,
   parseFidelityCSV,
 } from "./lib/parsing.js";
-import { buildKnownBondsByDescKey } from "../lib/bond-meta.js";
+import { buildKnownBondsByDescKey, backfillBondMetadata } from "../lib/bond-meta.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -4602,6 +4602,61 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setBondMatchConfirmingKey(null);
     }
   }
+
+  // Bond metadata backfill (Fase 2 of the "Bond Matching" item, jul/2026).
+  // Single reconciliation effect that runs the backfill over EVERY entry
+  // currently in `bondBindings` — this covers both a bind just confirmed via
+  // confirmBondMatch above (bondBindings changes -> effect re-fires) and
+  // binds confirmed in a previous session, retroactively, every time this
+  // component mounts (bondBindings arrives already populated from the load
+  // effect). One code path for both, backed by lib/bond-meta.js so the pure
+  // logic isn't duplicated.
+  //
+  // Loop safety: backfillBondMetadata returns the SAME transactions array
+  // reference when a pass makes no change. We only persist when the
+  // accumulated result differs by reference from the current `transactions`
+  // state. After a successful persist, `transactions` becomes that backfilled
+  // array; the effect re-fires (transactions is a dep), recomputes over the
+  // now-already-filled data, gets back the same reference -> no persist ->
+  // settles. `backfillContentSigRef` is a belt-and-suspenders backstop
+  // (same spirit as `appliedBalanceIdsRef` above): it compares a content
+  // signature of the Bank Bonds metadata fields, so even a hypothetical bug
+  // in backfillBondMetadata that returned a "changed" reference without an
+  // actual content change couldn't drive repeated persists.
+  const backfillContentSigRef = useRef(null);
+  const backfillInFlightRef = useRef(false);
+  useEffect(() => {
+    const entries = Object.entries(bondBindings || {});
+    if (entries.length === 0) return;
+    if (backfillInFlightRef.current) return;
+
+    let next = transactions;
+    for (const [descKey, cusip] of entries) {
+      const holding = pendingBondHoldings.find(
+        (h) => bondHoldingKey(h) === descKey || h.descKey === descKey
+      );
+      if (!holding || !holding.description) continue;
+      next = backfillBondMetadata(next, cusip, holding.description);
+    }
+    if (next === transactions) return; // nothing to fill in — settled
+
+    const sig = next
+      .filter((t) => t && t.assetClass === "Bank Bonds")
+      .map((t) => `${t.id}:${t.couponRate ?? ""}:${t.maturityDate ?? ""}:${t.shortName ?? ""}:${t.notes ?? ""}`)
+      .join("|");
+    if (sig === backfillContentSigRef.current) return; // same content already attempted
+
+    backfillInFlightRef.current = true;
+    backfillContentSigRef.current = sig;
+    // Low-priority, idempotent write: a save conflict (409) or network error
+    // is handled inside persist() itself (sets `error` state) and never
+    // throws here — fail-silent is acceptable, it'll be retried next time
+    // bondBindings/transactions change for an unrelated reason.
+    persist(next).finally(() => {
+      backfillInFlightRef.current = false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth, transactions, bondIncome, bondBindings, pendingBondHoldings]);
 
   async function handleAdd(tx) {
     await persist([...transactions, tx]);
