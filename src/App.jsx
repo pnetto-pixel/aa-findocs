@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
+import { computeBankBondsPrincipal } from "./lib/bankBonds.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -482,24 +483,9 @@ function applyTxQty(holdings, netQty) {
 // whose value is the net principal invested across all Bank Bonds CUSIPs.
 const BANK_BONDS_ID = "bank-bonds-aggregate";
 
-// Net principal invested in Bank Bonds, derived from transactions:
-//   per CUSIP: Σ(buy qty × price) − Σ(sell qty × price)
-// Prices already in real USD per unit (Fidelity x10 correction is applied at
-// import time, item 40). Returns the total in USD (floored at 0 — fully
-// matured/sold positions read as zero, never negative).
-function computeBankBondsPrincipal(transactions) {
-  let total = 0;
-  for (const tx of transactions || []) {
-    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
-    const qty = Number(tx.qty);
-    const price = Number(tx.price);
-    if (!isFinite(qty) || !isFinite(price)) continue;
-    const amt = qty * price;
-    if (tx.side === "buy") total += amt;
-    else if (tx.side === "sell") total -= amt;
-  }
-  return Math.max(0, total);
-}
+// computeBankBondsPrincipal now lives in ./lib/bankBonds.js (shared with
+// Performance.jsx's Position Performance / Composition Evolution), imported
+// at the top of this file.
 
 // Ensures a single manual "US Bank Bonds" holding reflects `principal`.
 // - Mirrors only the aggregated holding; Cash and other manual holdings (e.g.
