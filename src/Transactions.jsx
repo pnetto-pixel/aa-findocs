@@ -2703,8 +2703,19 @@ const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 2024-03-15,buy,AAPL,10,175.50,Stocks,0,
 2024-03-20,buy,BBSE3,100,38.20,BRA Stocks,,monthly buy`;
 
-function ImportModal({ open, onClose, onConfirm, existingCount, existingTransactions = [] }) {
-  const [tab, setTab] = useState("fidelity"); // upload | fidelity
+function ImportModal({
+  open,
+  onClose,
+  onConfirm,
+  existingCount,
+  existingTransactions = [],
+  isAdmin = false,
+  fidSyncing = false,
+  fidSyncStatus = null,
+  fidSyncMessage = null,
+  runFidelitySync,
+}) {
+  const [tab, setTab] = useState("fidelity"); // upload | fidelity | sync
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
@@ -3277,6 +3288,7 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                 {[
                   { id: "upload", label: "Upload CSV" },
                   { id: "fidelity", label: "Fidelity" },
+                  ...(isAdmin ? [{ id: "sync", label: "Sync" }] : []),
                 ].map((t) => {
                   const active = tab === t.id;
                   return (
@@ -3413,6 +3425,80 @@ function ImportModal({ open, onClose, onConfirm, existingCount, existingTransact
                       {fileError}
                     </div>
                   )}
+                </div>
+              )}
+
+              {tab === "sync" && isAdmin && (
+                <div>
+                  <Label>SimpleFin / Fidelity automatic sync</Label>
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      color: T.textFaint,
+                      marginTop: 4,
+                      marginBottom: 14,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    Pulls trades, bond interest/dividends, and position
+                    changes from the connected Fidelity account via SimpleFin.
+                    Nothing is added to your transactions automatically —
+                    review and approve staged rows below the transaction
+                    table.
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexWrap: "wrap",
+                      padding: "10px 12px",
+                      background: T.cardElev,
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 4,
+                    }}
+                  >
+                    <button
+                      onClick={runFidelitySync}
+                      disabled={fidSyncing}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        background: T.gold,
+                        color: "#0b0d10",
+                        border: "none",
+                        borderRadius: 4,
+                        padding: "6px 12px",
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                        fontWeight: 700,
+                        cursor: fidSyncing ? "default" : "pointer",
+                        opacity: fidSyncing ? 0.6 : 1,
+                      }}
+                    >
+                      <RefreshCw size={11} className={fidSyncing ? "spin" : undefined} />
+                      {fidSyncing ? "Syncing…" : "Sync Fidelity"}
+                    </button>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                      {fidSyncStatus?.lastSync
+                        ? `Last sync: ${new Date(fidSyncStatus.lastSync).toLocaleString()}`
+                        : "Never synced"}
+                    </span>
+                    {fidSyncStatus?.lastError && (
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.red }}>
+                        {fidSyncStatus.lastError}
+                      </span>
+                    )}
+                    {fidSyncMessage && (
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                        {fidSyncMessage}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </>
@@ -5029,65 +5115,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       {/* Fidelity Import — staged by the automation (item 38), extended for the
           SimpleFin sync (docs/plans/simplefin-fidelity-feed.md Fase 1): trades,
           income, balance updates and unmapped rows each get their own section.
-          The whole group renders for admin (so the Sync button is reachable
-          even with nothing staged yet) or for anyone with staged content. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0) && (
+          The "Sync Fidelity" trigger button lives inside the Bulk Import modal
+          (ImportModal's "Sync" tab, admin-only) — this group only renders the
+          approval queues, so it's only shown when there's actually something
+          staged to review. */}
+      {(pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0) && (
         <div style={{ marginBottom: 16 }}>
-          {isAdmin && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                flexWrap: "wrap",
-                marginBottom: 10,
-                padding: "8px 12px",
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderRadius: 4,
-              }}
-            >
-              <button
-                onClick={runFidelitySync}
-                disabled={fidSyncing}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: T.gold,
-                  color: "#0b0d10",
-                  border: "none",
-                  borderRadius: 4,
-                  padding: "6px 12px",
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                  fontWeight: 700,
-                  cursor: fidSyncing ? "default" : "pointer",
-                  opacity: fidSyncing ? 0.6 : 1,
-                }}
-              >
-                <RefreshCw size={11} className={fidSyncing ? "spin" : undefined} />
-                {fidSyncing ? "Syncing…" : "Sync Fidelity"}
-              </button>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
-                {fidSyncStatus?.lastSync
-                  ? `Last sync: ${new Date(fidSyncStatus.lastSync).toLocaleString()}`
-                  : "Never synced"}
-              </span>
-              {fidSyncStatus?.lastError && (
-                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.red }}>
-                  {fidSyncStatus.lastError}
-                </span>
-              )}
-              {fidSyncMessage && (
-                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
-                  {fidSyncMessage}
-                </span>
-              )}
-            </div>
-          )}
 
       {pendingFid.length > 0 && (
         <div style={{ marginBottom: 16 }}>
@@ -5159,7 +5192,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
 
               <div style={{ marginBottom: 12 }}>
               <ScrollHintTable>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
                   <thead>
                     <tr>
                       <th style={{ width: 28 }}>
@@ -5175,7 +5208,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                           }}
                         />
                       </th>
-                      {["Date", "B/S", "Ticker", "Qty", "Price"].map((h) => (
+                      {["Date", "B/S", "Ticker", "Qty", "Price", "Notes"].map((h) => (
                         <th
                           key={h}
                           style={{
@@ -5197,6 +5230,17 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                     {pendingFid.map((t) => {
                       const key = t.id || dupKey(t);
                       const cur = t.currency || "USD";
+                      // Distinguishes how this row was staged: a delta detected
+                      // between the SimpleFin holdings snapshot and the known
+                      // position (item: "sync creates trades from position
+                      // changes"), a bond buy synthesized the same way for
+                      // Bank Bonds, or a real trade/event (manual, CSV, or a
+                      // SimpleFin transaction like REDEMPTION) with no tag.
+                      const tag = t.derivedFromHoldingsDiff
+                        ? { label: "DELTA", color: T.gold }
+                        : t.syncedBond
+                        ? { label: "BOND BUY", color: T.textDim }
+                        : null;
                       return (
                         <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
                           <td style={{ padding: "4px 0" }}>
@@ -5220,6 +5264,42 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                           </td>
                           <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
                             {valuesHidden ? "•••" : fmtMoney(t.price, cur)}
+                          </td>
+                          <td style={{ padding: "4px 8px", maxWidth: 220 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              {tag && (
+                                <span
+                                  style={{
+                                    flexShrink: 0,
+                                    fontFamily: FONT_MONO,
+                                    fontSize: 8,
+                                    fontWeight: 700,
+                                    letterSpacing: "0.08em",
+                                    color: tag.color,
+                                    border: `1px solid ${tag.color}55`,
+                                    borderRadius: 3,
+                                    padding: "1px 4px",
+                                  }}
+                                >
+                                  {tag.label}
+                                </span>
+                              )}
+                              <span
+                                title={t.notes || ""}
+                                style={{
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  color: T.textDim,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  display: "inline-block",
+                                  maxWidth: 160,
+                                }}
+                              >
+                                {t.notes || "--"}
+                              </span>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -6124,6 +6204,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         onConfirm={handleImport}
         existingCount={transactions.length}
         existingTransactions={transactions}
+        isAdmin={isAdmin}
+        fidSyncing={fidSyncing}
+        fidSyncStatus={fidSyncStatus}
+        fidSyncMessage={fidSyncMessage}
+        runFidelitySync={runFidelitySync}
       />
 
     </div>

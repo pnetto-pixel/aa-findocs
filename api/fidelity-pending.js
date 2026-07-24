@@ -49,7 +49,7 @@
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
-import { mapSimplefinPayload } from '../lib/simplefin-map.js';
+import { mapSimplefinPayload, computeNetQty } from '../lib/simplefin-map.js';
 import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
 
 function pendingKeyFromAuth(auth) {
@@ -278,7 +278,13 @@ async function handleSync(req, res, auth) {
   const liveTx = Array.isArray(live.transactions) ? live.transactions : [];
   const liveBond = Array.isArray(live.bondIncome) ? live.bondIncome : [];
   const knownBondsByDescKey = buildKnownBondsByDescKey(liveTx);
-  const mapped = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  // Stock/ETF position delta detection (jul/2026): net qty per ticker from
+  // the user's own live transactions, so mapSimplefinPayload can diff each
+  // account's stock/ETF holdings snapshot against what's already known and
+  // stage buy/sell candidates for whatever moved (see
+  // lib/simplefin-map.js stockPositionDeltas).
+  const netQtyByTicker = computeNetQty(liveTx);
+  const mapped = mapSimplefinPayload(payload, { knownBondsByDescKey, netQtyByTicker });
   const liveTxKeys = new Set(liveTx.map(dupKey));
   const liveTxSimplefinIds = new Set(liveTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
   const liveBondKeys = new Set(liveBond.map(bondKey));
