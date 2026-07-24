@@ -207,6 +207,121 @@ await test('jul/2026: blank Symbol on bond row recovered via knownBondsByDescKey
   assert.equal(out.incomeEvents[0].ticker, '949764WE0');
 });
 
+await test('jul/2026: blank Symbol on a NEW bond BUY (no history match) gets a synthetic ticker, not needsTicker', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/08/2029', 'YOU BOUGHT', '', 'GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029', '100.00', '1000', '', '-1000.00'],
+    ])
+  );
+  assert.equal(out.results.length, 1);
+  const r = out.results[0];
+  assert.equal(r.needsTicker, false);
+  assert.equal(r.ok, true);
+  assert.equal(r.tx.ticker, '20290508395');
+  assert.equal(r.tx.assetClass, 'Bank Bonds');
+  assert.equal(r.tx.couponRate, 3.95);
+  assert.equal(r.tx.maturityDate, '2029-05-08');
+  assert.equal(r.tx.shortName, 'GOLDMAN SACHS BANK USA CD');
+});
+
+await test('two new bonds, same maturity, different coupon -> different synthetic tickers', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/08/2029', 'YOU BOUGHT', '', 'GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029', '100.00', '1000', '', '-1000.00'],
+      ['05/08/2029', 'YOU BOUGHT', '', 'MORGAN STANLEY BANK CD 3.80000% 05/08/2029', '100.00', '1000', '', '-1000.00'],
+    ])
+  );
+  assert.equal(out.results[0].tx.ticker, '20290508395');
+  assert.equal(out.results[1].tx.ticker, '20290508380');
+});
+
+await test('auditor repro: synthetic ticker BUY, then REDEMPTION with blank Symbol resolved via knownBondsByDescKey is NOT dropped', () => {
+  const meta = extractBondMeta('GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029');
+  // Simulates a synthetic ticker already saved from an earlier BUY import.
+  const knownBonds = new Map([[meta.descKey, '20290508395']]);
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/08/2029', 'REDEMPTION PAYOUT', '', 'GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029', '', '', '', '1000.00'],
+    ]),
+    null,
+    knownBonds
+  );
+  assert.equal(out.results.length, 1);
+  const r = out.results[0];
+  assert.equal(r.tx.side, 'sell');
+  assert.equal(r.tx.redemption, true);
+  assert.equal(r.tx.ticker, '20290508395');
+});
+
+await test('auditor repro: synthetic ticker BUY, then INTEREST with blank Symbol resolved via knownBondsByDescKey is NOT dropped', () => {
+  const meta = extractBondMeta('GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029');
+  const knownBonds = new Map([[meta.descKey, '20290508395']]);
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['06/20/2029', 'INTEREST', '', 'GOLDMAN SACHS BANK USA CD 3.95000% 05/08/2029', '', '', '', '19.75'],
+    ]),
+    null,
+    knownBonds
+  );
+  assert.equal(out.incomeEvents.length, 1);
+  const ev = out.incomeEvents[0];
+  assert.equal(ev.kind, 'interest');
+  assert.equal(ev.ticker, '20290508395');
+  assert.equal(ev.amount, 19.75);
+});
+
+await test('REDEMPTION with a raw invalid Symbol (not resolved via history) is still rejected', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['07/08/2026', 'REDEMPTION PAYOUT', 'GARBAGE', 'SOME BOND CD 4.00000% 07/08/2026', '', '', '', '1000.00'],
+    ])
+  );
+  assert.equal(out.results.length, 0);
+});
+
+await test('INTEREST with a raw invalid Symbol (not resolved via history) is still rejected', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['06/20/2026', 'INTEREST', 'GARBAGE9999', 'SOME BOND CD 4.00000% 07/08/2026', '', '', '', '4.55'],
+    ])
+  );
+  assert.equal(out.incomeEvents.length, 0);
+});
+
+await test('blank Symbol whose description does NOT parse is silently dropped (preserved, pre-existing behavior)', () => {
+  // extractBondMeta returns null here (no "N.NN%" + "MM/DD/YYYY" pattern), so
+  // there's no coupon/maturity to generate a synthetic id from, AND (this was
+  // already true before this feature) needsTicker is only ever set when
+  // bondMeta parses -- rows with a genuinely unparseable description and no
+  // symbol fall into the pre-existing `continue` branch, same as today.
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/08/2029', 'YOU BOUGHT', '', 'US TREASURY BILL (no coupon pattern here)', '99.50', '1000', '', '-995.00'],
+    ])
+  );
+  assert.equal(out.results.length, 0);
+});
+
+await test('row that already has a CUSIP is unaffected by the synthetic-id path', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/05/2026', 'YOU BOUGHT', '949764WE0', 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030', '100.00', '1000', '', '-1000.00'],
+    ])
+  );
+  assert.equal(out.results[0].tx.ticker, '949764WE0');
+  assert.equal(out.results[0].needsTicker, false);
+});
+
+await test('non-bond asset classes are unaffected by the synthetic-id path', () => {
+  const out = parseFidelityCSV(
+    fidelityCSV([
+      ['05/08/2026', 'YOU BOUGHT', 'AAPL', 'APPLE INC', '180.50', '10', '0', '-1805.00'],
+    ])
+  );
+  assert.equal(out.results[0].tx.assetClass, 'Stocks');
+  assert.equal(out.results[0].tx.ticker, 'AAPL');
+});
+
 await test('missing header returns explicit error instead of throwing', () => {
   const out = parseFidelityCSV('a,b,c\n1,2,3');
   assert.equal(out.results.length, 0);

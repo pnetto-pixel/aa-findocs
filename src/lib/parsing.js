@@ -9,7 +9,7 @@ import Papa from "papaparse";
 // pulling papaparse into a serverless function. Re-exported below with the
 // same name so every existing call site here and elsewhere keeps working
 // unchanged (src/lib/bankBonds.js, test/fidelity-parser.test.mjs).
-import { extractBondMeta } from "../../lib/bond-meta.js";
+import { extractBondMeta, generateSyntheticBondTicker } from "../../lib/bond-meta.js";
 
 // UUID — falls back if crypto.randomUUID is unavailable.
 function newId() {
@@ -600,16 +600,25 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
       const amountI = parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, ""));
       // Fidelity sometimes omits Symbol for CD/bond interest rows (jul/2026).
       // Recover the real CUSIP from a bond already seen in saved transactions.
+      // Tickers recovered this way are trusted regardless of shape (CUSIP or
+      // synthetic bond id) -- they were resolved by a descKey match against
+      // saved transactions, not parsed raw off the CSV, so the CUSIP_RX format
+      // check below (which exists to reject garbage raw Symbol values) does
+      // not apply to them.
+      let symbolIFromHistory = false;
       if (!symbolI && !isCashSweep && knownBondsByDescKey) {
         const metaI = extractBondMeta(idxDesc >= 0 ? String(arr[idxDesc] || "") : "");
         const knownTicker = metaI && knownBondsByDescKey.get(metaI.descKey);
-        if (knownTicker) symbolI = knownTicker;
+        if (knownTicker) {
+          symbolI = knownTicker;
+          symbolIFromHistory = true;
+        }
       }
       if (isCashSweep && isoDateI && symbolI && isFinite(amountI) && amountI > 0) {
         // Record core-cash interest for purging — an older parser captured it as
         // bond interest, so re-importing must remove the stale matching record.
         distributionEvents.push({ date: isoDateI, ticker: symbolI, amount: amountI });
-      } else if (isoDateI && symbolI && CUSIP_RX.test(symbolI) && isFinite(amountI) && amountI > 0) {
+      } else if (isoDateI && symbolI && (symbolIFromHistory || CUSIP_RX.test(symbolI)) && isFinite(amountI) && amountI > 0) {
         incomeEvents.push({
           id: newId(),
           date: isoDateI,
@@ -703,6 +712,13 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
     const descRaw = idxDesc >= 0 ? String(arr[idxDesc] || "") : "";
     let bondMeta = null;
     let needsTicker = false;
+    let syntheticBond = false;
+    // True when `symbol` was resolved via a descKey match against saved
+    // transactions (knownBondsByDescKey), not parsed raw off the CSV. That
+    // lookup is trusted regardless of ticker shape (CUSIP or synthetic bond
+    // id), so the CUSIP_RX format check below (meant to reject garbage raw
+    // Symbol values) must not apply to it.
+    let symbolFromHistory = false;
     if (!symbol) {
       // Fidelity sometimes omits Symbol for CD/bond rows (jul/2026 export
       // change) — no CUSIP anywhere else in the row either. Try to recover
@@ -710,13 +726,30 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
       bondMeta = extractBondMeta(descRaw);
       if (bondMeta && knownBondsByDescKey) {
         const knownTicker = knownBondsByDescKey.get(bondMeta.descKey);
-        if (knownTicker) symbol = knownTicker;
+        if (knownTicker) {
+          symbol = knownTicker;
+          symbolFromHistory = true;
+        }
       }
       if (!symbol) {
         if (bondMeta && side === "buy" && !isRedemption) {
-          // Brand-new bond purchase with no CUSIP anywhere in the CSV —
-          // surface it for manual entry instead of silently dropping it.
-          needsTicker = true;
+          // Brand-new bond purchase with no CUSIP anywhere in the CSV — no
+          // public source provides Bank Bond CUSIPs any more (jul/2026), so
+          // derive a deterministic synthetic id from coupon+maturity instead
+          // of forcing manual entry. buildKnownBondsByDescKey (lib/bond-meta.js)
+          // and the SimpleFin auto-resolution path key off couponRate/
+          // maturityDate/shortName, not off the ticker's shape, so future
+          // INTEREST/REDEMPTION rows for this bond still auto-resolve.
+          const synthetic = generateSyntheticBondTicker(bondMeta.couponRate, bondMeta.maturityDate);
+          if (synthetic) {
+            symbol = synthetic;
+            syntheticBond = true;
+          } else {
+            // extractBondMeta parsed but produced something the generator
+            // can't encode (shouldn't happen in practice) — fall back to the
+            // pre-existing manual-entry path rather than dropping the row.
+            needsTicker = true;
+          }
         } else {
           // Interest/redemption rows for a bond we have no history for, or a
           // non-bond row with a genuinely missing symbol — nothing to do.
@@ -724,8 +757,9 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
         }
       }
     }
-    // Redemptions only make sense for CUSIP-symboled bonds/CDs.
-    if (isRedemption && symbol && !CUSIP_RX.test(symbol)) continue;
+    // Redemptions only make sense for CUSIP-symboled (or, for Bank Bonds
+    // resolved via saved-transaction history, synthetic-id) bonds/CDs.
+    if (isRedemption && symbol && !symbolFromHistory && !CUSIP_RX.test(symbol)) continue;
 
     const amountAbs = idxAmount >= 0
       ? Math.abs(parseFloat(String(arr[idxAmount] || "").replace(/[$,\s]/g, "")))
@@ -763,7 +797,11 @@ function parseFidelityCSV(text, knownClassByTicker = null, knownBondsByDescKey =
     // symbol, falling back to "Stocks" for plain US tickers. A row awaiting
     // manual CUSIP entry is already known to be a bond from its description.
     const known = symbol ? knownClassByTicker && knownClassByTicker.get(symbol) : null;
-    const assetClass = needsTicker ? "Bank Bonds" : known || inferAssetClass(symbol) || "Stocks";
+    // Synthetic tickers are plain digits (no CUSIP shape), so inferAssetClass
+    // can't classify them on its own — force Bank Bonds, same as needsTicker.
+    const assetClass = needsTicker || syntheticBond
+      ? "Bank Bonds"
+      : known || inferAssetClass(symbol) || "Stocks";
 
     // Item 40: Fidelity reports CD/bond Quantity as face value in dollars
     // (e.g. 1000 = one $1,000 CD) and Price ($) as percent-of-face for
