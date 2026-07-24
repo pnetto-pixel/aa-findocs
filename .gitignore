@@ -7,3 +7,5 @@ package-lock.json
 *.log
 .DS_Store
 .claude/worktrees/
+# Saida do scripts/simplefin-dump.* — dados financeiros reais, nunca commitar
+simplefin-out/
