@@ -226,103 +226,12 @@ function isBrazilianTicker(t) {
 }
 
 // ── Bank Bonds helpers (copied from Dividends.jsx) ────────────────────────────
-function parseBondNotes(tx) {
-  if (tx.couponRate != null && tx.maturityDate) {
-    const couponPct = Number(tx.couponRate);
-    if (isFinite(couponPct) && couponPct > 0 && /^\d{4}-\d{2}-\d{2}$/.test(tx.maturityDate)) {
-      return { couponPct, maturityISO: tx.maturityDate };
-    }
-  }
-  const notes = tx.notes || "";
-  if (!notes) return null;
-  const m = String(notes).match(/(\d+(?:\.\d+)?)\s*%\s*\|\s*(\d{2})\/(\d{2})\/(\d{4})/);
-  if (!m) return null;
-  const couponPct = parseFloat(m[1]);
-  if (!isFinite(couponPct) || couponPct <= 0) return null;
-  const maturityISO = `${m[4]}-${m[2]}-${m[3]}`;
-  return { couponPct, maturityISO };
-}
-
-function daysBetweenISO(a, b) {
-  const da = new Date(a + "T00:00:00Z").getTime();
-  const db = new Date(b + "T00:00:00Z").getTime();
-  if (isNaN(da) || isNaN(db)) return 0;
-  return Math.max(0, (db - da) / 86400000);
-}
-
-function minISO(a, b) {
-  return a < b ? a : b;
-}
-
-function freqFromDays(d) {
-  if (!isFinite(d) || d <= 0) return null;
-  if (d <= 45) return "monthly";
-  if (d <= 135) return "quarterly";
-  if (d <= 270) return "semi-annual";
-  return "annual";
-}
-
-// Frequency label -> coupon interval in days. Kept in sync with the copy in
-// src/Dividends.jsx (no shared module between the two files, per project convention).
-const FREQ_DAYS = {
-  "monthly": 30,
-  "quarterly": 91,
-  "semi-annual": 182,
-  "annual": 365,
-};
-
-function addDaysISO(iso, n) {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-// Generates one estimated-interest event per fully-elapsed coupon period of
-// length intervalDays within [startISO, endISO). A period is only emitted when
-// it is entirely within the window (periodEnd <= endISO) — the still-running
-// partial period at the tail is dropped, since no money has actually been paid
-// for it yet. Principal can change mid-period (buy/sell); the accrual for each
-// period sums principal x days across the overlapping constant-principal
-// segments, ACT/365 convention.
-function accrueByFreqAsEvents(events, ticker, startISO, endISO, segments, rate, intervalDays) {
-  let periodStart = startISO;
-  while (true) {
-    const periodEnd = addDaysISO(periodStart, intervalDays);
-    if (periodEnd > endISO) break; // incomplete trailing period — not "paid" yet
-    let amt = 0;
-    for (const seg of segments) {
-      if (seg.principal <= 0) continue;
-      const overlapStart = seg.start > periodStart ? seg.start : periodStart;
-      const overlapEnd = seg.end < periodEnd ? seg.end : periodEnd;
-      if (overlapEnd <= overlapStart) continue;
-      const days = daysBetweenISO(overlapStart, overlapEnd);
-      amt += seg.principal * rate * (days / 365);
-    }
-    if (amt > 0) {
-      const eventDate = addDaysISO(periodEnd, -1); // last day of the elapsed period
-      events.push({
-        id: `bond-est-${ticker}-${periodStart}`,
-        date: eventDate,
-        ticker,
-        assetClass: "Bank Bonds",
-        incomeType: "interest",
-        totalReceived: amt,
-        currency: "USD",
-        source: "estimated",
-        amountPerShare: null,
-        qtyHeld: null,
-      });
-    }
-    periodStart = periodEnd;
-  }
-}
-
-function buildBondEvents(transactions, bondIncome, todayISO) {
-  const today = todayISO || new Date().toISOString().slice(0, 10);
-  const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+// Real bond interest payments only (from bondIncome) — no estimated accrual.
+// Kept in sync with the real-payment logic in src/Dividends.jsx (no shared
+// module between the two files, per project convention).
+function buildBondEvents(bondIncome) {
   const events = [];
 
-  const realByCusip = {};
   for (const ev of bondIncome || []) {
     if (!ev || (ev.kind && ev.kind !== "interest")) continue;
     const t = (ev.ticker || "").toUpperCase();
@@ -340,69 +249,9 @@ function buildBondEvents(transactions, bondIncome, todayISO) {
       amountPerShare: null,
       qtyHeld: null,
     });
-    if (!realByCusip[t]) realByCusip[t] = [];
-    realByCusip[t].push({ date: ev.date, amount: amt });
   }
 
-  const freqByCusip = {};
-  for (const [t, real] of Object.entries(realByCusip)) {
-    if (real.length < 2) continue;
-    const diffs = [];
-    const sorted = real.slice().sort(byDate);
-    for (let i = 1; i < sorted.length; i++) diffs.push(daysBetweenISO(sorted[i - 1].date, sorted[i].date));
-    diffs.sort((a, b) => a - b);
-    freqByCusip[t] = freqFromDays(diffs[Math.floor(diffs.length / 2)]);
-  }
-
-  const byCusip = {};
-  for (const tx of transactions || []) {
-    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
-    const meta = parseBondNotes(tx);
-    if (!meta) continue;
-    const t = (tx.ticker || "").toUpperCase();
-    const qty = Number(tx.qty);
-    const price = Number(tx.price);
-    if (!t || !isFinite(qty) || !isFinite(price)) continue;
-    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO, couponFreq: null };
-    byCusip[t].coupon = meta.couponPct;
-    byCusip[t].maturityISO = meta.maturityISO;
-    if (!byCusip[t].couponFreq && tx.couponFreq) byCusip[t].couponFreq = tx.couponFreq;
-    byCusip[t].txns.push({ date: tx.date, delta: (tx.side === "sell" ? -1 : 1) * qty * price });
-  }
-
-  for (const [t, { txns, coupon, maturityISO, couponFreq }] of Object.entries(byCusip)) {
-    txns.sort(byDate);
-    const endISO = minISO(maturityISO, today);
-    const rate = coupon / 100;
-    const realDates = (realByCusip[t] || []).slice().sort(byDate);
-    const lastRealDate = realDates.length ? realDates[realDates.length - 1].date : null;
-
-    // Accrual starts strictly the day after the last known real payment (never
-    // on the same day), or from the first transaction date if there has never
-    // been a real payment for this CUSIP.
-    const accrueFrom = lastRealDate ? addDaysISO(lastRealDate, 1) : (txns.length ? txns[0].date : null);
-    if (!accrueFrom || accrueFrom >= endISO || !txns.length) continue;
-
-    // Constant-principal segments across the full txn history, clamped to endISO.
-    const segments = [];
-    let principal = 0;
-    for (let i = 0; i < txns.length; i++) {
-      principal += txns[i].delta;
-      if (principal < 0) principal = 0;
-      const segStart = txns[i].date;
-      const segEnd = i + 1 < txns.length ? txns[i + 1].date : endISO;
-      if (segEnd > segStart) segments.push({ start: segStart, end: segEnd, principal });
-    }
-
-    // Prefer calibrated real-payment cadence, then the Fidelity-reported
-    // couponFreq, then "monthly" only when there is no data at all.
-    const freqLabel = freqByCusip[t] || couponFreq || "monthly";
-    const intervalDays = FREQ_DAYS[freqLabel] || 30;
-
-    accrueByFreqAsEvents(events, t, accrueFrom, endISO, segments, rate, intervalDays);
-  }
-
-  return { events, freqByCusip };
+  return { events };
 }
 
 // computeBankBondsValueAt now lives in ./lib/bankBonds.js, shared with
@@ -1917,7 +1766,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         // GROSS amount Fidelity reported, so this must be netted in for Total Return
         // and the Div TTM/Total columns below to reflect actual cash received.
         const taxEvents = Array.isArray(divJson?.foreignTax) ? divJson.foreignTax : [];
-        const { events: bondEventsArr } = buildBondEvents(txs, bondIncome);
+        const { events: bondEventsArr } = buildBondEvents(bondIncome);
         const allEvents = [...stockEvents, ...bondEventsArr, ...taxEvents];
         setDivEvents(allEvents);
         const todayMs = Date.now();

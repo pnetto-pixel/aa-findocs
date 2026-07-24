@@ -146,11 +146,10 @@ function fmtDeltaUSD(n, hidden) {
 
 // ── Bank Bonds interest (item 36) ─────────────────────────────────────────────
 // CDs / US bank bonds pay periodic coupons but there is no free per-CUSIP
-// payment history API. Income comes from two sources, merged in buildBondEvents:
-// real payments imported from the Fidelity Account History (bondIncome store)
-// and an estimated accrual (principal x coupon x days/365, ACT/365) filling
-// only the gap after the last real payment, replayed per CUSIP with partial
-// sells reducing the running principal up to min(today, maturity).
+// payment history API. Real bond interest income comes only from payments
+// imported from the Fidelity Account History (bondIncome store) — see
+// buildBondEvents below. Coupon%/maturity metadata parsed here is also used
+// by buildBondProjections (future/estimated payment schedule, its own card).
 //
 // Extracts coupon% + maturity for one transaction. Prefers dedicated fields
 // added by the Fidelity parser (couponRate, maturityDate); falls back to the
@@ -182,10 +181,6 @@ function daysBetweenISO(a, b) {
   return Math.max(0, (db - da) / 86400000);
 }
 
-function minISO(a, b) {
-  return a < b ? a : b;
-}
-
 // Map a median spacing (in days) between real coupon payments to a frequency.
 function freqFromDays(d) {
   if (!isFinite(d) || d <= 0) return null;
@@ -204,27 +199,17 @@ const FREQ_DAYS = {
   "annual": 365,
 };
 
-function addDaysISO(iso, n) {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
 // ── Bank Bonds interest events ────────────────────────────────────────────────
 // Builds an event array (same shape as dividend events from /api/dividends)
-// merging real coupon payments (from bondIncome) with estimated accrual for
-// the gap not yet covered by a real payment. The unified array feeds every
-// card in DividendsView — bar chart, Position Dividends, Dividend History,
-// Y/Y table — so bond interest appears everywhere alongside stock dividends.
+// from real coupon payments only (from bondIncome). The unified array feeds
+// every card in DividendsView — bar chart, Position Dividends, Dividend
+// History, Y/Y table — so bond interest appears everywhere alongside stock
+// dividends.
 //
-// Real events: source "fidelity", exact date and amount.
-// Estimated events: source "estimated", dated at the end of each fully-elapsed
-//   coupon period (sized per the bond's real cadence — freqByCusip/couponFreq,
-//   falling back to "monthly" only when no data at all is available), same
-//   pattern as buildBondProjections. Only complete periods are emitted — the
-//   still-running current period is never turned into a "paid" event.
-//   incomeType "interest". amountPerShare/qtyHeld are null (shown as "—" in table).
-// Coupon frequency is calibrated from real payment cadence (>= 2 payments).
+// Events: source "fidelity", exact date and amount, incomeType "interest".
+// amountPerShare/qtyHeld are null (shown as "—" in table).
+// Coupon frequency is calibrated from real payment cadence (>= 2 payments)
+// and returned as freqByCusip for buildBondProjections (its own card) to use.
 function buildBondEvents(transactions, bondIncome, todayISO) {
   const today = todayISO || new Date().toISOString().slice(0, 10);
   const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
@@ -264,97 +249,7 @@ function buildBondEvents(transactions, bondIncome, todayISO) {
     freqByCusip[t] = freqFromDays(diffs[Math.floor(diffs.length / 2)]);
   }
 
-  // ── 3) Estimated accrual for the gap (per CUSIP, sized per coupon freq) ───
-  const byCusip = {};
-  for (const tx of transactions || []) {
-    if (!tx || (tx.assetClass || "") !== "Bank Bonds") continue;
-    const meta = parseBondNotes(tx);
-    if (!meta) continue;
-    const t = (tx.ticker || "").toUpperCase();
-    const qty = Number(tx.qty);
-    const price = Number(tx.price);
-    if (!t || !isFinite(qty) || !isFinite(price)) continue;
-    if (!byCusip[t]) byCusip[t] = { txns: [], coupon: meta.couponPct, maturityISO: meta.maturityISO, couponFreq: null };
-    byCusip[t].coupon = meta.couponPct;
-    byCusip[t].maturityISO = meta.maturityISO;
-    if (!byCusip[t].couponFreq && tx.couponFreq) byCusip[t].couponFreq = tx.couponFreq;
-    byCusip[t].txns.push({ date: tx.date, delta: (tx.side === "sell" ? -1 : 1) * qty * price });
-  }
-
-  for (const [t, { txns, coupon, maturityISO, couponFreq }] of Object.entries(byCusip)) {
-    txns.sort(byDate);
-    const endISO = minISO(maturityISO, today);
-    const rate = coupon / 100;
-    const realDates = (realByCusip[t] || []).slice().sort(byDate);
-    const lastRealDate = realDates.length ? realDates[realDates.length - 1].date : null;
-
-    // Accrual starts strictly the day after the last known real payment (never
-    // on the same day — otherwise a residual stub overlaps the real payment's
-    // period), or from the first transaction date if there has never been a
-    // real payment for this CUSIP.
-    const accrueFrom = lastRealDate ? addDaysISO(lastRealDate, 1) : (txns.length ? txns[0].date : null);
-    if (!accrueFrom || accrueFrom >= endISO || !txns.length) continue;
-
-    // Constant-principal segments across the full txn history, clamped to endISO.
-    const segments = [];
-    let principal = 0;
-    for (let i = 0; i < txns.length; i++) {
-      principal += txns[i].delta;
-      if (principal < 0) principal = 0;
-      const segStart = txns[i].date;
-      const segEnd = i + 1 < txns.length ? txns[i + 1].date : endISO;
-      if (segEnd > segStart) segments.push({ start: segStart, end: segEnd, principal });
-    }
-
-    // Prefer calibrated real-payment cadence, then the Fidelity-reported
-    // couponFreq, then "monthly" only when there is no data at all.
-    const freqLabel = freqByCusip[t] || couponFreq || "monthly";
-    const intervalDays = FREQ_DAYS[freqLabel] || 30;
-
-    accrueByFreqAsEvents(events, t, accrueFrom, endISO, segments, rate, intervalDays);
-  }
-
   return { events, freqByCusip };
-}
-
-// Generates one estimated-interest event per fully-elapsed coupon period of
-// length intervalDays within [startISO, endISO). A period is only emitted when
-// it is entirely within the window (periodEnd <= endISO) — the still-running
-// partial period at the tail is dropped, since no money has actually been paid
-// for it yet. Principal can change mid-period (buy/sell); the accrual for each
-// period sums principal x days across the overlapping constant-principal
-// segments, same ACT/365 convention as before.
-function accrueByFreqAsEvents(events, ticker, startISO, endISO, segments, rate, intervalDays) {
-  let periodStart = startISO;
-  while (true) {
-    const periodEnd = addDaysISO(periodStart, intervalDays);
-    if (periodEnd > endISO) break; // incomplete trailing period — not "paid" yet
-    let amt = 0;
-    for (const seg of segments) {
-      if (seg.principal <= 0) continue;
-      const overlapStart = seg.start > periodStart ? seg.start : periodStart;
-      const overlapEnd = seg.end < periodEnd ? seg.end : periodEnd;
-      if (overlapEnd <= overlapStart) continue;
-      const days = daysBetweenISO(overlapStart, overlapEnd);
-      amt += seg.principal * rate * (days / 365);
-    }
-    if (amt > 0) {
-      const eventDate = addDaysISO(periodEnd, -1); // last day of the elapsed period
-      events.push({
-        id: `bond-est-${ticker}-${periodStart}`,
-        date: eventDate,
-        ticker,
-        assetClass: "Bank Bonds",
-        incomeType: "interest",
-        totalReceived: amt,
-        currency: "USD",
-        source: "estimated",
-        amountPerShare: null,
-        qtyHeld: null,
-      });
-    }
-    periodStart = periodEnd;
-  }
 }
 
 // Full history grouped by the chosen granularity, optional date/ticker/assetClass filter.
@@ -2350,14 +2245,11 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                     const isTax = e.incomeType === "tax";
                     return (
                     <tr key={`${e.ticker}-${e.date}-${i}`} style={isTax ? { background: "rgba(232,140,140,0.04)" } : undefined}>
-                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.source === "estimated" ? "Estimated bond interest accrual (no real payment imported for this period)" : e.exDate ? `Ex-date: ${e.exDate}${e.payDate ? "" : " (pay date n/a — showing ex-date)"}` : undefined}>{e.date}</td>
+                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.exDate ? `Ex-date: ${e.exDate}${e.payDate ? "" : " (pay date n/a — showing ex-date)"}` : undefined}>{e.date}</td>
                       <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>
                         {e.ticker}
                         {isTax && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.red, marginLeft: 6, letterSpacing: "0.1em", border: "1px solid rgba(232,140,140,0.4)", borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>TAX</span>
-                        )}
-                        {e.source === "estimated" && (
-                          <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.textFaint, marginLeft: 6, letterSpacing: "0.1em", border: `1px solid ${T.borderSoft}`, borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>EST</span>
                         )}
                         {e.payDateUncertain && (
                           <span
@@ -2478,7 +2370,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Bond interest events (real + estimated) in the same shape as stock dividend events.
+  // Real bond interest events (from bondIncome) in the same shape as stock dividend events.
   // Merged into allEvents so every card — chart, Position Dividends, Dividend History,
   // Y/Y, KPIs — sees bond income alongside stock dividends without separate logic.
   const { events: bondEvents, freqByCusip } = useMemo(
@@ -2517,13 +2409,9 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
       allTime += e.totalReceived;
       if (e.date.startsWith(thisYear)) ytd += e.totalReceived;
       if (e.date.startsWith(thisMonth)) month += e.totalReceived;
-      // Y/Y uses only real dividend events (stock dividends + real bond payments).
-      // Estimated accrual has no prior-year counterpart — exclude to avoid skewing Y/Y.
-      if (e.source !== "estimated") {
-        if (e.date.startsWith(priorYear) && e.date.slice(5, 10) <= mmdd) priorYtd += e.totalReceived;
-        if (e.date.startsWith(priorYearMonth)) priorMonth += e.totalReceived;
-        if (e.date.startsWith(prevMonthStr)) prevCalMonth += e.totalReceived;
-      }
+      if (e.date.startsWith(priorYear) && e.date.slice(5, 10) <= mmdd) priorYtd += e.totalReceived;
+      if (e.date.startsWith(priorYearMonth)) priorMonth += e.totalReceived;
+      if (e.date.startsWith(prevMonthStr)) prevCalMonth += e.totalReceived;
       if (e.assetClass === "Bank Bonds") {
         bondTotal += e.totalReceived;
         if (e.date.startsWith(thisYear)) bondYtd += e.totalReceived;
@@ -2538,12 +2426,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     const thisMonthLabel = `${MONTHS[now.getMonth()]} ${curYear}`;
     const prevMonthLabel = `${MONTHS[prevMonthDate.getMonth()]} ${prevMonthDate.getFullYear()}`;
 
-    // Bond interest KPI subtitle: detect real vs estimated mix.
-    const hasRealBond = allEvents.some((e) => e.assetClass === "Bank Bonds" && e.source === "fidelity");
-    const hasEstBond = allEvents.some((e) => e.assetClass === "Bank Bonds" && e.source === "estimated");
-    const bondLabel = !hasRealBond ? "est. bond interest"
-      : hasEstBond ? "bond interest (real + est.)"
-      : "bond interest";
+    const bondLabel = "bond interest";
 
     return {
       allTime, ytd, month, priorYtd, priorMonth, yoyYtd, yoyMonth,
