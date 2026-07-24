@@ -4,7 +4,7 @@
 // docs/plans/simplefin-fidelity-feed.md, "Incerteza nº 1").
 
 import { strict as assert } from 'node:assert';
-import { mapSimplefinPayload, isFidelityOrg } from '../lib/simplefin-map.js';
+import { mapSimplefinPayload, isFidelityOrg, computeNetQty } from '../lib/simplefin-map.js';
 
 let passed = 0;
 let failed = 0;
@@ -856,6 +856,278 @@ await test('a bond with no/zero market value is skipped', () => {
   const out = mapSimplefinPayload(payload);
   const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
   assert.equal(buys.length, 0);
+});
+
+console.log('\n— computeNetQty —');
+
+await test('sums buy qty and subtracts sell qty per ticker (case-insensitive)', () => {
+  const net = computeNetQty([
+    { ticker: 'aapl', side: 'buy', qty: 10 },
+    { ticker: 'AAPL', side: 'buy', qty: 5 },
+    { ticker: 'AAPL', side: 'sell', qty: 3 },
+    { ticker: 'MSFT', side: 'buy', qty: 2 },
+  ]);
+  assert.equal(net.AAPL, 12);
+  assert.equal(net.MSFT, 2);
+});
+
+await test('ignores rows with no ticker or no qty', () => {
+  const net = computeNetQty([{ side: 'buy', qty: 10 }, { ticker: 'AAPL', side: 'buy' }]);
+  assert.deepEqual(net, {});
+});
+
+console.log('\n— mapSimplefinPayload: stock/ETF position deltas —');
+
+const SNAPSHOT_DATE = '2025-07-20'; // matches fidelityAccount()'s default balance-date fixture
+
+await test('new ticker (net qty 0) becomes a buy priced at purchase_price', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].side, 'buy');
+  assert.equal(buys[0].qty, 5);
+  assert.equal(buys[0].price, 150);
+  assert.equal(buys[0].assetClass, 'Stocks');
+  assert.equal(buys[0].source, 'simplefin');
+  assert.equal(buys[0].derivedFromHoldingsDiff, true);
+  // simplefinId is anchored to accountId+ticker+sharesNew (the snapshot's
+  // TARGET position), never to asOf/balance-date -- see the idempotency
+  // tests below.
+  assert.equal(buys[0].simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:5`);
+  assert.match(buys[0].notes, /New position detected/);
+});
+
+await test('shares increased (existing position) becomes a delta buy priced at average cost', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '8', purchase_price: '120.00', market_value: '960.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 3 } });
+  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].side, 'buy');
+  assert.equal(buys[0].qty, 5); // 8 - 3
+  assert.equal(buys[0].price, 120);
+  assert.match(buys[0].notes, /Position increase detected/);
+});
+
+await test('shares decreased (partial, holding still present) becomes a delta sell priced at market_value proxy', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', purchase_price: '100.00', market_value: '600.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
+  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(sells.length, 1);
+  assert.equal(sells[0].side, 'sell');
+  assert.equal(sells[0].qty, 4); // 10 - 6
+  assert.equal(sells[0].price, 100); // 600 / 6
+  assert.equal(sells[0].derivedFromHoldingsDiff, true);
+  assert.match(sells[0].notes, /Sell price estimated from SimpleFin market value/);
+  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
+});
+
+await test('full liquidation (holding listed at 0 shares) has no market_value proxy -> goes to unmapped, no invented sell', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '0', market_value: '0' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
+  const txs = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(txs.length, 0);
+  const unmapped = out.unmapped.filter((u) => u.description && u.description.includes('AAPL'));
+  assert.equal(unmapped.length, 1);
+  assert.match(unmapped[0].reason, /no market value left/);
+  // Regression: unmapped rows derived from a delta must carry a simplefinId
+  // too (same as every other unmapped item in this file), or
+  // api/fidelity-pending.js's simplefinId-based dedupe never fires and the
+  // row piles up unbounded every sync. See simplefinId form assertion below.
+  assert.ok(unmapped[0].simplefinId);
+  assert.equal(unmapped[0].simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:0`);
+});
+
+await test('unmapped rows from a delta with no purchase_price/cost_basis also carry a simplefinId, and it is stable across repeated syncs', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out1 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const out2 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const u1 = out1.unmapped.find((u) => u.description && u.description.includes('AAPL'));
+  const u2 = out2.unmapped.find((u) => u.description && u.description.includes('AAPL'));
+  assert.ok(u1 && u1.simplefinId);
+  assert.equal(u1.simplefinId, u2.simplefinId);
+});
+
+await test('unmapped rows from a partial decrease with no market_value also carry a simplefinId', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '4', market_value: '0' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
+  const u = out.unmapped.find((u) => u.description && u.description.includes('AAPL'));
+  assert.ok(u && u.simplefinId);
+  assert.equal(u.simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:4`);
+});
+
+await test('missing shares field is skipped gracefully (no transaction, no unmapped)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
+});
+
+await test('missing purchase_price/cost_basis on a buy delta goes to unmapped, not guessed', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+  const unmapped = out.unmapped.filter((u) => u.description && u.description.includes('AAPL'));
+  assert.equal(unmapped.length, 1);
+  assert.match(unmapped[0].reason, /no purchase_price\/cost_basis/);
+});
+
+await test('cost_basis/shares fallback is used when purchase_price is absent', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', cost_basis: '500.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].price, 100); // 500 / 5
+});
+
+await test('simplefinId is deterministic per accountId+ticker+sharesNew (idempotent across repeated syncs on the same day)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out1 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const out2 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
+});
+
+await test('the SAME unresolved delta detected on two different days (asOf/balance-date advances, target position unchanged) produces the SAME simplefinId -- real cross-day idempotency', () => {
+  // This is the case that used to break: the account's balance-date moves
+  // forward every business day the sync runs, but as long as the user hasn't
+  // acted on the delta yet, knownQty (from netQtyByTicker) stays 0 and
+  // sharesNew stays 5 -- the SAME delta re-detected, not a new one. Anchoring
+  // the id to asOf (the pre-fix approach) would mint a new id every day and
+  // pile up duplicate candidates in the Trades queue; anchoring to the
+  // target position (accountId+ticker+sharesNew) keeps it stable instead.
+  const day1 = {
+    accounts: [
+      fidelityAccount({
+        'balance-date': 1753000000,
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const day2 = {
+    accounts: [
+      fidelityAccount({
+        'balance-date': 1753000000 + 86400 * 30, // 30 days later, still unresolved
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out1 = mapSimplefinPayload(day1, { netQtyByTicker: {} });
+  const out2 = mapSimplefinPayload(day2, { netQtyByTicker: {} });
+  assert.equal(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
+  // date still reflects each snapshot's own asOf (only the identity is
+  // asOf-independent, not the transaction's date field).
+  assert.notEqual(out1.transactions[0].date, out2.transactions[0].date);
+});
+
+await test('a genuinely different delta (different target sharesNew) produces a DIFFERENT simplefinId, even same-day', () => {
+  const firstDelta = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const secondDelta = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '9', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out1 = mapSimplefinPayload(firstDelta, { netQtyByTicker: {} });
+  const out2 = mapSimplefinPayload(secondDelta, { netQtyByTicker: {} });
+  assert.notEqual(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
+});
+
+await test('omitting netQtyByTicker entirely skips delta detection (backward compatible, pre-feature behavior)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+});
+
+await test('asset class inference: CUSIP-shaped symbol -> Bank Bonds, B3-shaped -> BRA Stocks, plain -> Stocks', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '949764WE0', shares: '2', purchase_price: '1000.00', market_value: '2000.00' },
+          { id: 'H2', symbol: 'BBSE3', shares: '100', purchase_price: '30.00', market_value: '3000.00' },
+          { id: 'H3', symbol: 'MSFT', shares: '10', purchase_price: '300.00', market_value: '3000.00' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const byTicker = Object.fromEntries(out.transactions.map((t) => [t.ticker, t.assetClass]));
+  assert.equal(byTicker['949764WE0'], 'Bank Bonds');
+  assert.equal(byTicker['BBSE3'], 'BRA Stocks');
+  assert.equal(byTicker['MSFT'], 'Stocks');
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
