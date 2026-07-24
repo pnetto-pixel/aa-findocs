@@ -226,6 +226,19 @@ export function computeBankBondsMarketValue(transactions, bondMarketValuesByDesc
   return { total, byTicker };
 }
 
+// Total Bank Bonds COST, summed from the SAME per-ticker replay Position
+// Performance uses (computeBankBondsMarketValue's byTicker totalCost). Kept as
+// a distinct export from computeBankBondsPrincipal: the latter is ticker-
+// agnostic (one global accumulator, subtracting each redemption at its SELL
+// price), while this sums each open position's remaining cost at AVERAGE cost —
+// the two diverge whenever a bond bought off-par is partially redeemed. The
+// Holdings tab's aggregated "US Bank Bonds" holding uses THIS so its Cost
+// matches the Position Performance table exactly (jul/2026).
+export function computeBankBondsCost(transactions, bondBindings = {}) {
+  const { byTicker } = computeBankBondsMarketValue(transactions, {}, bondBindings);
+  return Object.values(byTicker).reduce((s, b) => s + (b.totalCost || 0), 0);
+}
+
 // Set of every distinct resolved ticker across ALL Bank Bonds transactions
 // (buys + resolved-or-orphan redemptions), independent of current qty/date -
 // unlike computeBankBondsValueAt's `byTicker` (which only lists positions

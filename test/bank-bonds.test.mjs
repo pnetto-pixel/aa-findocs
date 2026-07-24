@@ -5,7 +5,7 @@
 // table (previously two divergent implementations of the same math).
 
 import { strict as assert } from 'node:assert';
-import { computeBankBondsPrincipal, computeBankBondsValueAt, computeBankBondsMarketValue } from '../src/lib/bankBonds.js';
+import { computeBankBondsPrincipal, computeBankBondsValueAt, computeBankBondsMarketValue, computeBankBondsCost } from '../src/lib/bankBonds.js';
 
 let passed = 0;
 let failed = 0;
@@ -285,6 +285,23 @@ await test('a bond with no metadata (no descKey) always falls back to cost', () 
   const { byTicker } = computeBankBondsMarketValue([manual], { [descKeyA]: 99999 });
   assert.equal(byTicker['MANUALBOND'].currentValue, 3000);
   assert.equal(byTicker['MANUALBOND'].marketValueSource, 'cost');
+});
+
+await test('computeBankBondsCost equals the sum of per-ticker totalCost (matches Position Performance)', () => {
+  const txs = [bondA, bondB];
+  const cost = computeBankBondsCost(txs);
+  const perTickerSum = Object.values(computeBankBondsMarketValue(txs, {}).byTicker).reduce(
+    (s, b) => s + b.totalCost,
+    0
+  );
+  assert.equal(cost, perTickerSum);
+  assert.equal(cost, 10 * 1000 + 5 * 1000); // 15000
+});
+
+await test('computeBankBondsCost is independent of the SimpleFin market values passed for display', () => {
+  const txs = [bondA, bondB];
+  // market values don't change COST
+  assert.equal(computeBankBondsCost(txs), 15000);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
