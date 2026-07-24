@@ -6258,15 +6258,15 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               {valuesHidden ? "BRL" : `R$${fmtNum(brlAmount, 0)}`}
             </span>
           )}
-          {/* Bank Bonds gain/loss (market value − cost) beside the value, like
-              a ticker's day change. Detail (Cost, As of) stays in the accordion. */}
-          {hasCostRef && bondGainLoss != null && !valuesHidden && (
+          {/* Bank Bonds gain/loss %, beside the value — same treatment as an
+              auto ticker's day change (% only, no parens, no $ amount).
+              Detail (Cost, As of) stays in the accordion. */}
+          {hasCostRef && bondGainLossPct != null && (
             <span
-              title={`Market value − cost${costBasis != null ? ` (cost ${fmtMoney(costBasis)})` : ""}`}
+              title={`Market value vs cost${costBasis != null ? ` (cost ${fmtMoney(costBasis)})` : ""}`}
               style={{ fontSize: 10, fontFamily: FONT_MONO, color: bondGainLossColor, letterSpacing: "0.04em" }}
             >
-              {bondGainLoss > 0 ? "+" : ""}{fmtMoney(bondGainLoss, { short: true })}
-              {bondGainLossPct != null ? ` (${bondGainLossPct > 0 ? "+" : ""}${bondGainLossPct.toFixed(2)}%)` : ""}
+              {bondGainLossPct > 0 ? "+" : ""}{bondGainLossPct.toFixed(2)}%
             </span>
           )}
           <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, letterSpacing: "-0.01em" }}>
