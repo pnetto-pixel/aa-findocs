@@ -172,6 +172,38 @@ async function fetchPrice(ticker, auth, quoteOnly = false) {
   return parsed;
 }
 
+// Triggers a SimpleFin sync (POST, admin-only server-side — a non-admin call
+// just resolves with whatever's already staged rather than throwing, since
+// fetch() doesn't throw on a 403) and reads back the freshest staged
+// balanceCandidates + bondHoldings. Real upstream fetches are throttled to
+// once per 6h server-side (api/fidelity-pending.js) — calls inside that
+// window just return the current staging state. Used by refreshAll/the Bank
+// Bonds "Refresh price" button so Cash/Bank Bonds current values track
+// SimpleFin the same way ticker prices do (jul/2026).
+async function syncFidelityAndFetchCandidates(auth) {
+  try {
+    await fetch("/api/fidelity-pending?resource=sync", {
+      method: "POST",
+      headers: authHeaders(auth),
+    });
+  } catch {
+    // Network hiccup on the sync trigger — the GET below still returns
+    // whatever was staged from the last successful sync, so don't bail.
+  }
+  const res = await fetch("/api/fidelity-pending", { headers: authHeaders(auth) });
+  if (res.status === 401) {
+    const err = new Error("Unauthorized");
+    err.code = 401;
+    throw err;
+  }
+  if (!res.ok) return { balanceCandidates: [], bondHoldings: [] };
+  const data = await res.json().catch(() => ({}));
+  return {
+    balanceCandidates: Array.isArray(data.balanceCandidates) ? data.balanceCandidates : [],
+    bondHoldings: Array.isArray(data.bondHoldings) ? data.bondHoldings : [],
+  };
+}
+
 // Batch quote fetch: one API call resolves many tickers (server fans out with
 // bounded concurrency + shared 60s Redis cache). Returns { TICKER: payload }
 // where a failed ticker's payload is { error }.
@@ -2015,6 +2047,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   async function refreshAll() {
     // Refresh the USD/BRL rate (for BRL-entered holdings) regardless of auto count.
     refreshUsdBrlRate();
+    // Cash + Bank Bonds current values via SimpleFin (jul/2026) — fired here,
+    // ahead of the auto-holdings early return below, since Cash/Bank Bonds
+    // are manual holdings and wouldn't otherwise be touched by this function.
+    // Non-blocking: it applies its own setHoldings patches independently.
+    refreshFromSimplefin();
 
     const autoHoldings = holdings.filter((h) => h.type !== "manual");
     if (autoHoldings.length === 0) return;
@@ -2643,6 +2680,39 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         kind: "success",
         message: "Bank Bonds current value updated from SimpleFin.",
       });
+    }
+  }
+
+  // Pulls a fresh SimpleFin sync and applies any Cash/Bank Bonds balance
+  // updates straight to holdings — the same effect Transactions.jsx's own
+  // sync-and-auto-apply flow produces, reused here so both "Refresh all" and
+  // the Bank Bonds card's "Refresh price" button track SimpleFin (jul/2026).
+  // Silently no-ops on any failure (non-admin, sync not configured, network
+  // error) — this is a background enhancement layered on top of the existing
+  // ticker-price refresh, never something that should surface as an error on
+  // the Holdings tab.
+  async function refreshFromSimplefin() {
+    try {
+      const { balanceCandidates, bondHoldings } = await syncFidelityAndFetchCandidates(auth);
+      for (const c of balanceCandidates) {
+        if (c && (c.kind === "cash" || c.kind === "bank-bonds")) {
+          applyFidelityBalanceUpdate(c, bondHoldings);
+        }
+      }
+    } catch (e) {
+      if (e.code === 401) onAuthFail();
+    }
+  }
+
+  // Dedicated wrapper so the Bank Bonds card's "Refresh price" button can
+  // show a spinner via the same busyIds map HoldingRow uses for ticker
+  // refreshes (busyIds[BANK_BONDS_ID]).
+  async function refreshBankBondsFromSimplefin() {
+    setBusy(BANK_BONDS_ID, true);
+    try {
+      await refreshFromSimplefin();
+    } finally {
+      setBusy(BANK_BONDS_ID, false);
     }
   }
 
@@ -4357,6 +4427,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onUpdate={(patch) => updateManualHolding(h.id, patch)}
                               onRemove={() => removeHolding(h.id)}
+                              onRefresh={h.id === BANK_BONDS_ID ? refreshBankBondsFromSimplefin : undefined}
+                              busy={h.id === BANK_BONDS_ID ? !!busyIds[BANK_BONDS_ID] : false}
                             />
                           ) : (
                             <HoldingRow
@@ -6101,7 +6173,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false }) {
+function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false, onRefresh, busy = false }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -6127,11 +6199,12 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
 
-  // Bank Bonds now DISPLAY the current value as `value` (manualValue is kept
-  // in sync with SimpleFin's market value by applyBankBondsHolding). The
-  // reference block below instead shows COST (costBasis, the transaction
-  // principal) and the resulting gain/loss — the inverse of the pre-jul/2026
-  // layout, which showed cost as the main value and market value as reference.
+  // Bank Bonds DISPLAY the current value as `value` (manualValue is kept in
+  // sync with SimpleFin's market value by applyBankBondsHolding) — same
+  // treatment as an auto ticker's price. `costBasis` (the transaction
+  // principal) is used only to derive the gain/loss %, shown beside the value
+  // like a ticker's day change; it's not displayed as its own line (jul/2026 —
+  // card standardized to match the auto-ticker layout, e.g. IVV).
   const costBasis =
     holding.costBasis != null && isFinite(holding.costBasis) ? holding.costBasis : null;
   const hasCostRef = isBankBonds && costBasis != null;
@@ -6145,16 +6218,6 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
       ? T.red
       : T.textDim;
   const bondGainLossPct = hasCostRef && costBasis > 0 ? (value / costBasis - 1) * 100 : null;
-  const marketValueAsOf = (holding.bondMarketValuesAsOf || holding.marketValueOverrideAsOf)
-    ? new Date(
-        (holding.bondMarketValuesAsOf || holding.marketValueOverrideAsOf).slice(0, 10) + "T00:00:00Z"
-      ).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-        timeZone: "UTC",
-      })
-    : null;
 
   // SimpleFin-reported Cash balance sync recency (see applyFidelityBalanceUpdate
   // in App.jsx). `simplefinSyncedAt` is dedicated (unlike `lastUpdated`, which
@@ -6259,8 +6322,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             </span>
           )}
           {/* Bank Bonds gain/loss %, beside the value — same treatment as an
-              auto ticker's day change (% only, no parens, no $ amount).
-              Detail (Cost, As of) stays in the accordion. */}
+              auto ticker's day change (% only, no parens, no $ amount). */}
           {hasCostRef && bondGainLossPct != null && (
             <span
               title={`Market value vs cost${costBasis != null ? ` (cost ${fmtMoney(costBasis)})` : ""}`}
@@ -6378,20 +6440,23 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               </div>
             )}
           </div>
-          {hasCostRef && (
+          {/* "Refresh price" button — same block/style as HoldingRow's (auto
+              tickers, e.g. IVV), reused verbatim so the Bank Bonds card reads
+              identically. Only rendered when the parent wires onRefresh (see
+              App.jsx's holdings list: only the aggregated Bank Bonds holding
+              gets it, pulling Cash + Bank Bonds current values from
+              SimpleFin — jul/2026). */}
+          {onRefresh && (
             <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Cost</span>
-                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>
-                  {maskMoney(costBasis, valuesHidden)}
-                </span>
-              </div>
-              {marketValueAsOf && (
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>As of (SimpleFin)</span>
-                  <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: T.textDim }}>{marketValueAsOf}</span>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => { onRefresh(); setDriftOpen(false); }}
+                disabled={busy}
+                style={{ width: "100%", background: "transparent", border: `1px solid ${T.border}`, color: busy ? T.textFaint : T.textDim, padding: "5px 8px", fontSize: 10, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
+              >
+                <RefreshCw size={10} className={busy ? "spin" : ""} />
+                Refresh price
+              </button>
             </div>
           )}
           {simplefinSyncedAsOf && (
