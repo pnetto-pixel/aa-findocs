@@ -145,6 +145,87 @@ export function computeBankBondsValueAt(transactions, asOfISO, bondBindings = {}
   return { total, byTicker };
 }
 
+// Per-bond CURRENT VALUE from SimpleFin, grouped per (resolved) ticker
+// (jul/2026 — "current value must match SimpleFin individually per bond").
+//
+// Unlike computeBankBondsValueAt above (which PROJECTS a value from cost +
+// accrued-interest and is kept only for Composition Evolution's historical
+// series), this reads the ACTUAL market value SimpleFin reported for each
+// bond. `bondMarketValuesByDescKey` is a plain object descKey -> marketValue,
+// recorded on the aggregated "US Bank Bonds" holding when a SimpleFin Bank
+// Bonds balance is approved (App.jsx applyFidelityBalanceUpdate). Each open
+// position's descKey is derived from its buy transaction's structured
+// couponRate/maturityDate/shortName (same descKey format buildKnownBondsByDescKey
+// and extractBondMeta produce), so a bond keyed by a synthetic ticker, a real
+// CUSIP, or a manually-entered ticker all resolve to the same market value as
+// long as their coupon/maturity metadata is present.
+//
+// Fallback (deliberate): a bond SimpleFin did NOT return (some don't — matured,
+// transferred, or simply absent from the feed) or one with no coupon/maturity
+// metadata to build a descKey has `currentValue = totalCost` and
+// `marketValueSource: "cost"`, so it never vanishes from the total — it just
+// shows no gain/loss until SimpleFin reports it. Returns { total, byTicker }
+// with byTicker[ticker] = { qty, avgCost, totalCost, currentValue,
+// marketValueSource }.
+export function computeBankBondsMarketValue(transactions, bondMarketValuesByDescKey = {}, bondBindings = {}) {
+  const scoped = (transactions || []).filter(
+    (tx) => tx?.assetClass === "Bank Bonds" && tx.date
+  );
+  const knownTickers = new Set(
+    scoped
+      .filter((tx) => tx.side === "buy" && tx.ticker)
+      .map((tx) => String(tx.ticker).toUpperCase())
+  );
+  const knownBondsByDescKey = buildKnownBondsByDescKey(scoped);
+  const sorted = [...scoped].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const positions = {};
+  for (const tx of sorted) {
+    const ticker = resolvedTickerFor(tx, knownTickers, knownBondsByDescKey, bondBindings);
+    if (!ticker) continue;
+    if (!positions[ticker]) positions[ticker] = { totalQty: 0, totalCost: 0, descKey: null };
+    const pos = positions[ticker];
+    const qty = Number(tx.qty) || 0;
+    const price = Number(tx.price) || 0;
+    if (tx.side === "buy") {
+      pos.totalQty += qty;
+      pos.totalCost += qty * price;
+      // descKey comes from the buy row's structured metadata (populated by the
+      // CSV import, the synthetic-id path, or the SimpleFin sync) — never from
+      // the ticker's shape, so it matches the descKey SimpleFin's holding
+      // description parses to.
+      if (!pos.descKey && tx.couponRate != null && tx.maturityDate && tx.shortName) {
+        pos.descKey = `${String(tx.shortName).toUpperCase()}|${tx.couponRate}|${tx.maturityDate}`;
+      }
+    } else if (tx.side === "sell") {
+      const avgBefore = pos.totalQty > 0 ? pos.totalCost / pos.totalQty : 0;
+      pos.totalQty -= qty;
+      pos.totalCost -= avgBefore * qty;
+      if (pos.totalQty < 0.0001) { pos.totalQty = 0; pos.totalCost = 0; }
+    }
+  }
+
+  const byTicker = {};
+  let total = 0;
+  for (const [ticker, pos] of Object.entries(positions)) {
+    if (pos.totalQty < 0.0001) continue;
+    const totalCost = pos.totalCost;
+    const avgCost = totalCost / pos.totalQty;
+    const mv = pos.descKey != null ? Number(bondMarketValuesByDescKey[pos.descKey]) : NaN;
+    const hasMv = isFinite(mv);
+    const currentValue = hasMv ? mv : totalCost;
+    byTicker[ticker] = {
+      qty: pos.totalQty,
+      avgCost,
+      totalCost,
+      currentValue,
+      marketValueSource: hasMv ? "simplefin" : "cost",
+    };
+    total += currentValue;
+  }
+  return { total, byTicker };
+}
+
 // Set of every distinct resolved ticker across ALL Bank Bonds transactions
 // (buys + resolved-or-orphan redemptions), independent of current qty/date -
 // unlike computeBankBondsValueAt's `byTicker` (which only lists positions

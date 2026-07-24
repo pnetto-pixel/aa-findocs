@@ -751,5 +751,112 @@ await test('no auto-bind attempted for an unparseable holding (descKey null)', (
   assert.equal(Object.keys(bindings).length, 0);
 });
 
+console.log('\n— bond buy transactions synthesized from holdings (jul/2026) —');
+
+const BOND_DESC = 'WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030';
+const BOND_DESCKEY = 'WELLS FARGO BANK NATL ASSN CD|4.2|2030-07-08';
+
+await test('a NEW bond (unknown descKey) becomes a buy with cost = purchase_price x shares', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          // cost = 0.995 * 10000 = 9950; market value is higher (unrealized gain)
+          { id: 'H1', symbol: '', description: BOND_DESC, market_value: '10453.00', purchase_price: '0.995', shares: '10000' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 1);
+  const b = buys[0];
+  // cost = qty * price = purchase_price * shares = 9950 (NOT the market value)
+  assert.equal(Math.round(b.qty * b.price * 100) / 100, 9950);
+  assert.equal(b.price, 1000);
+  assert.equal(b.couponRate, 4.2);
+  assert.equal(b.maturityDate, '2030-07-08');
+  assert.equal(b.source, 'simplefin');
+  assert.equal(b.simplefinId, `sfbond-buy:${BOND_DESCKEY}`);
+  // ticker is the deterministic synthetic id (maturity YYYYMMDD + coupon bps)
+  assert.equal(b.ticker, '20300708420');
+});
+
+await test('cost falls back to market value when purchase_price/shares/cost_basis absent', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '', description: BOND_DESC, market_value: '10453.00' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const b = out.transactions.find((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(b.qty * b.price, 10453);
+});
+
+await test('cost_basis is used when present and purchase_price/shares are not', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '', description: BOND_DESC, market_value: '10453.00', cost_basis: '9800' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const b = out.transactions.find((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(b.qty * b.price, 9800);
+});
+
+await test('a KNOWN bond (descKey already owned) is NOT re-created', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '', description: BOND_DESC, market_value: '10453.00' },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([[BOND_DESCKEY, 'CUSIP1234']]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 0);
+});
+
+await test('an unparseable bond holding (no coupon/maturity) is skipped, not guessed', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '', description: 'UNUSUAL TEXT NO COUPON', market_value: '500.00' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 0);
+});
+
+await test('a bond with no/zero market value is skipped', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          { id: 'H1', symbol: '', description: BOND_DESC, market_value: '0' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
