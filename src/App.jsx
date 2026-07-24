@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
-import { computeBankBondsPrincipal, computeBankBondsMarketValue } from "./lib/bankBonds.js";
+import { computeBankBondsMarketValue, computeBankBondsCost } from "./lib/bankBonds.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -1774,7 +1774,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
           const bbPatched = applyBankBondsHolding(
             loadedHoldings,
-            computeBankBondsPrincipal(txs),
+            computeBankBondsCost(txs),
             hasBankBondTx
           );
           if (bbPatched) {
@@ -2106,7 +2106,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
         const bbPatched = applyBankBondsHolding(
           updated,
-          computeBankBondsPrincipal(txs),
+          computeBankBondsCost(txs),
           hasBankBondTx
         );
         if (bbPatched) updated = bbPatched;
@@ -2149,7 +2149,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   function handleTransactionsChange(txs) {
     const netQty = computeNetQty(txs);
     const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
-    const principal = computeBankBondsPrincipal(txs);
+    const principal = computeBankBondsCost(txs);
     setHoldings((prev) => {
       let next = applyTxQty(prev, netQty) ?? prev;
       // Item 37: keep the aggregated "US Bank Bonds" holding in sync.
@@ -6258,6 +6258,17 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               {valuesHidden ? "BRL" : `R$${fmtNum(brlAmount, 0)}`}
             </span>
           )}
+          {/* Bank Bonds gain/loss (market value − cost) beside the value, like
+              a ticker's day change. Detail (Cost, As of) stays in the accordion. */}
+          {hasCostRef && bondGainLoss != null && !valuesHidden && (
+            <span
+              title={`Market value − cost${costBasis != null ? ` (cost ${fmtMoney(costBasis)})` : ""}`}
+              style={{ fontSize: 10, fontFamily: FONT_MONO, color: bondGainLossColor, letterSpacing: "0.04em" }}
+            >
+              {bondGainLoss > 0 ? "+" : ""}{fmtMoney(bondGainLoss, { short: true })}
+              {bondGainLossPct != null ? ` (${bondGainLossPct > 0 ? "+" : ""}${bondGainLossPct.toFixed(2)}%)` : ""}
+            </span>
+          )}
           <span style={{ fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 500, color: T.text, letterSpacing: "-0.01em" }}>
             {maskMoney(value, valuesHidden)}
           </span>
@@ -6375,15 +6386,6 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
                   {maskMoney(costBasis, valuesHidden)}
                 </span>
               </div>
-              {bondGainLoss != null && (
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: marketValueAsOf ? 5 : 0 }}>
-                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Gain / Loss</span>
-                  <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: bondGainLossColor }}>
-                    {bondGainLoss > 0 ? "+" : ""}{maskMoney(bondGainLoss, valuesHidden)}
-                    {bondGainLossPct != null ? ` (${bondGainLossPct > 0 ? "+" : ""}${bondGainLossPct.toFixed(2)}%)` : ""}
-                  </span>
-                </div>
-              )}
               {marketValueAsOf && (
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>As of (SimpleFin)</span>
