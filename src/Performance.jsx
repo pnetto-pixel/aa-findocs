@@ -35,6 +35,7 @@ import {
 import {
   computeBankBondsPrincipal,
   computeBankBondsValueAt,
+  computeBankBondsMarketValue,
   listBankBondsTickers,
 } from "./lib/bankBonds.js";
 
@@ -2319,23 +2320,20 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   const positionRows = useMemo(() => {
     if (!transactions.length) return [];
-    const bankBondsSnapshot = computeBankBondsValueAt(transactions);
-    // Position Performance's Bank Bonds Current Value is now consolidated
-    // with the Holdings tab (jul/2026): Cost comes from the transaction
-    // replay above (correct after the redemption-ticker resolution fix in
-    // computeBankBondsValueAt); Current Value comes from the SimpleFin
-    // marketValueOverride recorded on the "US Bank Bonds" aggregated holding
-    // when available, distributed across tickers proportional to cost -
-    // instead of the accrued-interest projection (bb.totalValue), which
-    // stays in computeBankBondsValueAt only for Composition Evolution's
-    // historical series.
+    // Position Performance's Bank Bonds Current Value matches SimpleFin
+    // INDIVIDUALLY per bond (jul/2026): computeBankBondsMarketValue reads the
+    // per-bond market value SimpleFin reported (bondMarketValues, descKey ->
+    // value, recorded on the "US Bank Bonds" aggregated holding when a Bank
+    // Bonds balance is synced), keyed by each position's descKey. A bond
+    // SimpleFin didn't return falls back to its own cost (currentValue = cost,
+    // gain/loss 0) rather than a proportional estimate. Cost still comes from
+    // the transaction replay.
     const bankBondsHolding = (holdings || []).find((h) => h && h.id === BANK_BONDS_ID);
-    const bbMarketValueOverride = bankBondsHolding?.marketValueOverride;
-    const hasBbOverride = bbMarketValueOverride != null && isFinite(bbMarketValueOverride);
-    const bbTotalCostSum = Object.values(bankBondsSnapshot.byTicker).reduce(
-      (s, bb) => s + (bb.totalCost || 0),
-      0
-    );
+    const bondMarketValues =
+      bankBondsHolding && bankBondsHolding.bondMarketValues && typeof bankBondsHolding.bondMarketValues === "object"
+        ? bankBondsHolding.bondMarketValues
+        : {};
+    const bankBondsSnapshot = computeBankBondsMarketValue(transactions, bondMarketValues);
     const sorted = [...transactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const positions = {};
     for (const tx of sorted) {
@@ -2378,15 +2376,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       if (assetClass === "Bank Bonds") {
         const bb = bankBondsSnapshot.byTicker[ticker];
         if (!bb) continue;
-        const { avgCost, totalCost } = bb;
-        // No SimpleFin market value on record: Current Value = Cost (no
-        // interest projection), so Gain/Loss reads as 0 - decision from the
-        // Bank Bonds consolidation briefing (jul/2026), rather than the old
-        // accrued-interest estimate which is what caused the two tabs to
-        // disagree.
-        const totalValue = hasBbOverride
-          ? (bbTotalCostSum > 0 ? (totalCost / bbTotalCostSum) * bbMarketValueOverride : 0)
-          : totalCost;
+        const { avgCost, totalCost, currentValue } = bb;
+        // Current Value is SimpleFin's per-bond market value when reported,
+        // else this bond's own cost (Gain/Loss 0) — computeBankBondsMarketValue
+        // resolves that per position. No proportional distribution, no
+        // accrued-interest projection.
+        const totalValue = currentValue;
         const totalGainLoss = totalValue - totalCost;
         const gainLossPct = totalCost > 0 ? (totalValue / totalCost - 1) * 100 : null;
         const yoc = divTtm != null && totalCost > 0 ? (divTtm / totalCost) * 100 : null;

@@ -5,7 +5,7 @@
 // table (previously two divergent implementations of the same math).
 
 import { strict as assert } from 'node:assert';
-import { computeBankBondsPrincipal, computeBankBondsValueAt } from '../src/lib/bankBonds.js';
+import { computeBankBondsPrincipal, computeBankBondsValueAt, computeBankBondsMarketValue } from '../src/lib/bankBonds.js';
 
 let passed = 0;
 let failed = 0;
@@ -246,6 +246,45 @@ await test('(d) matches computeBankBondsValueAt total after the resolution fix (
   assert.equal(canonical, 0);
   assert.equal(perTicker, 0);
   assert.equal(canonical, perTicker, 'the two totals must agree post-fix');
+});
+
+console.log('\n— computeBankBondsMarketValue: per-bond SimpleFin current value —');
+
+// Two bonds with structured metadata (descKey derivable), keyed by synthetic
+// tickers as the SimpleFin sync would create them.
+const bondA = {
+  id: 'a', date: '2024-01-10', side: 'buy', ticker: '20300708420', assetClass: 'Bank Bonds',
+  qty: 10, price: 1000, shortName: 'WELLS FARGO BANK NATL ASSN CD', couponRate: 4.2, maturityDate: '2030-07-08',
+};
+const bondB = {
+  id: 'b', date: '2024-02-10', side: 'buy', ticker: '20290508395', assetClass: 'Bank Bonds',
+  qty: 5, price: 1000, shortName: 'GOLDMAN SACHS BANK USA CD', couponRate: 3.95, maturityDate: '2029-05-08',
+};
+const descKeyA = 'WELLS FARGO BANK NATL ASSN CD|4.2|2030-07-08';
+const descKeyB = 'GOLDMAN SACHS BANK USA CD|3.95|2029-05-08';
+
+await test('per-bond market value is applied by descKey; unlisted bond falls back to its own cost', () => {
+  // SimpleFin reported a value for bond A only (bond B not returned).
+  const bmv = { [descKeyA]: 10800 };
+  const { total, byTicker } = computeBankBondsMarketValue([bondA, bondB], bmv);
+  assert.equal(byTicker['20300708420'].currentValue, 10800);
+  assert.equal(byTicker['20300708420'].marketValueSource, 'simplefin');
+  // bond B not in the map -> currentValue = cost (5 * 1000 = 5000), gain/loss 0
+  assert.equal(byTicker['20290508395'].currentValue, 5000);
+  assert.equal(byTicker['20290508395'].marketValueSource, 'cost');
+  assert.equal(total, 10800 + 5000);
+});
+
+await test('no SimpleFin data at all -> total equals cost (principal)', () => {
+  const { total } = computeBankBondsMarketValue([bondA, bondB], {});
+  assert.equal(total, computeBankBondsPrincipal([bondA, bondB]));
+});
+
+await test('a bond with no metadata (no descKey) always falls back to cost', () => {
+  const manual = { id: 'm', date: '2024-03-01', side: 'buy', ticker: 'MANUALBOND', assetClass: 'Bank Bonds', qty: 3, price: 1000 };
+  const { byTicker } = computeBankBondsMarketValue([manual], { [descKeyA]: 99999 });
+  assert.equal(byTicker['MANUALBOND'].currentValue, 3000);
+  assert.equal(byTicker['MANUALBOND'].marketValueSource, 'cost');
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

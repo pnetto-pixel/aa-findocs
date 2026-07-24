@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
-import { computeBankBondsPrincipal } from "./lib/bankBonds.js";
+import { computeBankBondsPrincipal, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -487,17 +487,34 @@ const BANK_BONDS_ID = "bank-bonds-aggregate";
 // Performance.jsx's Position Performance / Composition Evolution), imported
 // at the top of this file.
 
-// Ensures a single manual "US Bank Bonds" holding reflects `principal`.
+// Ensures a single manual "US Bank Bonds" holding reflects the portfolio's
+// bank bonds. Its displayed value (`manualValue`) is the CURRENT VALUE —
+// SimpleFin's reported market value (`marketValueOverride`, recorded by
+// applyFidelityBalanceUpdate on sync) when available, falling back to the
+// transaction-derived principal (cost) when SimpleFin hasn't reported a value
+// yet (jul/2026 — "Holdings should reflect total current value, not total
+// cost"). `costBasis` always carries the transaction principal so the Holdings
+// card can still show cost + gain/loss alongside the current value.
 // - Mirrors only the aggregated holding; Cash and other manual holdings (e.g.
 //   BRA Fixed Income) are never touched.
 // - When there are Bank Bonds transactions, the holding is created if missing
-//   and its manualValue kept in sync.
+//   and kept in sync.
 // - When principal is 0 AND no holding exists yet, nothing is added (avoids an
 //   empty placeholder for users with no bonds).
 // Returns a patched holdings array if anything changed, null otherwise.
 function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
   const arr = Array.isArray(holdings) ? holdings : [];
   const existing = arr.find((h) => h && h.id === BANK_BONDS_ID);
+
+  // Current value = SimpleFin's reported market value when on record, else the
+  // transaction cost (principal). Read from the existing holding so this
+  // reconciliation (which runs on every transaction change) preserves the
+  // last synced value instead of reverting the card to cost.
+  const override =
+    existing && existing.marketValueOverride != null && isFinite(existing.marketValueOverride)
+      ? existing.marketValueOverride
+      : null;
+  const displayValue = override != null ? override : principal;
 
   if (!existing) {
     if (!hasBankBondTx) return null; // nothing to track yet
@@ -514,7 +531,8 @@ function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
         manualCurrency: "USD",
         qty: null,
         manualPrice: null,
-        manualValue: principal,
+        manualValue: displayValue,
+        costBasis: principal,
         price: null,
         target: existingTargetFallback(arr),
         derivedFromTransactions: true,
@@ -535,16 +553,16 @@ function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
 
   // Reaching here means hasBankBondTx === true (the guard above already
   // returned for the false case), so this is the moment to graduate a
-  // not-yet-derived holding permanently, even if its manualValue happens to
-  // already equal the freshly computed principal (no value change needed,
-  // but the flag flip still is).
+  // not-yet-derived holding permanently, even if nothing else changed (the
+  // flag flip still is a change).
   const needsGraduation = existing.derivedFromTransactions === false;
-  if (existing.manualValue === principal && !needsGraduation) return null;
+  if (existing.manualValue === displayValue && existing.costBasis === principal && !needsGraduation) return null;
   return arr.map((h) =>
     h.id === BANK_BONDS_ID
       ? {
           ...h,
-          manualValue: principal,
+          manualValue: displayValue,
+          costBasis: principal,
           // Graduates the holding once a real Bank Bonds transaction shows
           // up: from then on it reconciles normally, permanently.
           derivedFromTransactions: true,
@@ -2522,13 +2540,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // debounced effect.
   //
   // Cash writes straight to manualValue (the value actually displayed).
-  // Bank Bonds' manualValue is kept in sync with the transaction-derived
-  // principal by applyBankBondsHolding on every transaction change, so
-  // writing it here would just get overwritten — instead this records a
-  // separate marketValueOverride/marketValueOverrideAsOf pair (additive,
-  // doesn't affect the transaction-derived value shown on the Dashboard;
-  // a later phase can surface it there per the plan's §7 decision).
-  function applyFidelityBalanceUpdate(candidate) {
+  // Bank Bonds now DISPLAY the SimpleFin current value (jul/2026): the summed
+  // market value lands in both `marketValueOverride` (reference/back-compat)
+  // and `manualValue` (the displayed value), and the PER-BOND breakdown is
+  // stored in `bondMarketValues` (descKey -> market value) so Position
+  // Performance can match SimpleFin individually per bond. `bondHoldings` is
+  // the sync's per-bond snapshot (Transactions.jsx passes it through); each
+  // entry carries a descKey + marketValue.
+  function applyFidelityBalanceUpdate(candidate, bondHoldings = []) {
     if (!candidate) return;
     const asOf = candidate.asOf || new Date().toISOString();
     if (candidate.kind === "cash") {
@@ -2552,6 +2571,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       return;
     }
     if (candidate.kind === "bank-bonds") {
+      // Per-bond current values keyed by the stable descKey (issuer|coupon|
+      // maturity), so Position Performance can match SimpleFin individually
+      // per bond regardless of whether the bond is keyed by a CUSIP, a
+      // synthetic id, or a manual ticker.
+      const bondMarketValues = {};
+      for (const h of Array.isArray(bondHoldings) ? bondHoldings : []) {
+        const key = h && h.descKey;
+        const mv = h && Number(h.marketValue);
+        if (key && isFinite(mv)) bondMarketValues[key] = mv;
+      }
       const found = holdings.some((h) => h.id === BANK_BONDS_ID);
       if (!found) {
         // No Bank Bonds holding exists yet (no Bank Bonds transactions have
@@ -2575,10 +2604,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             qty: null,
             manualPrice: null,
             manualValue: candidate.proposed,
+            costBasis: 0,
             price: null,
             target: 0,
             marketValueOverride: candidate.proposed,
             marketValueOverrideAsOf: asOf,
+            bondMarketValues,
+            bondMarketValuesAsOf: asOf,
             derivedFromTransactions: false,
             lastUpdated: new Date().toISOString(),
           },
@@ -2589,16 +2621,27 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         });
         return;
       }
+      // Existing holding: display the SimpleFin current value (manualValue),
+      // keep the reference/back-compat marketValueOverride, and store the
+      // per-bond breakdown. costBasis is left to applyBankBondsHolding, which
+      // recomputes it from the transaction principal on the next change.
       setHoldings((prev) =>
         prev.map((h) =>
           h.id === BANK_BONDS_ID
-            ? { ...h, marketValueOverride: candidate.proposed, marketValueOverrideAsOf: asOf }
+            ? {
+                ...h,
+                manualValue: candidate.proposed,
+                marketValueOverride: candidate.proposed,
+                marketValueOverrideAsOf: asOf,
+                bondMarketValues,
+                bondMarketValuesAsOf: asOf,
+              }
             : h
         )
       );
       setToast({
         kind: "success",
-        message: "Bank Bonds market value recorded (reference only for now).",
+        message: "Bank Bonds current value updated from SimpleFin.",
       });
     }
   }
@@ -6084,20 +6127,28 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
   const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
 
-  // SimpleFin-reported market value (Bank Bonds only, see applyFidelityBalanceUpdate
-  // in App.jsx). Additive/reference field, does not affect `value` above.
-  const hasMarketValueOverride = holding.marketValueOverride != null;
-  const marketValueDelta = hasMarketValueOverride ? holding.marketValueOverride - value : null;
-  const marketValueDeltaColor =
-    marketValueDelta == null
+  // Bank Bonds now DISPLAY the current value as `value` (manualValue is kept
+  // in sync with SimpleFin's market value by applyBankBondsHolding). The
+  // reference block below instead shows COST (costBasis, the transaction
+  // principal) and the resulting gain/loss — the inverse of the pre-jul/2026
+  // layout, which showed cost as the main value and market value as reference.
+  const costBasis =
+    holding.costBasis != null && isFinite(holding.costBasis) ? holding.costBasis : null;
+  const hasCostRef = isBankBonds && costBasis != null;
+  const bondGainLoss = hasCostRef ? value - costBasis : null;
+  const bondGainLossColor =
+    bondGainLoss == null
       ? T.textDim
-      : marketValueDelta > 0
+      : bondGainLoss > 0
       ? T.green
-      : marketValueDelta < 0
+      : bondGainLoss < 0
       ? T.red
       : T.textDim;
-  const marketValueAsOf = holding.marketValueOverrideAsOf
-    ? new Date(holding.marketValueOverrideAsOf.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-US", {
+  const bondGainLossPct = hasCostRef && costBasis > 0 ? (value / costBasis - 1) * 100 : null;
+  const marketValueAsOf = (holding.bondMarketValuesAsOf || holding.marketValueOverrideAsOf)
+    ? new Date(
+        (holding.bondMarketValuesAsOf || holding.marketValueOverrideAsOf).slice(0, 10) + "T00:00:00Z"
+      ).toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
         year: "numeric",
@@ -6316,25 +6367,26 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
               </div>
             )}
           </div>
-          {hasMarketValueOverride && (
+          {hasCostRef && (
             <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Market Value (SimpleFin)</span>
+                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Cost</span>
                 <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>
-                  {maskMoney(holding.marketValueOverride, valuesHidden)}
+                  {maskMoney(costBasis, valuesHidden)}
                 </span>
               </div>
-              {marketValueDelta != null && (
+              {bondGainLoss != null && (
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: marketValueAsOf ? 5 : 0 }}>
-                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>DELTA</span>
-                  <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: marketValueDeltaColor }}>
-                    {marketValueDelta > 0 ? "+" : ""}{maskMoney(marketValueDelta, valuesHidden)}
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Gain / Loss</span>
+                  <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: bondGainLossColor }}>
+                    {bondGainLoss > 0 ? "+" : ""}{maskMoney(bondGainLoss, valuesHidden)}
+                    {bondGainLossPct != null ? ` (${bondGainLossPct > 0 ? "+" : ""}${bondGainLossPct.toFixed(2)}%)` : ""}
                   </span>
                 </div>
               )}
               {marketValueAsOf && (
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>As of</span>
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>As of (SimpleFin)</span>
                   <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: T.textDim }}>{marketValueAsOf}</span>
                 </div>
               )}

@@ -230,10 +230,17 @@ function pruneUnchangedBalanceCandidates(candidates, holdings) {
   return (candidates || []).filter((c) => {
     const holdingId = c.kind === "cash" ? "cash-permanent" : "bank-bonds-aggregate";
     const h = holdings.find((h) => h.id === holdingId);
-    // Cash writes straight to manualValue; Bank Bonds writes to the additive
-    // marketValueOverride field (see applyFidelityBalanceUpdate in App.jsx) —
-    // comparing Bank Bonds against manualValue (the transaction-derived
-    // principal) would always look "changed" and reapply on every load.
+    // Bank Bonds carry a per-bond breakdown (bondMarketValues) that Position
+    // Performance matches individually. Keep re-applying the candidate until
+    // that map has been recorded at least once, even when the summed value is
+    // unchanged — otherwise a first sync whose total happens to equal the last
+    // one would leave the per-bond map empty and Performance stuck on cost.
+    if (c.kind === "bank-bonds") {
+      const bmv = h?.bondMarketValues;
+      if (!bmv || typeof bmv !== "object" || Object.keys(bmv).length === 0) return true;
+    }
+    // Cash writes straight to manualValue; Bank Bonds' summed value lands in
+    // marketValueOverride (see applyFidelityBalanceUpdate in App.jsx).
     const current = c.kind === "cash" ? h?.manualValue : h?.marketValueOverride;
     if (current == null || c.proposed == null) return true;
     return Math.round(current * 100) !== Math.round(c.proposed * 100);
@@ -4293,24 +4300,15 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     }
     return s;
   }, [transactions]);
-  // Bank Bonds reconciliation (item 41, fatia 1): SimpleFin's bond-shaped
-  // holdings (no CUSIP, only a description) staged by the sync, plus the
-  // confirmed descKey -> CUSIP bindings (auto-bound or manually confirmed
-  // via the "Bond Matching" section below). Declared here (ahead of
-  // unboundBondHoldings below) because that useMemo reads both — declaring
-  // them later in source order throws a temporal-dead-zone ReferenceError
-  // on every render, since `const` bindings in the same function scope
-  // aren't hoisted into a usable state before their own declaration line.
+  // SimpleFin's bond-shaped holdings (no CUSIP, only a description + market
+  // value) staged by the sync, plus the confirmed descKey -> CUSIP bindings.
+  // The old "Bond Matching" UI was removed (jul/2026) once the sync started
+  // creating bond buy transactions directly (bonds auto-resolve by descKey);
+  // these are kept because `pendingBondHoldings` carries the per-bond current
+  // values threaded into applyFidelityBalanceUpdate (Position Performance's
+  // per-bond match), and `bondBindings` still feeds the metadata backfill.
   const [pendingBondHoldings, setPendingBondHoldings] = useState([]);
   const [bondBindings, setBondBindings] = useState({});
-  // Staged bond holdings (item 41 "Bond Matching") still awaiting a bind —
-  // either their descKey has no entry in bondBindings yet, or the
-  // description didn't parse (descKey null, bound only by its raw-text
-  // fallback key). Already-bound holdings are excluded from the review list.
-  const unboundBondHoldings = useMemo(() => {
-    return pendingBondHoldings.filter((h) => !bondBindings[bondHoldingKey(h)]);
-  }, [pendingBondHoldings, bondBindings]);
-  const boundBondHoldingsCount = pendingBondHoldings.length - unboundBondHoldings.length;
   // id -> ticker the user picked in the Fidelity Income dropdown, overriding
   // the staged event's own `ticker` (issuer name or server-resolved CUSIP)
   // only at approval time — never mutates pendingFidBond itself.
@@ -4335,12 +4333,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
   const [pendingUnmappedOpen, setPendingUnmappedOpen] = useState(false);
   const [unmappedActionId, setUnmappedActionId] = useState(null); // id of row mid Dismiss
-  // Bond Matching section UI state (pendingBondHoldings/bondBindings
-  // themselves are declared earlier, ahead of the unboundBondHoldings
-  // useMemo that reads them — see comment there).
-  const [bondMatchingOpen, setBondMatchingOpen] = useState(true);
-  const [bondMatchPicks, setBondMatchPicks] = useState({}); // key -> chosen CUSIP
-  const [bondMatchConfirmingKey, setBondMatchConfirmingKey] = useState(null);
   // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
   const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, nextSyncAt }
@@ -4503,7 +4495,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       );
       for (const c of toApply) {
         appliedBalanceIdsRef.current.add(`${c.id}:${c.proposed}`);
-        onApproveFidelityBalance?.(c);
+        // Pass the per-bond holdings snapshot so the Bank Bonds candidate can
+        // record per-bond current values (descKey -> market value) for
+        // Position Performance's per-bond match.
+        onApproveFidelityBalance?.(c, p.bondHoldings || []);
       }
       if ((p.balanceCandidates || []).length > 0) {
         patchPendingFidelity(auth, { balanceCandidates: [] });
@@ -4582,7 +4577,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       );
       for (const c of toApply) {
         appliedBalanceIdsRef.current.add(`${c.id}:${c.proposed}`);
-        onApproveFidelityBalance?.(c);
+        // Pass the per-bond holdings snapshot so the Bank Bonds candidate can
+        // record per-bond current values (descKey -> market value) for
+        // Position Performance's per-bond match.
+        onApproveFidelityBalance?.(c, p.bondHoldings || []);
       }
       if ((p.balanceCandidates || []).length > 0) {
         patchPendingFidelity(auth, { balanceCandidates: [] });
@@ -4707,50 +4705,14 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     }
   }
 
-  // Confirms a manual "Bond Matching" bind (key -> CUSIP picked in the
-  // dropdown). Merges into `bondBindings` server-side (PUT already merges
-  // key-by-key — see api/fidelity-pending.js). Rather than optimistically
-  // trusting the write, it re-reads the server's `bondBindings`/`bondHoldings`
-  // afterward and drives the UI from that — so a bind only leaves the pending
-  // list once it has actually persisted (guards against a silently-dropped
-  // write that would look confirmed until the next page refresh).
-  async function confirmBondMatch(key, cusip) {
-    if (!key || !cusip) return;
-    setBondMatchConfirmingKey(key);
-    setFidSyncMessage(null);
-    try {
-      const ok = await patchPendingFidelity(auth, { bondBindings: { [key]: cusip } });
-      if (!ok) {
-        setFidSyncMessage("Falha ao salvar o match — o servidor não confirmou a gravação. Tente de novo.");
-        return;
-      }
-      const p = await fetchPendingFidelity(auth);
-      setBondBindings(p.bondBindings || {});
-      setPendingBondHoldings(p.bondHoldings || []);
-      if (!(p.bondBindings || {})[key]) {
-        // Write returned OK but the binding isn't in the reloaded state —
-        // surface it instead of silently leaving the row as "unbound".
-        setFidSyncMessage("O match não persistiu no servidor. Reporte isso — a gravação foi aceita mas não gravou.");
-        return;
-      }
-      setBondMatchPicks((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    } finally {
-      setBondMatchConfirmingKey(null);
-    }
-  }
 
-  // Bond metadata backfill (Fase 2 of the "Bond Matching" item, jul/2026).
-  // Single reconciliation effect that runs the backfill over EVERY entry
-  // currently in `bondBindings` — this covers both a bind just confirmed via
-  // confirmBondMatch above (bondBindings changes -> effect re-fires) and
-  // binds confirmed in a previous session, retroactively, every time this
-  // component mounts (bondBindings arrives already populated from the load
-  // effect). One code path for both, backed by lib/bond-meta.js so the pure
-  // logic isn't duplicated.
+  // Bond metadata backfill (jul/2026). Single reconciliation effect that runs
+  // the backfill over EVERY entry currently in `bondBindings` — the bindings
+  // are now populated exclusively by the server-side auto-bind on sync (the
+  // manual "Bond Matching" UI was removed once the sync started creating bond
+  // buy transactions directly). Runs retroactively every time this component
+  // mounts (bondBindings arrives already populated from the load effect),
+  // backed by lib/bond-meta.js so the pure logic isn't duplicated.
   //
   // Loop safety: backfillBondMetadata returns the SAME transactions array
   // reference when a pass makes no change. We only persist when the
@@ -5015,7 +4977,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           this admin/utility clutter doesn't stand between the toolbar and the
           actual transaction table below. Individual sub-sections keep their
           own collapse state once this is open. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0 || unboundBondHoldings.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
+      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           <button
             onClick={() => setSyncCardOpen((v) => !v)}
@@ -5044,7 +5006,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
               }}
             />
             Sync & Automation
-            {(pendingFid.length + pendingFidBond.length + pendingUnmapped.length + unboundBondHoldings.length + pendingSplits.length) > 0 && (
+            {(pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length) > 0 && (
               <span
                 style={{
                   marginLeft: 8,
@@ -5057,7 +5019,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   borderRadius: 8,
                 }}
               >
-                {pendingFid.length + pendingFidBond.length + pendingUnmapped.length + unboundBondHoldings.length + pendingSplits.length}
+                {pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length}
               </span>
             )}
           </button>
@@ -5069,7 +5031,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
           income, balance updates and unmapped rows each get their own section.
           The whole group renders for admin (so the Sync button is reachable
           even with nothing staged yet) or for anyone with staged content. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0 || unboundBondHoldings.length > 0) && (
+      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           {isAdmin && (
             <div
@@ -5669,210 +5631,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   </tbody>
                 </table>
               </ScrollHintTable>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Bond Matching — SimpleFin never returns a CUSIP for Bank Bonds/CDs
-          (item 41 "Bond Matching" reconciliation, fatia 1). Holdings whose
-          description parses (extractBondMeta) auto-bind here when the user
-          already has a matching buy transaction (see the auto-bind step in
-          api/fidelity-pending.js handleSync); the rest — including 7 older
-          bonds the user bought before Fidelity's CSV carried a CUSIP, plus
-          any holding whose description doesn't parse at all — need a manual
-          pick from the known Bank Bonds CUSIPs below. Confirming a bind here
-          does NOT retroactively fill in couponRate/maturityDate on the bond's
-          own buy transaction (backfill is a later slice) — it only lets
-          future SimpleFin interest/redemption rows for this bond resolve to
-          the right CUSIP. */}
-      {(isAdmin || unboundBondHoldings.length > 0) && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setBondMatchingOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: "rgba(201,169,97,0.06)",
-              border: `1px solid ${T.gold}55`,
-              borderRadius: bondMatchingOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.gold,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: bondMatchingOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            Bond Matching
-            {unboundBondHoldings.length > 0 && (
-              <span
-                style={{
-                  marginLeft: 8,
-                  background: T.gold,
-                  color: "#0b0d10",
-                  fontFamily: FONT_MONO,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: "1px 6px",
-                  borderRadius: 8,
-                }}
-              >
-                {unboundBondHoldings.length}
-              </span>
-            )}
-          </button>
-
-          {bondMatchingOpen && (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderTop: "none",
-                borderRadius: "0 0 4px 4px",
-                padding: 14,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 12,
-                  color: T.textDim,
-                  marginBottom: 12,
-                  lineHeight: 1.5,
-                }}
-              >
-                SimpleFin doesn't return a CUSIP for Bank Bonds/CDs — only a
-                description (issuer, coupon, maturity when parseable). Pick
-                the matching Bank Bonds CUSIP below so future interest and
-                redemption events resolve to the right holding. Bonds that
-                already match a known buy are bound automatically and don't
-                show up here.
-              </div>
-
-              {boundBondHoldingsCount > 0 && (
-                <div
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    color: T.textFaint,
-                    marginBottom: 12,
-                  }}
-                >
-                  {boundBondHoldingsCount} bond{boundBondHoldingsCount === 1 ? "" : "s"} already matched.
-                </div>
-              )}
-
-              {unboundBondHoldings.length === 0 ? (
-                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint }}>
-                  Nothing pending review.
-                </div>
-              ) : (
-                <ScrollHintTable>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-                    <thead>
-                      <tr>
-                        {["Description", "Coupon / Maturity", "Match to", ""].map((h) => (
-                          <th
-                            key={h}
-                            style={{
-                              textAlign: "left",
-                              fontFamily: FONT_MONO,
-                              fontSize: 9,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              color: T.textFaint,
-                              padding: "4px 8px",
-                            }}
-                          >
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {unboundBondHoldings.map((h) => {
-                        const key = bondHoldingKey(h);
-                        const picked = bondMatchPicks[key] || "";
-                        const confirming = bondMatchConfirmingKey === key;
-                        return (
-                          <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
-                            <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                              {h.description || "—"}
-                              {h.accountName && (
-                                <div style={{ fontSize: 9, color: T.textFaint, marginTop: 2 }}>{h.accountName}</div>
-                              )}
-                            </td>
-                            <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim, padding: "4px 8px", whiteSpace: "nowrap" }}>
-                              {h.couponRate != null && h.maturityDate
-                                ? `${h.couponRate}% | ${h.maturityDate}`
-                                : "unparsed"}
-                            </td>
-                            <td style={{ padding: "4px 8px" }}>
-                              <select
-                                value={picked}
-                                onChange={(ev) =>
-                                  setBondMatchPicks((prev) => ({ ...prev, [key]: ev.target.value }))
-                                }
-                                style={{
-                                  background: T.cardElev,
-                                  border: `1px solid ${T.gold}`,
-                                  color: T.gold,
-                                  padding: "2px 4px",
-                                  fontFamily: FONT_MONO,
-                                  fontSize: 10,
-                                  cursor: "pointer",
-                                  maxWidth: 160,
-                                }}
-                              >
-                                <option value="">Select CUSIP…</option>
-                                {[...knownBankBondTickers].sort().map((tk) => (
-                                  <option key={tk} value={tk}>
-                                    {tk}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td style={{ padding: "4px 8px", textAlign: "right" }}>
-                              <button
-                                onClick={() => confirmBondMatch(key, picked)}
-                                disabled={!picked || confirming}
-                                style={{
-                                  background: T.gold,
-                                  color: "#0b0d10",
-                                  border: "none",
-                                  borderRadius: 4,
-                                  padding: "4px 10px",
-                                  fontFamily: FONT_MONO,
-                                  fontSize: 9,
-                                  letterSpacing: "0.1em",
-                                  textTransform: "uppercase",
-                                  fontWeight: 700,
-                                  cursor: !picked || confirming ? "default" : "pointer",
-                                  opacity: !picked || confirming ? 0.5 : 1,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {confirming ? "…" : "Confirm"}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </ScrollHintTable>
-              )}
             </div>
           )}
         </div>
