@@ -2230,13 +2230,18 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     const todayISO = localTodayISO();
     const netQty = computeNetQty(txs);
     // Bond maturity within 7 days — derived from transactions, no API needed.
-    const CUSIP_RX = /^[0-9A-Z]{9}$/;
+    // assetClass === "Bank Bonds" plus a maturityDate is already enough to
+    // identify the bond; no need to also gate on the ticker's shape. That
+    // used to require a 9-char CUSIP format, but Bank Bonds bought with no
+    // public CUSIP source now carry an 11-char synthetic id (see
+    // generateSyntheticBondTicker in lib/bond-meta.js) and still need this
+    // alert.
     const seenBond = new Set();
     const bondAlerts = [];
     for (const tx of txs) {
       if (tx.assetClass !== "Bank Bonds" || !tx.maturityDate) continue;
       const cusip = (tx.ticker || "").toUpperCase();
-      if (!CUSIP_RX.test(cusip) || seenBond.has(cusip)) continue;
+      if (!cusip || seenBond.has(cusip)) continue;
       const daysLeft = Math.ceil(
         (new Date(tx.maturityDate + "T00:00:00Z") - new Date(todayISO + "T00:00:00Z")) / 86400000
       );

@@ -7,7 +7,7 @@
 // computeBankBondsValueAt (src/lib/bankBonds.js) actually parses.
 
 import { strict as assert } from 'node:assert';
-import { backfillBondMetadata } from '../lib/bond-meta.js';
+import { backfillBondMetadata, generateSyntheticBondTicker } from '../lib/bond-meta.js';
 import { computeBankBondsValueAt } from '../src/lib/bankBonds.js';
 
 let passed = 0;
@@ -186,6 +186,58 @@ await test('(f) ignores non-"Bank Bonds" transactions even with a matching ticke
   const original = [stockTx];
   const next = backfillBondMetadata(original, CUSIP, HOLDING_DESC);
   assert.equal(next, original);
+});
+
+console.log('\n— generateSyntheticBondTicker —');
+
+await test('matches the confirmed format: <maturity YYYYMMDD><coupon x100, no dot>', () => {
+  assert.equal(generateSyntheticBondTicker(3.95, '2029-05-08'), '20290508395');
+});
+
+await test('same maturity, different coupon -> different id (the real pair the user has)', () => {
+  const a = generateSyntheticBondTicker(3.95, '2029-05-08');
+  const b = generateSyntheticBondTicker(3.80, '2029-05-08');
+  assert.equal(a, '20290508395');
+  assert.equal(b, '20290508380');
+  assert.notEqual(a, b);
+  // Both share the same 8-digit maturity prefix, by design.
+  assert.equal(a.slice(0, 8), b.slice(0, 8));
+});
+
+await test('covers the user\'s real bonds (bps = coupon x 100, always integer)', () => {
+  assert.equal(generateSyntheticBondTicker(4.20, '2030-07-08'), '20300708420');
+  assert.equal(generateSyntheticBondTicker(2.88, '2028-11-01'), '20281101288');
+  assert.equal(generateSyntheticBondTicker(2.50, '2027-02-14'), '20270214250');
+  assert.equal(generateSyntheticBondTicker(5.50, '2031-09-30'), '20310930550');
+});
+
+await test('broken coupon (4.125%) encodes deterministically, no decimal separator', () => {
+  const id = generateSyntheticBondTicker(4.125, '2029-05-08');
+  assert.equal(id, '202905084125'); // x1000 fallback since x100 isn't a whole number
+  assert.ok(!id.includes('.'));
+  // Deterministic: same inputs -> same output every time.
+  assert.equal(generateSyntheticBondTicker(4.125, '2029-05-08'), id);
+});
+
+await test('invalid/missing coupon returns falsy', () => {
+  assert.ok(!generateSyntheticBondTicker(null, '2029-05-08'));
+  assert.ok(!generateSyntheticBondTicker(undefined, '2029-05-08'));
+  assert.ok(!generateSyntheticBondTicker(0, '2029-05-08'));
+  assert.ok(!generateSyntheticBondTicker(-1.5, '2029-05-08'));
+  assert.ok(!generateSyntheticBondTicker(NaN, '2029-05-08'));
+});
+
+await test('invalid/missing maturity date returns falsy', () => {
+  assert.ok(!generateSyntheticBondTicker(3.95, null));
+  assert.ok(!generateSyntheticBondTicker(3.95, ''));
+  assert.ok(!generateSyntheticBondTicker(3.95, '05/08/2029')); // wrong format (not ISO)
+  assert.ok(!generateSyntheticBondTicker(3.95, '2029-02-30')); // Feb 30 doesn't exist
+  assert.ok(!generateSyntheticBondTicker(3.95, '2029-13-01')); // month 13
+});
+
+await test('never contains a "." (constraint: ASCII, no decimal separator in the id)', () => {
+  const id = generateSyntheticBondTicker(4.125, '2029-05-08');
+  assert.equal(/\./.test(id), false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

@@ -18,7 +18,7 @@ import {
   parseCSVOrPaste,
   parseFidelityCSV,
 } from "./lib/parsing.js";
-import { buildKnownBondsByDescKey, backfillBondMetadata } from "../lib/bond-meta.js";
+import { buildKnownBondsByDescKey, backfillBondMetadata, generateSyntheticBondTicker } from "../lib/bond-meta.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -390,6 +390,15 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
   const [showTickerList, setShowTickerList] = useState(false);
   const [tickerValidating, setTickerValidating] = useState(false);
   const [tickerError, setTickerError] = useState("");
+  // Bank Bonds synthetic-id generator (jul/2026, opt-in — see lib/bond-meta.js
+  // generateSyntheticBondTicker). All useState hooks declared up-front here,
+  // before any useMemo/useEffect below, to avoid the hook-ordering/TDZ issues
+  // this area has hit before. No new useEffect: generation only runs on click.
+  const [showBondGen, setShowBondGen] = useState(false);
+  const [genCoupon, setGenCoupon] = useState("");
+  const [genMaturity, setGenMaturity] = useState("");
+  const [genIssuer, setGenIssuer] = useState("");
+  const [bondGenMeta, setBondGenMeta] = useState(null); // { couponRate, maturityDate, shortName } once generated
 
   const currency = currencyForAssetClass(assetClass) || "USD";
 
@@ -408,6 +417,34 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
     if (inferred) setAssetClass(inferred);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker]);
+
+  // Bank Bonds: derive a synthetic ticker from coupon + maturity when no
+  // CUSIP is available (no public source reports them any more, jul/2026).
+  // Opt-in only (link/button, never automatic) — the resulting ticker stays
+  // fully editable in the field above. See lib/bond-meta.js for the encoding
+  // and why couponRate/maturityDate/shortName on the transaction (not the
+  // ticker's shape) are what let future INTEREST/REDEMPTION rows auto-resolve.
+  function handleGenerateBondId() {
+    setError("");
+    const coupon = parseFloat(genCoupon);
+    if (!isFinite(coupon) || coupon <= 0) { setError("Coupon % required to generate an id"); return; }
+    if (!genMaturity) { setError("Maturity date required to generate an id"); return; }
+    const synthetic = generateSyntheticBondTicker(coupon, genMaturity);
+    if (!synthetic) { setError("Could not generate an id from that coupon/maturity"); return; }
+    // Same "COUPON% | MM/DD/YYYY" format extractBondMeta produces for
+    // CSV-imported bonds and that computeBankBondsValueAt's accrual regex
+    // (src/lib/bankBonds.js) expects.
+    const [yyyy, mm, dd] = genMaturity.split("-");
+    const notesStr = `${coupon.toFixed(2)}% | ${mm}/${dd}/${yyyy}`;
+    setTicker(synthetic);
+    setTickerError("");
+    setNotes(notesStr);
+    setBondGenMeta({
+      couponRate: coupon,
+      maturityDate: genMaturity,
+      shortName: genIssuer.trim() || null,
+    });
+  }
 
   function handleSubmit() {
     setError("");
@@ -435,6 +472,14 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
       currency,
       fee: feeN,
       notes: notes.trim(),
+      // Only populated when the ticker above came from the synthetic-id
+      // generator (bondGenMeta) — a manually-typed CUSIP or any other asset
+      // class never gets these fields, same as before this feature.
+      ...(assetClass === "Bank Bonds" && bondGenMeta && {
+        couponRate: bondGenMeta.couponRate,
+        maturityDate: bondGenMeta.maturityDate,
+        shortName: bondGenMeta.shortName,
+      }),
       createdAt: initial?.createdAt || new Date().toISOString(),
     };
     onSubmit(tx);
@@ -582,6 +627,101 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
             </div>
           )}
         </div>
+
+        {assetClass === "Bank Bonds" && !ticker.trim() && !showBondGen && (
+          <div style={{ gridColumn: "1 / -1", marginTop: -6 }}>
+            <button
+              type="button"
+              onClick={() => setShowBondGen(true)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: T.gold,
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                letterSpacing: "0.02em",
+                cursor: "pointer",
+                padding: 0,
+                textDecoration: "underline",
+              }}
+            >
+              Don't have a CUSIP? Generate ID from coupon + maturity
+            </button>
+          </div>
+        )}
+
+        {assetClass === "Bank Bonds" && showBondGen && (
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              border: `1px solid ${T.border}`,
+              background: T.cardElev,
+              padding: 12,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 12,
+            }}
+          >
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "0.18em", color: T.textDim, textTransform: "uppercase" }}>
+                Generate Synthetic Bond ID
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBondGen(false)}
+                style={{ background: "transparent", border: "none", color: T.textDim, cursor: "pointer", padding: 0 }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div>
+              <Label>Coupon %</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="any"
+                placeholder="3.95"
+                value={genCoupon}
+                onChange={(e) => setGenCoupon(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label>Maturity date</Label>
+              <Input
+                type="date"
+                value={genMaturity}
+                onChange={(e) => setGenMaturity(e.target.value)}
+              />
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Label>Issuer / Short Name (optional)</Label>
+              <Input
+                placeholder="WELLS FARGO BANK NATL ASSN CD"
+                value={genIssuer}
+                onChange={(e) => setGenIssuer(e.target.value.toUpperCase())}
+              />
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <button
+                type="button"
+                onClick={handleGenerateBondId}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${T.gold}`,
+                  color: T.gold,
+                  padding: "8px 14px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  letterSpacing: "0.15em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                Generate
+              </button>
+            </div>
+          </div>
+        )}
 
         <div>
           <Label>Quantity</Label>
