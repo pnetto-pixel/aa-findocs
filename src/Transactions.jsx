@@ -2699,6 +2699,10 @@ function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }
 
 // --- Import Modal ----------------------------------------------------------
 
+// Stable empty-collection defaults for ImportModal's optional staging props
+// (module-level so they're referentially stable across renders).
+const EMPTY_SET = new Set();
+
 const SAMPLE_CSV = `date,side,ticker,qty,price,assetClass,fee,notes
 2024-03-15,buy,AAPL,10,175.50,Stocks,0,
 2024-03-20,buy,BBSE3,100,38.20,BRA Stocks,,monthly buy`;
@@ -2714,8 +2718,33 @@ function ImportModal({
   fidSyncStatus = null,
   fidSyncMessage = null,
   runFidelitySync,
+  valuesHidden = false,
+  // Fidelity Import staging (trades / income / unmapped) — moved into this
+  // modal's "Sync" tab (see the removed "Fidelity Import" card that used to
+  // live in TransactionsView). Visible to everyone; only the "Sync Fidelity"
+  // trigger button above stays admin-gated.
+  pendingFid = [],
+  pendingFidChecked = EMPTY_SET,
+  setPendingFidChecked,
+  togglePendingFid,
+  approvingFid = false,
+  approvePendingFid,
+  discardPendingFid,
+  pendingFidBond = [],
+  pendingFidBondChecked = EMPTY_SET,
+  setPendingFidBondChecked,
+  togglePendingFidBond,
+  approvingFidBond = false,
+  approvePendingFidBond,
+  discardPendingFidBond,
+  bondTickerEdits = {},
+  setBondTickerEdits,
+  knownBankBondTickers = EMPTY_SET,
+  pendingUnmapped = [],
+  unmappedActionId,
+  dismissUnmappedItem,
 }) {
-  const [tab, setTab] = useState("fidelity"); // upload | fidelity | sync
+  const [tab, setTab] = useState("sync"); // sync | upload | fidelity
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState(null); // { results, hadHeader, dateFormat }
   const [decimalPrompt, setDecimalPrompt] = useState(false); // ambiguous comma found
@@ -2781,7 +2810,7 @@ function ImportModal({
       setStructuralPrompt(false);
       setMode("append");
       setFileError("");
-      setTab("fidelity");
+      setTab("sync");
       setCheckedRows(new Set());
       setDupFilter("all");
       setEditingIdx(null);
@@ -3286,9 +3315,9 @@ function ImportModal({
                 }}
               >
                 {[
+                  { id: "sync", label: "Sync" },
                   { id: "upload", label: "Upload CSV" },
                   { id: "fidelity", label: "Fidelity" },
-                  ...(isAdmin ? [{ id: "sync", label: "Sync" }] : []),
                 ].map((t) => {
                   const active = tab === t.id;
                   return (
@@ -3428,77 +3457,655 @@ function ImportModal({
                 </div>
               )}
 
-              {tab === "sync" && isAdmin && (
+              {tab === "sync" && (
                 <div>
-                  <Label>SimpleFin / Fidelity automatic sync</Label>
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      color: T.textFaint,
-                      marginTop: 4,
-                      marginBottom: 14,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    Pulls trades, bond interest/dividends, and position
-                    changes from the connected Fidelity account via SimpleFin.
-                    Nothing is added to your transactions automatically —
-                    review and approve staged rows below the transaction
-                    table.
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      flexWrap: "wrap",
-                      padding: "10px 12px",
-                      background: T.cardElev,
-                      border: `1px solid ${T.border}`,
-                      borderRadius: 4,
-                    }}
-                  >
-                    <button
-                      onClick={runFidelitySync}
-                      disabled={fidSyncing}
+                  {isAdmin && (
+                    <div
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 6,
-                        background: T.gold,
-                        color: "#0b0d10",
-                        border: "none",
+                        gap: 10,
+                        flexWrap: "wrap",
+                        padding: "10px 12px",
+                        marginBottom: 16,
+                        background: T.cardElev,
+                        border: `1px solid ${T.border}`,
                         borderRadius: 4,
-                        padding: "6px 12px",
-                        fontFamily: FONT_MONO,
-                        fontSize: 10,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        fontWeight: 700,
-                        cursor: fidSyncing ? "default" : "pointer",
-                        opacity: fidSyncing ? 0.6 : 1,
                       }}
                     >
-                      <RefreshCw size={11} className={fidSyncing ? "spin" : undefined} />
-                      {fidSyncing ? "Syncing…" : "Sync Fidelity"}
-                    </button>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
-                      {fidSyncStatus?.lastSync
-                        ? `Last sync: ${new Date(fidSyncStatus.lastSync).toLocaleString()}`
-                        : "Never synced"}
-                    </span>
-                    {fidSyncStatus?.lastError && (
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.red }}>
-                        {fidSyncStatus.lastError}
-                      </span>
-                    )}
-                    {fidSyncMessage && (
+                      <button
+                        onClick={runFidelitySync}
+                        disabled={fidSyncing}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          background: T.gold,
+                          color: "#0b0d10",
+                          border: "none",
+                          borderRadius: 4,
+                          padding: "6px 12px",
+                          fontFamily: FONT_MONO,
+                          fontSize: 10,
+                          letterSpacing: "0.1em",
+                          textTransform: "uppercase",
+                          fontWeight: 700,
+                          cursor: fidSyncing ? "default" : "pointer",
+                          opacity: fidSyncing ? 0.6 : 1,
+                        }}
+                      >
+                        <RefreshCw size={11} className={fidSyncing ? "spin" : undefined} />
+                        {fidSyncing ? "Syncing…" : "Sync Fidelity"}
+                      </button>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
-                        {fidSyncMessage}
+                        {fidSyncStatus?.lastSync
+                          ? `Last sync: ${new Date(fidSyncStatus.lastSync).toLocaleString()}`
+                          : "Never synced"}
                       </span>
-                    )}
-                  </div>
+                      {fidSyncStatus?.lastError && (
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.red }}>
+                          {fidSyncStatus.lastError}
+                        </span>
+                      )}
+                      {fidSyncMessage && (
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                          {fidSyncMessage}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Fidelity Import — staged by the automation (item 38), extended
+                      for the SimpleFin sync (docs/plans/simplefin-fidelity-feed.md
+                      Fase 1): trades, income and unmapped rows each get their own
+                      section. Visible to everyone (only the Sync Fidelity trigger
+                      above is admin-gated) — this is the same behavior the old
+                      standalone "Fidelity Import" card (outside this modal) had. */}
+                  {pendingFid.length === 0 && pendingFidBond.length === 0 && pendingUnmapped.length === 0 ? (
+                    <div
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        color: T.textFaint,
+                      }}
+                    >
+                      Nothing staged for review.
+                    </div>
+                  ) : (
+                    <>
+                      {pendingFid.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              background: "rgba(201,169,97,0.06)",
+                              border: `1px solid ${T.gold}55`,
+                              borderRadius: "4px 4px 0 0",
+                              padding: "10px 14px",
+                              color: T.gold,
+                              fontFamily: FONT_MONO,
+                              fontSize: 10,
+                              letterSpacing: "0.15em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Fidelity Import
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                background: T.gold,
+                                color: "#0b0d10",
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                fontWeight: 700,
+                                padding: "1px 6px",
+                                borderRadius: 8,
+                              }}
+                            >
+                              {pendingFid.length} new
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              background: T.card,
+                              border: `1px solid ${T.border}`,
+                              borderTop: "none",
+                              borderRadius: "0 0 4px 4px",
+                              padding: 14,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 12,
+                                color: T.textDim,
+                                marginBottom: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              Staged by the automated import. Review and approve to add to your
+                              transactions. Nothing is saved until you approve.
+                            </div>
+
+                            <div style={{ marginBottom: 12 }}>
+                            <ScrollHintTable>
+                              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: 28 }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={pendingFidChecked.size === pendingFid.length}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setPendingFidChecked(new Set(pendingFid.map((t) => t.id || dupKey(t))));
+                                          } else {
+                                            setPendingFidChecked(new Set());
+                                          }
+                                        }}
+                                      />
+                                    </th>
+                                    {["Date", "B/S", "Ticker", "Qty", "Price", "Notes"].map((h) => (
+                                      <th
+                                        key={h}
+                                        style={{
+                                          textAlign: h === "Qty" || h === "Price" ? "right" : "left",
+                                          fontFamily: FONT_MONO,
+                                          fontSize: 9,
+                                          letterSpacing: "0.1em",
+                                          textTransform: "uppercase",
+                                          color: T.textFaint,
+                                          padding: "4px 8px",
+                                        }}
+                                      >
+                                        {h}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {pendingFid.map((t) => {
+                                    const key = t.id || dupKey(t);
+                                    const cur = t.currency || "USD";
+                                    // Distinguishes how this row was staged: a delta detected
+                                    // between the SimpleFin holdings snapshot and the known
+                                    // position (item: "sync creates trades from position
+                                    // changes"), a bond buy synthesized the same way for
+                                    // Bank Bonds, or a real trade/event (manual, CSV, or a
+                                    // SimpleFin transaction like REDEMPTION) with no tag.
+                                    const tag = t.derivedFromHoldingsDiff
+                                      ? { label: "DELTA", color: T.gold }
+                                      : t.syncedBond
+                                      ? { label: "BOND BUY", color: T.textDim }
+                                      : null;
+                                    return (
+                                      <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
+                                        <td style={{ padding: "4px 0" }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={pendingFidChecked.has(key)}
+                                            onChange={() => togglePendingFid(key)}
+                                          />
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {t.date}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: t.side === "sell" ? T.red : T.green, padding: "4px 8px" }}>
+                                          {t.side === "sell" ? "S" : "B"}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {t.ticker}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                                          {fmtNum(t.qty)}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                                          {valuesHidden ? "•••" : fmtMoney(t.price, cur)}
+                                        </td>
+                                        <td style={{ padding: "4px 8px", maxWidth: 220 }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                            {tag && (
+                                              <span
+                                                style={{
+                                                  flexShrink: 0,
+                                                  fontFamily: FONT_MONO,
+                                                  fontSize: 8,
+                                                  fontWeight: 700,
+                                                  letterSpacing: "0.08em",
+                                                  color: tag.color,
+                                                  border: `1px solid ${tag.color}55`,
+                                                  borderRadius: 3,
+                                                  padding: "1px 4px",
+                                                }}
+                                              >
+                                                {tag.label}
+                                              </span>
+                                            )}
+                                            <span
+                                              title={t.notes || ""}
+                                              style={{
+                                                fontFamily: FONT_MONO,
+                                                fontSize: 10,
+                                                color: T.textDim,
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                                display: "inline-block",
+                                                maxWidth: 160,
+                                              }}
+                                            >
+                                              {t.notes || "--"}
+                                            </span>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </ScrollHintTable>
+                            </div>
+
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button
+                                onClick={approvePendingFid}
+                                disabled={approvingFid || pendingFidChecked.size === 0}
+                                style={{
+                                  background: T.gold,
+                                  color: "#0b0d10",
+                                  border: "none",
+                                  borderRadius: 4,
+                                  padding: "8px 14px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  fontWeight: 700,
+                                  cursor: approvingFid || pendingFidChecked.size === 0 ? "default" : "pointer",
+                                  opacity: approvingFid || pendingFidChecked.size === 0 ? 0.5 : 1,
+                                }}
+                              >
+                                {approvingFid ? "Working…" : `Approve ${pendingFidChecked.size} of ${pendingFid.length}`}
+                              </button>
+                              <button
+                                onClick={discardPendingFid}
+                                disabled={approvingFid}
+                                style={{
+                                  background: "transparent",
+                                  color: T.textDim,
+                                  border: `1px solid ${T.border}`,
+                                  borderRadius: 4,
+                                  padding: "8px 14px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  cursor: approvingFid ? "default" : "pointer",
+                                }}
+                              >
+                                Discard
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Income (dividend/interest/tax) staged by the SimpleFin sync — own
+                          checkboxes, separate from the trades table above. */}
+                      {pendingFidBond.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              background: "rgba(201,169,97,0.06)",
+                              border: `1px solid ${T.gold}55`,
+                              borderRadius: "4px 4px 0 0",
+                              padding: "10px 14px",
+                              color: T.gold,
+                              fontFamily: FONT_MONO,
+                              fontSize: 10,
+                              letterSpacing: "0.15em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Fidelity Income
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                background: T.gold,
+                                color: "#0b0d10",
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                fontWeight: 700,
+                                padding: "1px 6px",
+                                borderRadius: 8,
+                              }}
+                            >
+                              {pendingFidBond.length} new
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              background: T.card,
+                              border: `1px solid ${T.border}`,
+                              borderTop: "none",
+                              borderRadius: "0 0 4px 4px",
+                              padding: 14,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 12,
+                                color: T.textDim,
+                                marginBottom: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              Dividends, bond interest and withheld tax staged by the SimpleFin
+                              sync. Review and approve to add to your income history.
+                            </div>
+
+                            <div style={{ marginBottom: 12 }}>
+                              <ScrollHintTable>
+                                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+                                  <thead>
+                                    <tr>
+                                      <th style={{ width: 28 }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={pendingFidBondChecked.size === pendingFidBond.length}
+                                          onChange={(e) => {
+                                            if (e.target.checked) {
+                                              setPendingFidBondChecked(new Set(pendingFidBond.map((e) => e.id)));
+                                            } else {
+                                              setPendingFidBondChecked(new Set());
+                                            }
+                                          }}
+                                        />
+                                      </th>
+                                      {["Date", "Kind", "Ticker", "Amount"].map((h) => (
+                                        <th
+                                          key={h}
+                                          style={{
+                                            textAlign: h === "Amount" ? "right" : "left",
+                                            fontFamily: FONT_MONO,
+                                            fontSize: 9,
+                                            letterSpacing: "0.1em",
+                                            textTransform: "uppercase",
+                                            color: T.textFaint,
+                                            padding: "4px 8px",
+                                          }}
+                                        >
+                                          {h}
+                                        </th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {pendingFidBond.map((e) => {
+                                      // A pick only sticks (auto-resolving this bond's
+                                      // future coupons) when SimpleFin matched the issuer to
+                                      // exactly one bond holding, which is what puts a
+                                      // `descKey` on the event — see approvePendingFidBond.
+                                      const currentTicker = String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase();
+                                      const alreadyResolved = knownBankBondTickers.has(currentTicker);
+                                      const pickHint = alreadyResolved
+                                        ? null
+                                        : e.descKey
+                                        ? "your pick is saved for this bond"
+                                        : "one-off — this pick can't be saved";
+                                      return (
+                                      <tr key={e.id} style={{ borderTop: `1px solid ${T.border}` }}>
+                                        <td style={{ padding: "4px 0" }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={pendingFidBondChecked.has(e.id)}
+                                            onChange={() => togglePendingFidBond(e.id)}
+                                          />
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {e.date}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim, padding: "4px 8px", textTransform: "capitalize" }}>
+                                          {e.kind}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {e.kind === "interest" ? (
+                                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                            <select
+                                              value={bondTickerEdits[e.id] ?? e.ticker}
+                                              onChange={(ev) =>
+                                                setBondTickerEdits((prev) => ({ ...prev, [e.id]: ev.target.value }))
+                                              }
+                                              style={{
+                                                background: T.cardElev,
+                                                border: `1px solid ${T.gold}`,
+                                                color: T.gold,
+                                                padding: "2px 4px",
+                                                fontFamily: FONT_MONO,
+                                                fontSize: 10,
+                                                cursor: "pointer",
+                                                maxWidth: 160,
+                                              }}
+                                            >
+                                              {!knownBankBondTickers.has(String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase()) && (
+                                                <option value={e.ticker}>{`${e.ticker} (unresolved)`}</option>
+                                              )}
+                                              {[...knownBankBondTickers].sort().map((tk) => (
+                                                <option key={tk} value={tk}>
+                                                  {tk}
+                                                </option>
+                                              ))}
+                                            </select>
+                                            {pickHint && (
+                                              <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
+                                                {pickHint}
+                                              </span>
+                                            )}
+                                            </div>
+                                          ) : (
+                                            e.ticker
+                                          )}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                                          {valuesHidden ? "•••" : fmtMoney(e.amount, "USD")}
+                                        </td>
+                                      </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </ScrollHintTable>
+                            </div>
+
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button
+                                onClick={approvePendingFidBond}
+                                disabled={approvingFidBond || pendingFidBondChecked.size === 0}
+                                style={{
+                                  background: T.gold,
+                                  color: "#0b0d10",
+                                  border: "none",
+                                  borderRadius: 4,
+                                  padding: "8px 14px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  fontWeight: 700,
+                                  cursor: approvingFidBond || pendingFidBondChecked.size === 0 ? "default" : "pointer",
+                                  opacity: approvingFidBond || pendingFidBondChecked.size === 0 ? 0.5 : 1,
+                                }}
+                              >
+                                {approvingFidBond ? "Working…" : `Approve ${pendingFidBondChecked.size} of ${pendingFidBond.length}`}
+                              </button>
+                              <button
+                                onClick={discardPendingFidBond}
+                                disabled={approvingFidBond}
+                                style={{
+                                  background: "transparent",
+                                  color: T.textDim,
+                                  border: `1px solid ${T.border}`,
+                                  borderRadius: 4,
+                                  padding: "8px 14px",
+                                  fontFamily: FONT_MONO,
+                                  fontSize: 10,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  cursor: approvingFidBond ? "default" : "pointer",
+                                }}
+                              >
+                                Discard
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Unmapped — SimpleFin rows that matched no known pattern (or matched
+                          one but couldn't be completed, e.g. a trade with no structured
+                          qty/price). Never auto-imported; each row gets a Dismiss for cases
+                          that don't need manual entry (e.g. an external transfer already
+                          captured by the Cash balance update). */}
+                      {pendingUnmapped.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              background: T.card,
+                              border: `1px solid ${T.border}`,
+                              borderRadius: "4px 4px 0 0",
+                              padding: "10px 14px",
+                              color: T.textDim,
+                              fontFamily: FONT_MONO,
+                              fontSize: 10,
+                              letterSpacing: "0.15em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Unmapped — needs review
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                background: T.border,
+                                color: T.textDim,
+                                fontFamily: FONT_MONO,
+                                fontSize: 9,
+                                fontWeight: 700,
+                                padding: "1px 6px",
+                                borderRadius: 8,
+                              }}
+                            >
+                              {pendingUnmapped.length}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              background: T.card,
+                              border: `1px solid ${T.border}`,
+                              borderTop: "none",
+                              borderRadius: "0 0 4px 4px",
+                              padding: 14,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 12,
+                                color: T.textDim,
+                                marginBottom: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              SimpleFin transactions the sync couldn't map to a known category
+                              (or matched a pattern but couldn't build a valid entry, e.g. a
+                              stock trade or a new bond/CD purchase — SimpleFin has no
+                              structured qty/price for trades of any kind, so it always
+                              needs manual entry). Enter these manually if needed via the
+                              form or CSV import above.
+                            </div>
+                            <ScrollHintTable>
+                              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+                                <thead>
+                                  <tr>
+                                    {["Date", "Description", "Amount", "Reason", ""].map((h, hi) => (
+                                      <th
+                                        key={h || hi}
+                                        style={{
+                                          textAlign: h === "Amount" ? "right" : "left",
+                                          fontFamily: FONT_MONO,
+                                          fontSize: 9,
+                                          letterSpacing: "0.1em",
+                                          textTransform: "uppercase",
+                                          color: T.textFaint,
+                                          padding: "4px 8px",
+                                        }}
+                                      >
+                                        {h}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {pendingUnmapped.map((u, i) => {
+                                    const rowId = u.simplefinId || i;
+                                    const inFlight = unmappedActionId === rowId;
+                                    return (
+                                      <tr key={rowId} style={{ borderTop: `1px solid ${T.border}` }}>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {u.date || "—"}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
+                                          {u.description}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
+                                          {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
+                                        </td>
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
+                                          {u.reason}
+                                        </td>
+                                        <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                                          <button
+                                            onClick={() => dismissUnmappedItem(u, i)}
+                                            disabled={inFlight}
+                                            style={{
+                                              background: "transparent",
+                                              color: T.textDim,
+                                              border: `1px solid ${T.border}`,
+                                              borderRadius: 4,
+                                              padding: "4px 8px",
+                                              fontFamily: FONT_MONO,
+                                              fontSize: 9,
+                                              letterSpacing: "0.1em",
+                                              textTransform: "uppercase",
+                                              cursor: inFlight ? "default" : "pointer",
+                                              opacity: inFlight ? 0.5 : 1,
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {inFlight ? "…" : "Dismiss"}
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </ScrollHintTable>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </>
@@ -4372,7 +4979,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // Fidelity automation (item 38): trades staged by the scraper, awaiting approval.
   const [pendingFid, setPendingFid] = useState([]);
   const [pendingFidBond, setPendingFidBond] = useState([]);
-  const [pendingFidOpen, setPendingFidOpen] = useState(true);
   const [pendingFidChecked, setPendingFidChecked] = useState(() => new Set());
   const [approvingFid, setApprovingFid] = useState(false);
   // Known Bank Bonds CUSIPs (from saved buy transactions) — options for the
@@ -4404,7 +5010,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // (docs/plans/simplefin-fidelity-feed.md Fase 1: "hoje aprovado junto com
   // trades sem listagem própria").
   const [pendingFidBondChecked, setPendingFidBondChecked] = useState(() => new Set());
-  const [pendingFidBondOpen, setPendingFidBondOpen] = useState(true);
   const [approvingFidBond, setApprovingFidBond] = useState(false);
   // Cash / Bank Bonds balance snapshots proposed by the SimpleFin sync now
   // auto-apply (no approval queue — see applyFidelityBalanceUpdate in
@@ -4417,7 +5022,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // shown for review, with a per-row Dismiss for ones that don't need manual
   // entry (e.g. external transfers already captured by the Cash balance).
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
-  const [pendingUnmappedOpen, setPendingUnmappedOpen] = useState(false);
   const [unmappedActionId, setUnmappedActionId] = useState(null); // id of row mid Dismiss
   // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
@@ -5049,7 +5653,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
               }}
             >
               <Upload size={12} />
-              Bulk Import
+              Sync & Import
             </button>
             {transactions.length > 0 && (
               <button
@@ -5098,12 +5702,13 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         )}
       </div>
 
-      {/* Sync & automation — Fidelity Import (trades/income/balance updates/
-          unmapped) plus Splits/Groupings, folded behind one master toggle so
+      {/* Sync & automation — Splits/Groupings, folded behind a master toggle so
           this admin/utility clutter doesn't stand between the toolbar and the
-          actual transaction table below. Individual sub-sections keep their
-          own collapse state once this is open. */}
-      {(isAdmin || pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0 || pendingSplits.length > 0 || splitEvents.length > 0) && (
+          actual transaction table below. Fidelity Import (trades/income/
+          unmapped) and the "Sync Fidelity" trigger now live inside the
+          Bulk Import modal's "Sync" tab (always visible there, not gated by
+          isAdmin — only the sync trigger itself is admin-gated). */}
+      {(isAdmin || pendingSplits.length > 0 || splitEvents.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           <button
             onClick={() => setSyncCardOpen((v) => !v)}
@@ -5132,7 +5737,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
               }}
             />
             Sync & Automation
-            {(pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length) > 0 && (
+            {pendingSplits.length > 0 && (
               <span
                 style={{
                   marginLeft: 8,
@@ -5145,640 +5750,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   borderRadius: 8,
                 }}
               >
-                {pendingFid.length + pendingFidBond.length + pendingUnmapped.length + pendingSplits.length}
+                {pendingSplits.length}
               </span>
             )}
           </button>
           {syncCardOpen && (
             <div style={{ padding: "14px 0 0" }}>
-
-      {/* Fidelity Import — staged by the automation (item 38), extended for the
-          SimpleFin sync (docs/plans/simplefin-fidelity-feed.md Fase 1): trades,
-          income, balance updates and unmapped rows each get their own section.
-          The "Sync Fidelity" trigger button lives inside the Bulk Import modal
-          (ImportModal's "Sync" tab, admin-only) — this group only renders the
-          approval queues, so it's only shown when there's actually something
-          staged to review. */}
-      {(pendingFid.length > 0 || pendingFidBond.length > 0 || pendingUnmapped.length > 0) && (
-        <div style={{ marginBottom: 16 }}>
-
-      {pendingFid.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setPendingFidOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: "rgba(201,169,97,0.06)",
-              border: `1px solid ${T.gold}55`,
-              borderRadius: pendingFidOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.gold,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: pendingFidOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            Fidelity Import
-            <span
-              style={{
-                marginLeft: 8,
-                background: T.gold,
-                color: "#0b0d10",
-                fontFamily: FONT_MONO,
-                fontSize: 9,
-                fontWeight: 700,
-                padding: "1px 6px",
-                borderRadius: 8,
-              }}
-            >
-              {pendingFid.length} new
-            </span>
-          </button>
-
-          {pendingFidOpen && (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderTop: "none",
-                borderRadius: "0 0 4px 4px",
-                padding: 14,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 12,
-                  color: T.textDim,
-                  marginBottom: 12,
-                  lineHeight: 1.5,
-                }}
-              >
-                Staged by the automated import. Review and approve to add to your
-                transactions. Nothing is saved until you approve.
-              </div>
-
-              <div style={{ marginBottom: 12 }}>
-              <ScrollHintTable>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 28 }}>
-                        <input
-                          type="checkbox"
-                          checked={pendingFidChecked.size === pendingFid.length}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setPendingFidChecked(new Set(pendingFid.map((t) => t.id || dupKey(t))));
-                            } else {
-                              setPendingFidChecked(new Set());
-                            }
-                          }}
-                        />
-                      </th>
-                      {["Date", "B/S", "Ticker", "Qty", "Price", "Notes"].map((h) => (
-                        <th
-                          key={h}
-                          style={{
-                            textAlign: h === "Qty" || h === "Price" ? "right" : "left",
-                            fontFamily: FONT_MONO,
-                            fontSize: 9,
-                            letterSpacing: "0.1em",
-                            textTransform: "uppercase",
-                            color: T.textFaint,
-                            padding: "4px 8px",
-                          }}
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendingFid.map((t) => {
-                      const key = t.id || dupKey(t);
-                      const cur = t.currency || "USD";
-                      // Distinguishes how this row was staged: a delta detected
-                      // between the SimpleFin holdings snapshot and the known
-                      // position (item: "sync creates trades from position
-                      // changes"), a bond buy synthesized the same way for
-                      // Bank Bonds, or a real trade/event (manual, CSV, or a
-                      // SimpleFin transaction like REDEMPTION) with no tag.
-                      const tag = t.derivedFromHoldingsDiff
-                        ? { label: "DELTA", color: T.gold }
-                        : t.syncedBond
-                        ? { label: "BOND BUY", color: T.textDim }
-                        : null;
-                      return (
-                        <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
-                          <td style={{ padding: "4px 0" }}>
-                            <input
-                              type="checkbox"
-                              checked={pendingFidChecked.has(key)}
-                              onChange={() => togglePendingFid(key)}
-                            />
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {t.date}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: t.side === "sell" ? T.red : T.green, padding: "4px 8px" }}>
-                            {t.side === "sell" ? "S" : "B"}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {t.ticker}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
-                            {fmtNum(t.qty)}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
-                            {valuesHidden ? "•••" : fmtMoney(t.price, cur)}
-                          </td>
-                          <td style={{ padding: "4px 8px", maxWidth: 220 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              {tag && (
-                                <span
-                                  style={{
-                                    flexShrink: 0,
-                                    fontFamily: FONT_MONO,
-                                    fontSize: 8,
-                                    fontWeight: 700,
-                                    letterSpacing: "0.08em",
-                                    color: tag.color,
-                                    border: `1px solid ${tag.color}55`,
-                                    borderRadius: 3,
-                                    padding: "1px 4px",
-                                  }}
-                                >
-                                  {tag.label}
-                                </span>
-                              )}
-                              <span
-                                title={t.notes || ""}
-                                style={{
-                                  fontFamily: FONT_MONO,
-                                  fontSize: 10,
-                                  color: T.textDim,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                  display: "inline-block",
-                                  maxWidth: 160,
-                                }}
-                              >
-                                {t.notes || "--"}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </ScrollHintTable>
-              </div>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={approvePendingFid}
-                  disabled={approvingFid || pendingFidChecked.size === 0}
-                  style={{
-                    background: T.gold,
-                    color: "#0b0d10",
-                    border: "none",
-                    borderRadius: 4,
-                    padding: "8px 14px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    fontWeight: 700,
-                    cursor: approvingFid || pendingFidChecked.size === 0 ? "default" : "pointer",
-                    opacity: approvingFid || pendingFidChecked.size === 0 ? 0.5 : 1,
-                  }}
-                >
-                  {approvingFid ? "Working…" : `Approve ${pendingFidChecked.size} of ${pendingFid.length}`}
-                </button>
-                <button
-                  onClick={discardPendingFid}
-                  disabled={approvingFid}
-                  style={{
-                    background: "transparent",
-                    color: T.textDim,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 4,
-                    padding: "8px 14px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    cursor: approvingFid ? "default" : "pointer",
-                  }}
-                >
-                  Discard
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Income (dividend/interest/tax) staged by the SimpleFin sync — own
-          checkboxes, separate from the trades table above. */}
-      {pendingFidBond.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setPendingFidBondOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: "rgba(201,169,97,0.06)",
-              border: `1px solid ${T.gold}55`,
-              borderRadius: pendingFidBondOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.gold,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: pendingFidBondOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            Fidelity Income
-            <span
-              style={{
-                marginLeft: 8,
-                background: T.gold,
-                color: "#0b0d10",
-                fontFamily: FONT_MONO,
-                fontSize: 9,
-                fontWeight: 700,
-                padding: "1px 6px",
-                borderRadius: 8,
-              }}
-            >
-              {pendingFidBond.length} new
-            </span>
-          </button>
-
-          {pendingFidBondOpen && (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderTop: "none",
-                borderRadius: "0 0 4px 4px",
-                padding: 14,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 12,
-                  color: T.textDim,
-                  marginBottom: 12,
-                  lineHeight: 1.5,
-                }}
-              >
-                Dividends, bond interest and withheld tax staged by the SimpleFin
-                sync. Review and approve to add to your income history.
-              </div>
-
-              <div style={{ marginBottom: 12 }}>
-                <ScrollHintTable>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 28 }}>
-                          <input
-                            type="checkbox"
-                            checked={pendingFidBondChecked.size === pendingFidBond.length}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setPendingFidBondChecked(new Set(pendingFidBond.map((e) => e.id)));
-                              } else {
-                                setPendingFidBondChecked(new Set());
-                              }
-                            }}
-                          />
-                        </th>
-                        {["Date", "Kind", "Ticker", "Amount"].map((h) => (
-                          <th
-                            key={h}
-                            style={{
-                              textAlign: h === "Amount" ? "right" : "left",
-                              fontFamily: FONT_MONO,
-                              fontSize: 9,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              color: T.textFaint,
-                              padding: "4px 8px",
-                            }}
-                          >
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pendingFidBond.map((e) => {
-                        // A pick only sticks (auto-resolving this bond's
-                        // future coupons) when SimpleFin matched the issuer to
-                        // exactly one bond holding, which is what puts a
-                        // `descKey` on the event — see approvePendingFidBond.
-                        const currentTicker = String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase();
-                        const alreadyResolved = knownBankBondTickers.has(currentTicker);
-                        const pickHint = alreadyResolved
-                          ? null
-                          : e.descKey
-                          ? "your pick is saved for this bond"
-                          : "one-off — this pick can't be saved";
-                        return (
-                        <tr key={e.id} style={{ borderTop: `1px solid ${T.border}` }}>
-                          <td style={{ padding: "4px 0" }}>
-                            <input
-                              type="checkbox"
-                              checked={pendingFidBondChecked.has(e.id)}
-                              onChange={() => togglePendingFidBond(e.id)}
-                            />
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {e.date}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim, padding: "4px 8px", textTransform: "capitalize" }}>
-                            {e.kind}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {e.kind === "interest" ? (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                              <select
-                                value={bondTickerEdits[e.id] ?? e.ticker}
-                                onChange={(ev) =>
-                                  setBondTickerEdits((prev) => ({ ...prev, [e.id]: ev.target.value }))
-                                }
-                                style={{
-                                  background: T.cardElev,
-                                  border: `1px solid ${T.gold}`,
-                                  color: T.gold,
-                                  padding: "2px 4px",
-                                  fontFamily: FONT_MONO,
-                                  fontSize: 10,
-                                  cursor: "pointer",
-                                  maxWidth: 160,
-                                }}
-                              >
-                                {!knownBankBondTickers.has(String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase()) && (
-                                  <option value={e.ticker}>{`${e.ticker} (unresolved)`}</option>
-                                )}
-                                {[...knownBankBondTickers].sort().map((tk) => (
-                                  <option key={tk} value={tk}>
-                                    {tk}
-                                  </option>
-                                ))}
-                              </select>
-                              {pickHint && (
-                                <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
-                                  {pickHint}
-                                </span>
-                              )}
-                              </div>
-                            ) : (
-                              e.ticker
-                            )}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
-                            {valuesHidden ? "•••" : fmtMoney(e.amount, "USD")}
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </ScrollHintTable>
-              </div>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={approvePendingFidBond}
-                  disabled={approvingFidBond || pendingFidBondChecked.size === 0}
-                  style={{
-                    background: T.gold,
-                    color: "#0b0d10",
-                    border: "none",
-                    borderRadius: 4,
-                    padding: "8px 14px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    fontWeight: 700,
-                    cursor: approvingFidBond || pendingFidBondChecked.size === 0 ? "default" : "pointer",
-                    opacity: approvingFidBond || pendingFidBondChecked.size === 0 ? 0.5 : 1,
-                  }}
-                >
-                  {approvingFidBond ? "Working…" : `Approve ${pendingFidBondChecked.size} of ${pendingFidBond.length}`}
-                </button>
-                <button
-                  onClick={discardPendingFidBond}
-                  disabled={approvingFidBond}
-                  style={{
-                    background: "transparent",
-                    color: T.textDim,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 4,
-                    padding: "8px 14px",
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    cursor: approvingFidBond ? "default" : "pointer",
-                  }}
-                >
-                  Discard
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Balance Updates (Cash / Bank Bonds) — removed: these now auto-apply
-          from the SimpleFin sync with no approval queue. See the "Last
-          Synced (SimpleFin)" / "Market Value (SimpleFin)" info blocks in
-          ManualHoldingRow's accordion (App.jsx) for the equivalent status
-          surface. */}
-
-      {/* Unmapped — SimpleFin rows that matched no known pattern (or matched
-          one but couldn't be completed, e.g. a trade with no structured
-          qty/price). Never auto-imported; each row gets a Dismiss for cases
-          that don't need manual entry (e.g. an external transfer already
-          captured by the Cash balance update). */}
-      {pendingUnmapped.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setPendingUnmappedOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: T.card,
-              border: `1px solid ${T.border}`,
-              borderRadius: pendingUnmappedOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.textDim,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: pendingUnmappedOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            Unmapped — needs review
-            <span
-              style={{
-                marginLeft: 8,
-                background: T.border,
-                color: T.textDim,
-                fontFamily: FONT_MONO,
-                fontSize: 9,
-                fontWeight: 700,
-                padding: "1px 6px",
-                borderRadius: 8,
-              }}
-            >
-              {pendingUnmapped.length}
-            </span>
-          </button>
-          {pendingUnmappedOpen && (
-            <div
-              style={{
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderTop: "none",
-                borderRadius: "0 0 4px 4px",
-                padding: 14,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 12,
-                  color: T.textDim,
-                  marginBottom: 12,
-                  lineHeight: 1.5,
-                }}
-              >
-                SimpleFin transactions the sync couldn't map to a known category
-                (or matched a pattern but couldn't build a valid entry, e.g. a
-                stock trade or a new bond/CD purchase — SimpleFin has no
-                structured qty/price for trades of any kind, so it always
-                needs manual entry). Enter these manually if needed via the
-                form or CSV import above.
-              </div>
-              <ScrollHintTable>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
-                  <thead>
-                    <tr>
-                      {["Date", "Description", "Amount", "Reason", ""].map((h, hi) => (
-                        <th
-                          key={h || hi}
-                          style={{
-                            textAlign: h === "Amount" ? "right" : "left",
-                            fontFamily: FONT_MONO,
-                            fontSize: 9,
-                            letterSpacing: "0.1em",
-                            textTransform: "uppercase",
-                            color: T.textFaint,
-                            padding: "4px 8px",
-                          }}
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendingUnmapped.map((u, i) => {
-                      const rowId = u.simplefinId || i;
-                      const inFlight = unmappedActionId === rowId;
-                      return (
-                        <tr key={rowId} style={{ borderTop: `1px solid ${T.border}` }}>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {u.date || "—"}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
-                            {u.description}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
-                            {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
-                          </td>
-                          <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
-                            {u.reason}
-                          </td>
-                          <td style={{ padding: "4px 8px", textAlign: "right" }}>
-                            <button
-                              onClick={() => dismissUnmappedItem(u, i)}
-                              disabled={inFlight}
-                              style={{
-                                background: "transparent",
-                                color: T.textDim,
-                                border: `1px solid ${T.border}`,
-                                borderRadius: 4,
-                                padding: "4px 8px",
-                                fontFamily: FONT_MONO,
-                                fontSize: 9,
-                                letterSpacing: "0.1em",
-                                textTransform: "uppercase",
-                                cursor: inFlight ? "default" : "pointer",
-                                opacity: inFlight ? 0.5 : 1,
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {inFlight ? "…" : "Dismiss"}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </ScrollHintTable>
-            </div>
-          )}
-        </div>
-      )}
-        </div>
-      )}
-      {/* end Fidelity Import group */}
-
 
       {/* Splits / Groupings inline card */}
       {(pendingSplits.length > 0 || splitEvents.length > 0) && (
@@ -6269,6 +6246,27 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         fidSyncStatus={fidSyncStatus}
         fidSyncMessage={fidSyncMessage}
         runFidelitySync={runFidelitySync}
+        valuesHidden={valuesHidden}
+        pendingFid={pendingFid}
+        pendingFidChecked={pendingFidChecked}
+        setPendingFidChecked={setPendingFidChecked}
+        togglePendingFid={togglePendingFid}
+        approvingFid={approvingFid}
+        approvePendingFid={approvePendingFid}
+        discardPendingFid={discardPendingFid}
+        pendingFidBond={pendingFidBond}
+        pendingFidBondChecked={pendingFidBondChecked}
+        setPendingFidBondChecked={setPendingFidBondChecked}
+        togglePendingFidBond={togglePendingFidBond}
+        approvingFidBond={approvingFidBond}
+        approvePendingFidBond={approvePendingFidBond}
+        discardPendingFidBond={discardPendingFidBond}
+        bondTickerEdits={bondTickerEdits}
+        setBondTickerEdits={setBondTickerEdits}
+        knownBankBondTickers={knownBankBondTickers}
+        pendingUnmapped={pendingUnmapped}
+        unmappedActionId={unmappedActionId}
+        dismissUnmappedItem={dismissUnmappedItem}
       />
 
     </div>
