@@ -187,7 +187,13 @@ Indicadores visuais no header: label dourado + seta `↑↓` se sort ativo, `•
 
 ### Import / Export
 
-Modal `ImportModal` com 2 tabs — abre por default na aba **Fidelity** (mudado no PR #90). **Pendente de merge (PR draft #138, ver secao "SimpleFin Feed — Sync Fidelity movido pro Bulk Import" acima):** uma 3a aba "Sync" (admin-only) esta implementada numa branch aguardando merge, movendo o botao "Sync Fidelity" do card "Sync & Automation" pra dentro deste modal — ainda nao reflete o estado do `main`.
+Modal `ImportModal` com 3 tabs, ordem `sync | upload | fidelity`. Tab **Sync** e a primeira e o default (inclusive no reset ao fechar o modal) desde v1.16.0 (merge `be462ee`, jul/2026) — ver "SimpleFin Feed — Consolidacao do fluxo de Sync dentro do ImportModal" abaixo. **Nomenclatura (nao confundir):** tab "Fidelity" = upload do CSV "Accounts History" exportado da Fidelity; tab "Sync" = staging do feed SimpleFin (Trades/Income/Unmapped).
+
+- **Sync**: hospeda as tres filas de aprovacao que antes viviam num card standalone "Fidelity Import" em `src/Transactions.jsx` (removido na v1.16.0) — **Trades**, **Income** e **Unmapped**, sempre expandidas quando ha itens (fallback "Nothing staged for review." quando vazias, sem accordion individual). A tab **nao e mais admin-gated**: qualquer usuario com itens staged ve e aprova/descarta as filas; **so o botao "Sync Fidelity"** (dispara o pull do SimpleFin) continua atras de `isAdmin`. Toda a logica de handlers (approve/discard/toggle/dismiss, auto-apply de Balance Updates) permanece em `TransactionsView` — o JSX migrou para o `ImportModal` via props (`pendingFid*`, `pendingFidBond*`, `pendingUnmapped*`, `valuesHidden` + handlers), sem lift-up de estado.
+- **Upload**: parser CSV generico (ver abaixo).
+- **Fidelity**: parser dedicado do CSV nativo da Fidelity (ver abaixo).
+
+O botao de bulk import foi renomeado "Bulk Import" -> **"Sync & Import"** (uppercase via `textTransform`).
 
 - **Upload CSV**: file picker, parser genérico com:
   - Auto-detect de delimitador (`,` `;` `\t` `|`)
@@ -879,9 +885,9 @@ Testes novos: 4 em `test/simplefin-map.test.mjs` (criacao/skip de bond buys) + 3
 
 -----
 
-### SimpleFin Feed — Sync Fidelity movido pro Bulk Import + deteccao de delta de posicao para acoes/ETFs (jul/2026, PR draft #138, branch `claude/sync-bulk-import-transactions-17a1du`, AGUARDANDO MERGE em main)
+### SimpleFin Feed — Sync Fidelity movido pro Bulk Import + deteccao de delta de posicao para acoes/ETFs (jul/2026, PR #138, sha `803c694`, merged em main, v1.14.0)
 
-**IMPORTANTE — estado nao mergeado:** implementada e auditada (APROVADA), mas esta sessao rodou sob restricao de branch designada que PROIBE push/merge direto no main (diferente do fluxo normal do projeto, "merge direto sem PR" — ver Deploy Pattern). A feature esta num PR draft aguardando o usuario mergear manualmente; **nao esta em producao ainda.** `package.json` na branch: `1.13.3 -> 1.14.0` (minor).
+**Atualizacao (jul/2026):** esta feature foi mergeada em `main` como v1.14.0 (sha `803c694`) — o texto abaixo, escrito quando ainda era um PR draft, ficou desatualizado nessa parte; o resto do conteudo tecnico permanece valido. **Superseded parcialmente na v1.16.0** (merge `be462ee`): a tab "Sync" descrita no item (1) abaixo deixou de ser admin-only e o card standalone "Fidelity Import" foi removido — ver "SimpleFin Feed — Consolidacao do fluxo de Sync dentro do ImportModal" mais abaixo para o estado atual.
 
 **(1) UI — botao "Sync Fidelity" movido para dentro do Bulk Import:** saiu do card "Sync & Automation" (tab Transactions) e passou a viver numa nova aba "Sync" (admin-only) dentro do modal de Bulk Import (`src/Transactions.jsx`, `ImportModal`). As filas de aprovacao ja existentes (Trades/Income/Unmapped) permaneceram no mesmo lugar de sempre — so o gatilho do sync mudou de posicao.
 
@@ -931,6 +937,24 @@ E o motivo de eles nunca resolverem sozinhos: a auto-resolucao do branch INTERES
 
 -----
 
+### SimpleFin Feed — Consolidacao do fluxo de Sync dentro do ImportModal (jul/2026, v1.16.0, merge `be462ee`)
+
+A pedido do usuario, **reverte** a decisao registrada em `docs/plans/simplefin-fidelity-feed.md` §4.1 ("Nao usar o ImportModal... plano: estender esse card") e ajusta o resultado da v1.14.0 (PR #138): o card standalone "Fidelity Import" (Trades/Income/Unmapped) foi **removido** de `src/Transactions.jsx`; seu conteudo passou a viver dentro do `ImportModal`, tab "Sync".
+
+- **Tab Sync vira primeira e default:** ordem final `sync | upload | fidelity` (era `upload | fidelity` na v1.14.0, com Sync como 3a aba); o reset do modal ao fechar tambem volta pra "sync". Nomenclatura pra nao confundir em sessoes futuras: "Fidelity" = upload do CSV exportado da Fidelity; "Sync" = staging do feed SimpleFin.
+- **Tab Sync deixa de ser admin-gated:** as filas de aprovacao (Trades/Income/Unmapped) ficam visiveis a qualquer usuario com itens staged — preserva o comportamento do card antigo, que nunca checava `isAdmin`. So o botao "Sync Fidelity" (dispara o pull do SimpleFin) continua atras de `isAdmin`.
+- Texto explicativo da tab Sync removido ("Pulls trades, bond interest/dividends, and position changes…").
+- Botao de bulk import renomeado "Bulk Import" -> **"Sync & Import"** (`textTransform: uppercase`).
+- Accordions individuais de Trades/Income/Unmapped (`pendingFidOpen`, `pendingFidBondOpen`, `pendingUnmappedOpen`) removidos — dentro do modal as secoes ficam sempre expandidas quando ha itens, com fallback "Nothing staged for review." quando vazias.
+- **Migracao so de JSX, sem lift-up de estado:** toda a logica de handlers permanece em `TransactionsView` (approve/discard/toggle/dismiss, auto-apply de Balance Updates via `appliedBalanceIdsRef`/`pruneUnchangedBalanceCandidates`/`runFidelitySync`) — o `ImportModal` recebe tudo via props (`pendingFid*`, `pendingFidBond*`, `pendingUnmapped*`, `valuesHidden`, handlers). Os handlers dependem de closures com `persist()`, entao mover o estado pra cima do componente exigiria refatorar esse acoplamento — a rota escolhida evita esse risco.
+- `const EMPTY_SET = new Set()` module-level, default estavel de leitura pros props de `Set` (evita recriar um Set novo a cada render quando o pai nao passa nenhum).
+- Wrapper "Sync & Automation" simplificado pra so envolver Splits/Groupings: condicao `(isAdmin || pendingSplits.length > 0 || splitEvents.length > 0)`, badge contando so `pendingSplits.length`. **Heading mantido "Sync & Automation"** mesmo so contendo Splits/Groupings — decisao consciente de nao extrapolar o escopo pedido; candidato a rename numa proxima sessao.
+- **Splits/Groupings intocado** (guard rail explicito do usuario, verificado byte-a-byte na auditoria).
+- Auto-apply de Balance Updates (Cash/Bank Bonds) inalterado.
+- `package.json` `1.15.0 -> 1.16.0`. Build verde; suite `test/*.test.mjs` (6 arquivos, 146 asserts) 0 falhas. Merge direto no `main`, sem PR (padrao do projeto).
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -941,6 +965,7 @@ E o motivo de eles nunca resolverem sozinhos: a auto-resolucao do branch INTERES
 |Refresh em batches de 3, delay 800ms|Evita 429 do Finnhub|
 |**Yahoo para B3 rejeitado**|429 frequente vindos dos IPs do Vercel|
 |**Frankfurter para USD/BRL real-time rejeitado**|BCE atualiza 1x/dia (EOD), parecia travado|
+|Tab Sync do ImportModal nao e admin-gated (so o botao "Sync Fidelity" e)|v1.16.0 — preserva o comportamento do card standalone removido, que nunca checava `isAdmin`; qualquer usuario com itens staged precisa poder aprovar/descartar|
 |**SnapTrade/Plaid/Yodlee rejeitados**|Custo alto, complexidade, risco de credenciais|
 |Cash em seção separada|Manual asset com class "Cash" → fora de rebalance/sort|
 |Cash permanente (`CASH_ID`)|Holding sempre presente via `ensureCashAccount()`|
@@ -1234,6 +1259,7 @@ E o motivo de eles nunca resolverem sozinhos: a auto-resolucao do branch INTERES
 - **`npm run build` + testes de logica NAO pegam bugs de ordem de execucao em runtime (jul/2026, sha `8255619`, v1.10.1)** — um `useMemo` lendo um `useState` declarado mais abaixo no mesmo componente e sintaticamente valido (Vite/esbuild compilam sem erro) mas quebra em TODO render com `ReferenceError` (temporal dead zone de `const`/`let`). Passou pela auditoria porque o ambiente de implementacao nao tem browser disponivel pra pegar erro de runtime — o gate "build verde" desta pipeline testa parse/bundle e logica pura, nao renderizacao React real. Regra: ao adicionar um novo `useMemo`/`useCallback` que le `useState` ainda nao declarados no componente, checar manualmente a ordem das declaracoes (ou declarar o `useState` imediatamente acima de quem o consome) — nenhum teste automatizado deste projeto pega esse erro hoje.
 - **Timers `setTimeout` de dismiss one-shot devem ser rastreados e limpos no unmount.** Achado cosmético não-bloqueante da auditoria do Scroll Hint (jul/2026): o `setTimeout` que dispensava o pill "Swipe" após ~4s não era guardado em `useRef`/limpo explicitamente em `useEffect` cleanup — sem efeito prático observado, mas o padrão correto é sempre limpar. **Obsoleto (jul/2026, ajuste de UX):** esse `setTimeout` de auto-dismiss foi removido — o usuário pediu que a animação continuasse chamando atenção indefinidamente até o swipe real acontecer, então não há mais timer nenhum a limpar nesse componente. Achado relacionado (também não-bloqueante, ainda válido): cenário teórico de `setInterval` double-invoke em React StrictMode (dev only) não afeta build de produção — vale considerar ao revisar código com timers/intervals que rodam em mount.
 - **Claude Code: bug fix = nova session.**
+- **Migrar JSX pra um componente irmao passando handlers como props, sem lift-up de estado, e o caminho de menor risco quando o estado e compartilhado com efeitos que nao migram (jul/2026, v1.16.0).** Ao mover o card "Fidelity Import" pra dentro do `ImportModal`, os handlers de approve/discard dependiam de closures com `persist()` que continuavam em `TransactionsView`. Em vez de subir esse estado (e os efeitos que o alimentam) pro componente novo, so o JSX migrou; o modal recebeu tudo via props. Evita refatorar acoplamento que nao precisava mudar pra atingir o objetivo pedido.
 - **Padrao de auth divergente entre handlers = endpoint publico silencioso (jul/2026, hardening batch).** `api/price.js` e `api/index-quote.js` usavam `const auth = await authenticate(req, res); if (!auth) return;` — mas `authenticate()` sempre retorna um objeto (truthy, mesmo em falha), entao o guard nunca disparava e os dois endpoints ficaram meses acessiveis sem token. Bug invisivel a build/teste manual (o app sempre manda headers validos). Licao: o check de auth deve ser IDENTICO em todos os handlers (`if (!auth.ok) return res.status(auth.status)...`); qualquer variacao no padrao e suspeita de bug, nao estilo.
 - **Achados nao-bloqueantes do fix TSM/pay-date (jul/2026, merge `d0054d4`), registrados como follow-up conhecido, nao como bugs urgentes:** (1) `allWarm` nao distingue falha transitoria do Finnhub de falta de cobertura real — um evento pode ficar cacheado como `payDateUncertain: true` por ate ~24h mesmo que tenha sido so um blip momentaneo da API; efeito e conservador (mostra aviso a mais, nunca esconde um problema real). (2) Quando Finnhub ja foi fonte primaria (Yahoo retornou vazio, fallback do PR #94), o codigo pode re-buscar os mesmos dados do Finnhub que ja estavam em memoria — desperdicio de quota, nao e bug funcional. (3) `meta.payDatesResolvedViaFinnhub` e so um contador agregado — eventos individuais nao registram qual fonte resolveu a pay date, dificultando um pouco a validacao granular em producao.
 - **Claude Code: atualizar `docs/CONTEXT.md` + `docs/Features_Roadmap.md` ao final de sessions relevantes.**

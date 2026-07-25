@@ -142,6 +142,13 @@ já faz exatamente isso; replicar no caminho novo.
 
 ### 4.1 "Auditar e aprovar — dentro do bulk import?"
 
+> **Superseded (jul/2026, v1.16.0, merge `be462ee`):** esta decisao foi revertida a pedido
+> direto do usuario. O card standalone "Fidelity Import" foi removido de `src/Transactions.jsx`
+> e seu conteudo (Trades/Income/Unmapped) passou a viver dentro do `ImportModal`, na tab
+> "Sync" (primeira e default). Ver `docs/CONTEXT.md`, secao "SimpleFin Feed — Consolidacao do
+> fluxo de Sync dentro do ImportModal". O raciocinio abaixo fica registrado como historico —
+> nao reflete mais o estado do `main`.
+
 **Não usar o ImportModal.** O lugar certo já existe: o card **"Fidelity Import"** de
 staging/aprovação (item 38) foi desenhado exatamente pra isso — nada entra no live sem
 checkbox + Approve, e o merge passa pelo `persist()` normal (sync de Holdings intacto).
