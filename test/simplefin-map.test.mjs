@@ -1130,5 +1130,117 @@ await test('asset class inference: CUSIP-shaped symbol -> Bank Bonds, B3-shaped 
   assert.equal(byTicker['MSFT'], 'Stocks');
 });
 
+// ── INTEREST resolution via bondBindings (jul/2026) ──────────────────────────
+// Second resolution source for the INTEREST branch: the descKey -> CUSIP binds
+// the user confirmed by picking a CUSIP on a staged interest row. Exists for
+// bonds bought before Fidelity dropped the CUSIP from the CSV — their buy rows
+// carry no coupon/maturity, so buildKnownBondsByDescKey can never learn them
+// and knownBondsByDescKey alone leaves them unresolved forever.
+console.log('\n— INTEREST resolution via bondBindings —');
+
+const wfDescKey = 'WELLS FARGO BANK NATL ASSN|4.2|2030-07-08';
+
+function wellsFargoInterestPayload(txId = 'TX-int-bind-1') {
+  return {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+        ],
+        transactions: [
+          {
+            id: txId,
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+}
+
+await test('bondBindings resolves the interest ticker when knownBondsByDescKey cannot', () => {
+  const out = mapSimplefinPayload(wellsFargoInterestPayload(), {
+    bondBindings: { [wfDescKey]: '949764WE0' },
+  });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.kind, 'interest');
+  assert.equal(ev.ticker, '949764WE0');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('bondBindings value is normalized (trimmed + uppercased)', () => {
+  const out = mapSimplefinPayload(wellsFargoInterestPayload(), {
+    bondBindings: { [wfDescKey]: '  949764we0 ' },
+  });
+  assert.equal(out.bondIncome[0].ticker, '949764WE0');
+});
+
+await test('knownBondsByDescKey wins over a conflicting bondBindings entry', () => {
+  const out = mapSimplefinPayload(wellsFargoInterestPayload(), {
+    knownBondsByDescKey: new Map([[wfDescKey, 'FROMBUY01']]),
+    bondBindings: { [wfDescKey]: 'FROMBIND1' },
+  });
+  assert.equal(out.bondIncome[0].ticker, 'FROMBUY01');
+});
+
+await test('a bondBindings entry for a different bond leaves the interest unresolved', () => {
+  const out = mapSimplefinPayload(wellsFargoInterestPayload(), {
+    bondBindings: { 'SOME OTHER BANK|3.5|2029-01-01': '949764WE0' },
+  });
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, wfDescKey);
+});
+
+await test('bondBindings is never applied when the issuer matches 2+ holdings (still ambiguous)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'HOLD-cd1',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN 4.20000% 07/08/2030',
+            market_value: '1010.20',
+          },
+          {
+            id: 'HOLD-cd2',
+            symbol: '',
+            description: 'WELLS FARGO BANK NATL ASSN 3.90000% 01/15/2029',
+            market_value: '2020.40',
+          },
+        ],
+        transactions: [
+          {
+            id: 'TX-int-bind-ambiguous',
+            posted: 1752900100,
+            amount: '5.10',
+            description: 'INTEREST WELLS FARGO BANK NATL ASSN (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { bondBindings: { [wfDescKey]: '949764WE0' } });
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('omitting bondBindings keeps the pre-feature behavior', () => {
+  const out = mapSimplefinPayload(wellsFargoInterestPayload());
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN');
+  assert.equal(ev.descKey, wfDescKey);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

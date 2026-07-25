@@ -4739,19 +4739,59 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     try {
       const seen = new Set(bondIncome.map((e) => `${e.date}|${e.ticker}|${e.amount}`));
       const nextIncome = [...bondIncome];
+      // Binds to persist (descKey -> CUSIP) from the picks made in this
+      // approval. Before this (jul/2026) the pick was applied to the single
+      // approved event and then thrown away, so the SAME bond's next coupon
+      // payment came back unresolved every sync — for the bonds bought before
+      // Fidelity dropped the CUSIP from the CSV, forever (their buy rows have
+      // no coupon/maturity, so buildKnownBondsByDescKey can never learn them).
+      // Persisting the bind closes that loop: api/fidelity-pending.js feeds it
+      // back to the mapper on the next sync, and the metadata backfill effect
+      // below uses it to fill coupon/maturity on the CUSIP's buy transactions,
+      // after which the automatic path resolves the bond on its own.
+      const newBindings = {};
       for (const e of selected) {
         // Apply any manual ticker override picked in the dropdown (interest
         // rows only — see the "Fidelity Income" table below) before the
         // dedupe key/push, so both use the final, user-confirmed ticker.
-        const finalEv = { ...e, ticker: bondTickerEdits[e.id] ?? e.ticker };
+        const picked = bondTickerEdits[e.id];
+        const finalEv = { ...e, ticker: picked ?? e.ticker };
         const k = `${finalEv.date}|${finalEv.ticker}|${finalEv.amount}`;
         if (seen.has(k)) continue;
         seen.add(k);
         nextIncome.push(finalEv);
+        // Only an explicit pick teaches anything, and only when the event
+        // carries a descKey (SimpleFin matched it to exactly one bond holding
+        // — the durable identity of the bond). A pick on a row without one
+        // (0 or 2+ holding matches) stays a one-off, deliberately: binding it
+        // to the issuer name alone could attach the wrong bond when the same
+        // issuer has several CDs.
+        if (!picked || e.kind !== "interest" || !e.descKey) continue;
+        const cusip = String(picked).trim().toUpperCase();
+        if (!knownBankBondTickers.has(cusip)) continue; // never bind to the placeholder
+        if (bondBindings[e.descKey] === cusip) continue; // already bound the same way
+        newBindings[e.descKey] = cusip;
       }
       await persist(transactions, nextIncome);
-      const remaining = pendingFidBond.filter((e) => !pendingFidBondChecked.has(e.id));
-      await patchPendingFidelity(auth, { bondIncome: remaining });
+      const hasNewBindings = Object.keys(newBindings).length > 0;
+      // A bind learned here also applies to the rows left in staging for that
+      // same bond (unchecked rows, or later coupons of the same CD in this
+      // batch) — resolve them right away instead of making the user repeat the
+      // pick row by row. An explicit pick on a row always wins over the bind.
+      const remaining = pendingFidBond
+        .filter((e) => !pendingFidBondChecked.has(e.id))
+        .map((e) =>
+          e.kind === "interest" && e.descKey && newBindings[e.descKey] && !bondTickerEdits[e.id]
+            ? { ...e, ticker: newBindings[e.descKey] }
+            : e
+        );
+      // bondBindings is merged key-by-key server-side (never replaced), so
+      // sending only the new pairs can't drop binds this client doesn't know.
+      await patchPendingFidelity(auth, {
+        bondIncome: remaining,
+        ...(hasNewBindings && { bondBindings: newBindings }),
+      });
+      if (hasNewBindings) setBondBindings((prev) => ({ ...prev, ...newBindings }));
       setPendingFidBond(remaining);
       setPendingFidBondChecked(new Set(remaining.map((e) => e.id)));
       setBondTickerEdits((prev) => {
@@ -5461,7 +5501,19 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                       </tr>
                     </thead>
                     <tbody>
-                      {pendingFidBond.map((e) => (
+                      {pendingFidBond.map((e) => {
+                        // A pick only sticks (auto-resolving this bond's
+                        // future coupons) when SimpleFin matched the issuer to
+                        // exactly one bond holding, which is what puts a
+                        // `descKey` on the event — see approvePendingFidBond.
+                        const currentTicker = String(bondTickerEdits[e.id] ?? e.ticker).toUpperCase();
+                        const alreadyResolved = knownBankBondTickers.has(currentTicker);
+                        const pickHint = alreadyResolved
+                          ? null
+                          : e.descKey
+                          ? "your pick is saved for this bond"
+                          : "one-off — this pick can't be saved";
+                        return (
                         <tr key={e.id} style={{ borderTop: `1px solid ${T.border}` }}>
                           <td style={{ padding: "4px 0" }}>
                             <input
@@ -5478,6 +5530,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                           </td>
                           <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
                             {e.kind === "interest" ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                               <select
                                 value={bondTickerEdits[e.id] ?? e.ticker}
                                 onChange={(ev) =>
@@ -5503,6 +5556,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                                   </option>
                                 ))}
                               </select>
+                              {pickHint && (
+                                <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
+                                  {pickHint}
+                                </span>
+                              )}
+                              </div>
                             ) : (
                               e.ticker
                             )}
@@ -5511,7 +5570,8 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                             {valuesHidden ? "•••" : fmtMoney(e.amount, "USD")}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </ScrollHintTable>

@@ -284,7 +284,17 @@ async function handleSync(req, res, auth) {
   // stage buy/sell candidates for whatever moved (see
   // lib/simplefin-map.js stockPositionDeltas).
   const netQtyByTicker = computeNetQty(liveTx);
-  const mapped = mapSimplefinPayload(payload, { knownBondsByDescKey, netQtyByTicker });
+  // `pending.bondBindings` (descKey -> CUSIP) is confirmed data that survives
+  // DELETE — it carries the binds the user made by picking a CUSIP on a
+  // staged INTEREST row. Feeding it back into the mapper is what makes that
+  // decision stick: the same bond's next coupon payment resolves to the real
+  // CUSIP server-side instead of being staged as an unresolved issuer name
+  // again (jul/2026 — the pick used to be applied to one event and forgotten).
+  const mapped = mapSimplefinPayload(payload, {
+    knownBondsByDescKey,
+    netQtyByTicker,
+    bondBindings: pending.bondBindings,
+  });
   const liveTxKeys = new Set(liveTx.map(dupKey));
   const liveTxSimplefinIds = new Set(liveTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
   const liveBondKeys = new Set(liveBond.map(bondKey));
