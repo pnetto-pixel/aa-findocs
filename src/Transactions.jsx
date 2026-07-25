@@ -4965,11 +4965,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
-  // Master collapse for the whole sync/automation region (Fidelity Import +
-  // Balance Updates + Unmapped + Splits/Groupings) — collapsed by default so
-  // it doesn't push the actual transaction table below the fold when there's
-  // nothing needing attention.
-  const [syncCardOpen, setSyncCardOpen] = useState(false);
   // Transaction history table — open by default (it's the main content of
   // this tab), collapsible so it can be skipped to reach BondIncomeAudit/
   // the rest of the screen without scrolling past hundreds of rows.
@@ -5702,62 +5697,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         )}
       </div>
 
-      {/* Sync & automation — Splits/Groupings, folded behind a master toggle so
-          this admin/utility clutter doesn't stand between the toolbar and the
-          actual transaction table below. Fidelity Import (trades/income/
+      {/* Splits / Groupings inline card. Fidelity Import (trades/income/
           unmapped) and the "Sync Fidelity" trigger now live inside the
           Bulk Import modal's "Sync" tab (always visible there, not gated by
           isAdmin — only the sync trigger itself is admin-gated). */}
-      {(isAdmin || pendingSplits.length > 0 || splitEvents.length > 0) && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => setSyncCardOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              background: T.card,
-              border: `1px solid ${T.border}`,
-              borderRadius: syncCardOpen ? "4px 4px 0 0" : 4,
-              padding: "10px 14px",
-              cursor: "pointer",
-              color: T.textDim,
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-            }}
-          >
-            <ChevronDown
-              size={12}
-              style={{
-                transform: syncCardOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-            Sync & Automation
-            {pendingSplits.length > 0 && (
-              <span
-                style={{
-                  marginLeft: 8,
-                  background: T.gold,
-                  color: "#0b0d10",
-                  fontFamily: FONT_MONO,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: "1px 6px",
-                  borderRadius: 8,
-                }}
-              >
-                {pendingSplits.length}
-              </span>
-            )}
-          </button>
-          {syncCardOpen && (
-            <div style={{ padding: "14px 0 0" }}>
-
-      {/* Splits / Groupings inline card */}
       {(pendingSplits.length > 0 || splitEvents.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           <button
@@ -6136,10 +6079,6 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
                   )}
                 </div>
               )}
-            </div>
-          )}
-        </div>
-      )}
             </div>
           )}
         </div>
