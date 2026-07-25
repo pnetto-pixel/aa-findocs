@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Dump completo do que a SimpleFin Bridge devolve sobre a(s) conta(s) Fidelity.
+    Dump completo do que a SimpleFin Bridge devolve -- por padrao so a(s)
+    conta(s) Fidelity, mas o filtro de instituicao e configuravel.
 
 .DESCRIPTION
     Roda fora do app (PowerShell 5.1 ou 7+), direto contra a SimpleFin Bridge.
@@ -18,8 +19,15 @@
     Por padrao filtra org.name/org.domain contendo "fidelity" -- mesma regra
     mandatoria do mapper (isFidelityOrg em lib/simplefin-map.js). Uma conexao
     SimpleFin devolve TODAS as instituicoes linkadas no Bridge, entao sem esse
-    filtro o dump inclui contas bancarias pessoais nao relacionadas. -AllOrgs
-    desliga o filtro de proposito (use so se for isso mesmo que voce quer).
+    filtro o dump inclui contas bancarias pessoais nao relacionadas.
+
+    O filtro e configuravel para os casos em que voce QUER as outras contas
+    (exportar o resto pra outra ferramenta, conferir o que mais esta linkado):
+      -Org <texto>   troca o alvo do filtro (default "fidelity")
+      -ExcludeOrg    inverte -- pega tudo EXCETO quem casa com -Org
+      -AllOrgs       nao filtra nada
+    Nenhuma dessas opcoes afeta o app: elas so existem neste script manual, e o
+    mapper do sync continua com o filtro Fidelity fixo e obrigatorio.
 
 .PARAMETER AccessUrl
     O SimpleFin access URL, com credenciais embutidas:
@@ -35,9 +43,16 @@
 .PARAMETER OutDir
     Pasta de saida (default .\simplefin-out).
 
+.PARAMETER Org
+    Texto procurado em org.name/org.domain, case-insensitive (default
+    "fidelity"). Ignorado quando -AllOrgs esta ligado.
+
+.PARAMETER ExcludeOrg
+    Inverte o filtro: dumpa tudo EXCETO as contas que casam com -Org. Com os
+    defaults, "-ExcludeOrg" = "todas as instituicoes menos a Fidelity".
+
 .PARAMETER AllOrgs
-    Nao filtra por Fidelity -- dumpa toda instituicao linkada. Cuidado: inclui
-    dados bancarios pessoais.
+    Nao filtra nada -- dumpa toda instituicao linkada, Fidelity inclusive.
 
 .PARAMETER NoCsv
     So mostra no console, nao escreve arquivo nenhum.
@@ -49,6 +64,13 @@
     .\simplefin-dump.ps1 -AccessUrl "https://user:pass@bridge.simplefin.org/simplefin" -Days 90
 
 .EXAMPLE
+    # tudo menos a Fidelity (exportar as contas bancarias pra outra ferramenta)
+    .\simplefin-dump.ps1 -ExcludeOrg -OutDir .\simplefin-bancos
+
+.EXAMPLE
+    .\simplefin-dump.ps1 -Org chase
+
+.EXAMPLE
     .\simplefin-dump.ps1 -AllOrgs -OutDir C:\temp\sf
 #>
 
@@ -57,6 +79,8 @@ param(
     [string] $AccessUrl,
     [int]    $Days = 90,
     [string] $OutDir = ".\simplefin-out",
+    [string] $Org = "fidelity",
+    [switch] $ExcludeOrg,
     [switch] $AllOrgs,
     [switch] $NoCsv
 )
@@ -198,15 +222,19 @@ $payload = $rawJson | ConvertFrom-Json
 $allAccounts = @()
 if ($payload.PSObject.Properties['accounts'] -and $payload.accounts) { $allAccounts = @($payload.accounts) }
 
+$orgPattern = "*$($Org.ToLowerInvariant())*"
 $accounts = $allAccounts
 if (-not $AllOrgs) {
     $accounts = @($allAccounts | Where-Object {
         $hay = (("$($_.org.name) $($_.org.domain)")).ToLowerInvariant()
-        $hay -like '*fidelity*'
+        if ($ExcludeOrg) { $hay -notlike $orgPattern } else { $hay -like $orgPattern }
     })
 }
 
-$filterNote = if ($AllOrgs) { ' (sem filtro, -AllOrgs)' } else { ' (so Fidelity)' }
+$filterNote =
+    if ($AllOrgs)       { ' (sem filtro, -AllOrgs)' }
+    elseif ($ExcludeOrg) { " (tudo menos '$Org')" }
+    else                 { " (so '$Org')" }
 Write-Host ("Contas no payload: {0}   |   apos filtro: {1}{2}" -f $allAccounts.Count, $accounts.Count, $filterNote) -ForegroundColor DarkGray
 
 if ($payload.PSObject.Properties['errors'] -and $payload.errors -and @($payload.errors).Count -gt 0) {
@@ -217,7 +245,7 @@ if ($payload.PSObject.Properties['errors'] -and $payload.errors -and @($payload.
 
 if ($accounts.Count -eq 0) {
     Write-Host ''
-    Write-Host 'Nenhuma conta Fidelity encontrada. Rode com -AllOrgs pra ver que instituicoes vieram.' -ForegroundColor Yellow
+    Write-Host "Nenhuma conta sobrou depois do filtro$filterNote. Rode com -AllOrgs pra ver que instituicoes vieram." -ForegroundColor Yellow
     if (-not $AllOrgs -and $allAccounts.Count -gt 0) {
         $allAccounts | ForEach-Object { [pscustomobject]@{ Org = $_.org.name; Domain = $_.org.domain; Account = $_.name } } |
             Format-Table -AutoSize | Out-Host
@@ -352,8 +380,8 @@ if (-not $NoCsv) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
     $rawPath = Join-Path $OutDir "simplefin-raw-$stamp.json"
-    # Reserializa so o subconjunto filtrado, senao o arquivo bruto carrega as
-    # contas bancarias pessoais que o filtro Fidelity acabou de excluir.
+    # Reserializa so o subconjunto filtrado, senao o arquivo bruto carrega de
+    # volta exatamente as contas que o filtro acabou de excluir.
     $rawOut = if ($AllOrgs) {
         $rawJson
     } else {

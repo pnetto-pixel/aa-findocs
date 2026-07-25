@@ -11,12 +11,19 @@
 //
 // Uso:
 //   SIMPLEFIN_ACCESS_URL="https://user:pass@bridge.simplefin.org/simplefin" \
-//     node scripts/simplefin-dump.mjs [--days 90] [--out ./simplefin-out] [--all-orgs] [--no-csv]
+//     node scripts/simplefin-dump.mjs [--days 90] [--out ./simplefin-out] [--no-csv]
 //
 // O filtro por org "fidelity" e o padrao e e a mesma regra mandatoria do mapper
 // (isFidelityOrg): uma conexao SimpleFin devolve TODAS as instituicoes linkadas
-// no Bridge, entao sem ele o dump inclui contas bancarias pessoais. --all-orgs
-// desliga de proposito.
+// no Bridge, entao sem ele o dump inclui contas bancarias pessoais.
+//
+// O filtro e configuravel para os casos em que voce QUER as outras contas
+// (exportar o resto pra outra ferramenta, conferir o que mais esta linkado):
+//   --org <texto>    troca o alvo do filtro (default "fidelity")
+//   --exclude-org    inverte -- pega tudo EXCETO quem casa com --org
+//   --all-orgs       nao filtra nada
+// Nada disso afeta o app: as flags so existem neste script manual, e o mapper
+// do sync continua com o filtro Fidelity fixo e obrigatorio.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,11 +32,21 @@ import readline from "node:readline/promises";
 // ------------------------------------------------------------------ args ---
 
 function parseArgs(argv) {
-  const out = { days: 90, outDir: "./simplefin-out", allOrgs: false, csv: true, accessUrl: null };
+  const out = {
+    days: 90,
+    outDir: "./simplefin-out",
+    org: "fidelity",
+    excludeOrg: false,
+    allOrgs: false,
+    csv: true,
+    accessUrl: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--days") out.days = parseInt(argv[++i], 10);
     else if (a === "--out") out.outDir = argv[++i];
+    else if (a === "--org") out.org = argv[++i];
+    else if (a === "--exclude-org") out.excludeOrg = true;
     else if (a === "--all-orgs") out.allOrgs = true;
     else if (a === "--no-csv") out.csv = false;
     else if (a === "--url") out.accessUrl = argv[++i];
@@ -47,8 +64,15 @@ node scripts/simplefin-dump.mjs [opcoes]
   --url <accessUrl>   SimpleFin access URL (default: $SIMPLEFIN_ACCESS_URL, ou pergunta)
   --days <n>          janela de transacoes, max 90 (default 90)
   --out <dir>         pasta de saida (default ./simplefin-out)
-  --all-orgs          nao filtra por Fidelity (inclui contas bancarias pessoais)
+  --org <texto>       instituicao procurada em org.name/org.domain (default "fidelity")
+  --exclude-org       inverte o filtro: tudo EXCETO quem casa com --org
+  --all-orgs          nao filtra nada (Fidelity + contas bancarias pessoais)
   --no-csv            so imprime no console, nao escreve arquivos
+
+Exemplos:
+  node scripts/simplefin-dump.mjs
+  node scripts/simplefin-dump.mjs --exclude-org --out ./simplefin-bancos
+  node scripts/simplefin-dump.mjs --org chase
 `);
   process.exit(0);
 }
@@ -185,13 +209,20 @@ const rawJson = await res.text();
 const payload = JSON.parse(rawJson);
 
 const allAccounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
+const orgNeedle = String(args.org || "").toLowerCase();
+const matchesOrg = (a) =>
+  `${a?.org?.name || ""} ${a?.org?.domain || ""}`.toLowerCase().includes(orgNeedle);
 const accounts = args.allOrgs
   ? allAccounts
-  : allAccounts.filter((a) => `${a?.org?.name || ""} ${a?.org?.domain || ""}`.toLowerCase().includes("fidelity"));
+  : allAccounts.filter((a) => (args.excludeOrg ? !matchesOrg(a) : matchesOrg(a)));
 
+const filterNote = args.allOrgs
+  ? " (sem filtro, --all-orgs)"
+  : args.excludeOrg
+    ? ` (tudo menos "${args.org}")`
+    : ` (so "${args.org}")`;
 console.log(
-  `Contas no payload: ${allAccounts.length}   |   apos filtro: ${accounts.length}` +
-    (args.allOrgs ? " (sem filtro, --all-orgs)" : " (so Fidelity)")
+  `Contas no payload: ${allAccounts.length}   |   apos filtro: ${accounts.length}${filterNote}`
 );
 
 const errors = Array.isArray(payload?.errors) ? payload.errors : [];
@@ -201,7 +232,7 @@ if (errors.length) {
 }
 
 if (!accounts.length) {
-  console.log("\nNenhuma conta Fidelity encontrada. Rode com --all-orgs pra ver que instituicoes vieram.");
+  console.log(`\nNenhuma conta sobrou depois do filtro${filterNote}. Rode com --all-orgs pra ver que instituicoes vieram.`);
   if (!args.allOrgs && allAccounts.length) {
     console.log(table(allAccounts.map((a) => ({ Org: a?.org?.name ?? "", Domain: a?.org?.domain ?? "", Account: a?.name ?? "" }))));
   }
@@ -333,8 +364,8 @@ if (args.csv) {
     return p;
   };
 
-  // Reserializa so o subconjunto filtrado, senao o arquivo bruto carrega as
-  // contas bancarias pessoais que o filtro Fidelity acabou de excluir.
+  // Reserializa so o subconjunto filtrado, senao o arquivo bruto carrega de
+  // volta exatamente as contas que o filtro acabou de excluir.
   const rawOut = args.allOrgs ? rawJson : JSON.stringify({ errors, accounts }, null, 2);
 
   const written = [

@@ -57,16 +57,38 @@ aparece no inventário e não aparece nas tabelas = dado que o app ainda não l�
 Em disco (`./simplefin-out` por padrão, ignorado pelo git): `accounts-*.csv`,
 `holdings-*.csv`, `transactions-*.csv`, `fields-*.csv` e o JSON bruto.
 
-### Filtro Fidelity
+### Filtro de instituição
 
 Por padrão os scripts filtram `org.name`/`org.domain` contendo "fidelity" — a
 mesma regra mandatória do mapper (`isFidelityOrg`). Uma conexão SimpleFin devolve
 **todas** as instituições linkadas no Bridge (jul/2026: 22 contas, só 1 Fidelity),
 então sem o filtro o dump inclui contas bancárias pessoais. O JSON bruto salvo em
-disco também é reserializado só com o subconjunto filtrado, pelo mesmo motivo.
+disco também é reserializado só com o subconjunto filtrado, pelo mesmo motivo —
+vale para qualquer configuração do filtro, não só a padrão.
 
-`-AllOrgs` / `--all-orgs` desliga o filtro — use só se for isso mesmo que você
-quer.
+O filtro é configurável para quando você **quer** as outras contas (exportar o
+resto pra outra ferramenta, conferir o que mais está linkado):
+
+| PowerShell | Node | efeito |
+|---|---|---|
+| `-Org <texto>` | `--org <texto>` | troca o alvo do filtro (default `fidelity`) |
+| `-ExcludeOrg` | `--exclude-org` | inverte: tudo **exceto** quem casa com `-Org` |
+| `-AllOrgs` | `--all-orgs` | não filtra nada |
+
+```powershell
+.\scripts\simplefin-dump.ps1 -ExcludeOrg -OutDir .\simplefin-bancos   # tudo menos a Fidelity
+.\scripts\simplefin-dump.ps1 -Org chase
+```
+
+```bash
+node scripts/simplefin-dump.mjs --exclude-org --out ./simplefin-bancos
+node scripts/simplefin-dump.mjs --org chase
+```
+
+Nada disso afeta o app: as flags só existem nestes scripts manuais. O mapper do
+sync (`lib/simplefin-map.js`) continua com o filtro Fidelity fixo e obrigatório —
+é o que impede dados bancários não relacionados de entrarem no staging do
+portfolio.
 
 ### Janela de transações
 
