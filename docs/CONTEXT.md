@@ -766,7 +766,7 @@ Item 3 da sessao de continuacao SimpleFin (escopo: "matching de bonds — alguns
 
 Fecha a segunda metade do item 3 da sessao de continuacao SimpleFin ("interests nao estao batendo" — a primeira metade, "matching de bonds — alguns nao estao retornando", ja foi resolvida em `fe72fbe`/v1.8.1, ver secao acima).
 
-**Causa raiz:** diferente de REDEMPTION (ja corrigido via `descKey`, sha `400568e`), a `description` de uma transacao INTEREST do SimpleFin so carrega o nome do issuer — sem coupon%/maturity. O `ticker` extraido era so texto de issuer solto, sem CUSIP, que nao batia com o ticker real da posicao — causando linha orfa em `Dividends.jsx`, dado desaparecendo em `Performance.jsx`, e reestimativa de accrual duplicada/inflada em `buildBondProjections`.
+**Causa raiz:** diferente de REDEMPTION (ja corrigido via `descKey`, sha `400568e`), acreditava-se nesta sessao que a `description` de uma transacao INTEREST do SimpleFin so carrega o nome do issuer — sem coupon%/maturity. **Essa premissa se revelou falsa (ou o formato mudou desde entao) — corrigida na v1.16.2, ver secao dedicada mais abaixo.** Na epoca desta entrega (v1.9.0), o tratamento era: o `ticker` extraido era so texto de issuer solto, sem CUSIP, que nao batia com o ticker real da posicao — causando linha orfa em `Dividends.jsx`, dado desaparecendo em `Performance.jsx`, e reestimativa de accrual duplicada/inflada em `buildBondProjections`.
 
 **Solucao em duas camadas:**
 
@@ -827,6 +827,8 @@ Continuacao direta da Fatia 1. Quando existe um bind confirmado (`descKey -> CUS
 - **Nota do auditor (nao bloqueante):** o `useEffect` de load de staging Fidelity tambem depende de `transactions`, entao cada persist do backfill dispara 1-2 GETs extras a `/api/fidelity-pending` por convergencia — pre-existente, so amplificado.
 
 **Fatia 3 (desambiguacao de INTEREST por valor esperado) foi avaliada e descartada na forma original nesta mesma sessao** — ver `docs/Features_Roadmap.md` § Pendentes. Achado-chave: o match de INTEREST hoje e por nome do emissor (`shortName`), nao pelo `descKey` completo, entao a ambiguidade ocorre sempre que ha 2+ bonds do mesmo emissor (nao so em casos raros); mas resolver por valor esperado dependeria de uma frequencia de pagamento confiavel que nao existe antes da 1a atribuicao (galinha-e-ovo), e resolver por aproximacao contraria a regra do projeto ("match errado silencioso e pior que nenhum"). O dropdown manual do card Fidelity Income (v1.9.0) ja cobre o caso com fricao baixa.
+
+**Superada em grande parte pelo self-parse da v1.16.2 (ver secao dedicada mais abaixo):** a premissa desta avaliacao — que a `description` de INTEREST so traz o nome do issuer — era falsa (ou o formato mudou). Quando a description carrega cupom%+vencimento (Path 1 da v1.16.2), o `descKey` extraido direto dela ja e a identidade exata do bond, sem cruzar com holdings nem com o `shortName` do emissor — dois bonds do MESMO emissor com cupom/vencimento diferentes resolvem para CUSIPs distintos sem ambiguidade nenhuma. A motivacao original da Fatia 3 (ambiguidade por emissor) deixa de existir para esse formato. Condicao residual em que a Fatia 3 ainda faria sentido: descriptions genuinamente issuer-only (sem cupom/vencimento — Path 2 da v1.16.2) com 2+ bonds do mesmo emissor em aberto — cenario que so se confirma observando dados reais, nao presumindo o formato.
 
 ### Bank Bonds — ID sintetico para bonds sem CUSIP (jul/2026, sha `8b05eed`, merged em main, v1.12.0)
 
@@ -955,6 +957,29 @@ A pedido do usuario, **reverte** a decisao registrada em `docs/plans/simplefin-f
 
 -----
 
+### SimpleFin Feed — INTEREST reaparecendo indefinidamente: self-parse da description resolve bonds do mesmo emissor (jul/2026, merge `39f1c65`, v1.16.2)
+
+**Sintoma:** os mesmos 3 pagamentos de interest de bonds reapareciam no card Fidelity Income pedindo escolha manual de ticker, sync apos sync (4 syncs consecutivos, inclusive de outro dispositivo) — mesmo apos o usuario escolher e aprovar o CUSIP repetidas vezes.
+
+**Causa raiz:** a premissa documentada desde a v1.9.0 (`docs/CONTEXT.md` § v1.9.0), de que a `description` de uma transacao INTEREST do SimpleFin so carrega o nome do issuer (sem coupon%/maturity), **era falsa** (ou o formato mudou desde jul/2026). Evidencia real: print do app do usuario mostrando a opcao do dropdown como `WELLS FARGO BANK NATL ASSN CD 3.95000% 05/08/2029 (unresolved)` — como `src/Transactions.jsx` renderiza `{e.ticker} (unresolved)`, isso prova que a description completa (issuer+cupom%+vencimento) ja chegava ate o ticker extraido.
+
+Cadeia do bug: `extractTicker` (via `INTEREST_PREFIX_RX`) capturava a string inteira → era comparada contra `meta.shortName` dos holdings (so o texto antes do `%`, `lib/bond-meta.js`) → nunca eram iguais → `matches.length === 0` → `ev.descKey` nunca era setado → `approvePendingFidBond` (que exige `descKey` pra gravar bind) nunca conseguia persistir a escolha → UI mostrava "one-off — this pick can't be saved" → a mesma pergunta repetia pra sempre. O mecanismo de bind persistente da v1.15.0 estava correto, mas era **inalcancavel** pra essas linhas.
+
+**Diagnostico inicial desta sessao errou:** atribuiu o sintoma a ambiguidade "2+ bonds do mesmo emissor" (a "Fatia 3" reavaliada, ver secao acima). Era o ramo oposto — **0 matches**, nao 2+. Os dois cenarios (0 matches por description issuer-only real vs. 0 matches porque a description completa nunca bate contra `shortName`) caem no mesmo ramo morto do codigo e produzem sintoma identico na UI, o que fez o primeiro diagnostico passar batido. Foi o proprio usuario questionando a premissa ("a descricao do simplefin possui tudo") que destravou a causa real.
+
+**Fix (`lib/simplefin-map.js`):** o branch INTEREST de `mapOneTransaction` ganhou dois caminhos:
+- **Path 1 (novo):** `extractBondMeta` roda sobre o proprio texto extraido da description. Se parseia (tem `%` + data `MM/DD/YYYY` no fim), o `descKey` resultante e a identidade exata do bond — resolvido contra `knownBondsByDescKey` → `bondBindings` (mesma precedencia de sempre). Sem cross-reference contra holdings, sem ambiguidade possivel entre bonds do mesmo emissor. Se nao resolve, seta `ev.descKey` mesmo assim pra que o pick do usuario vire bind persistente.
+- **Path 2 (fallback, comportamento anterior intacto):** o cross-reference original por `shortName` contra `bankBondHoldings(account)`, pra descriptions genuinamente issuer-only. Regra conservadora de 0/2+ matches mantida.
+- Helper `resolveDescKey` extraido, compartilhado pelos dois paths (preserva precedencia + normalizacao trim+uppercase).
+- `api/fidelity-pending.js`: sem mudancas.
+- 5 testes novos em `test/simplefin-map.test.mjs` (62/62 verde), incluindo o caso real de dois bonds do mesmo emissor com cupons/vencimentos diferentes resolvendo pra CUSIPs distintos. Fixtures antigas issuer-only preservadas como cobertura do Path 2.
+
+**Limitacao conhecida, nao corrigida nesta rodada:** os 3 pagamentos ja travados em `pending.bondIncome` no Redis nao sao migrados retroativamente — o dedupe por `simplefinId` (`api/fidelity-pending.js`) impede que o proximo sync os substitua por versoes corrigidas automaticamente. O fix vale para todo pagamento futuro; essas 3 linhas especificas exigem que o usuario as descarte (`discardPendingFidBond`, que limpa `bondIncome` inteiro — sem ledger de descartados) e rode o sync de novo, desde que ainda dentro da janela de `SIMPLEFIN_WINDOW_DAYS` (44 dias).
+
+Ver Licoes Aprendidas abaixo — fixtures de teste escritas a partir de uma premissa sobre formato de dado externo nao sao evidencia independente.
+
+-----
+
 ## 🎯 Decisões Técnicas + POR QUÊ
 
 |Decisão|Razão|
@@ -966,6 +991,7 @@ A pedido do usuario, **reverte** a decisao registrada em `docs/plans/simplefin-f
 |**Yahoo para B3 rejeitado**|429 frequente vindos dos IPs do Vercel|
 |**Frankfurter para USD/BRL real-time rejeitado**|BCE atualiza 1x/dia (EOD), parecia travado|
 |Tab Sync do ImportModal nao e admin-gated (so o botao "Sync Fidelity" e)|v1.16.0 — preserva o comportamento do card standalone removido, que nunca checava `isAdmin`; qualquer usuario com itens staged precisa poder aprovar/descartar|
+|**INTEREST resolve por self-parse da propria description antes de cruzar com holdings (v1.16.2)**|A description do SimpleFin pode carregar issuer+cupom%+vencimento completos (premissa anterior de "so issuer" era falsa/desatualizada). `extractBondMeta` sobre o texto extraido gera o `descKey` exato sem cross-reference — impossivel de ser ambiguo entre bonds do mesmo emissor. Fallback por `shortName` (Path 2) preservado pra descriptions genuinamente issuer-only.|
 |**SnapTrade/Plaid/Yodlee rejeitados**|Custo alto, complexidade, risco de credenciais|
 |Cash em seção separada|Manual asset com class "Cash" → fora de rebalance/sort|
 |Cash permanente (`CASH_ID`)|Holding sempre presente via `ensureCashAccount()`|
@@ -1280,6 +1306,7 @@ A pedido do usuario, **reverte** a decisao registrada em `docs/plans/simplefin-f
 - **Disclaimer desatualizado é dívida técnica** — "Excludes fixed income" ficou errado após PR #37; corrigir junto com próxima mudança em Performance.jsx.
 - **Cards colapsáveis em Performance** (PR #38) — consistência com padrão visual de Holdings reduz curva de aprendizado do usuário.
 - **Tesouro Direto: validar fonte antes de implementar** (PR #41–#50) — Brapi `/treasury` é pago (403); endpoints oficiais descontinuados; CKAN desativado. Sempre checar disponibilidade real da API antes de desenhar a solução.
+- **Fixtures de teste escritas a partir de uma premissa sobre formato de dado externo não são evidência independente (jul/2026, v1.16.2).** A premissa "a `description` de INTEREST do SimpleFin só traz o issuer" foi documentada na v1.9.0 e as fixtures de `test/simplefin-map.test.mjs` foram escritas para confirmá-la — o que significa que os testes verificavam o comportamento sob a própria premissa, nunca a questionavam. O bug sobreviveu a um refactor inteiro (v1.10.0/Fatia 1) e a uma feature inteira construída em cima (v1.15.0, bind persistente) porque nada nos testes checava a description real. Quando um sintoma persiste depois de um fix que "deveria" tê-lo resolvido (aqui: bind persistente da v1.15.0, aprovado 2x pelo usuário, sem efeito), o próximo passo é verificar o dado real — aqui, o texto que a própria UI já renderiza (`{e.ticker} (unresolved)`) — antes de investigar mais fundo ou construir mais em cima da premissa.
 - **Fallback para manual é sempre válido** — quando não há fonte live gratuita, entrada manual em moeda nativa (BRL) + conversão automática é solução pragmática e suficiente para uso pessoal.
 - **Validar API com endpoint de diagnóstico antes de implementar** — probe temporário confirmou: Yahoo `chart?events=div` funciona para US, brapi `dividends=true` é pago (403) para BRA Stocks. Economizou implementar a solução errada.
 - **Ler o componente inteiro antes de codar** (PR #65) — o coder encontrou `buildYoyData` e `YearVsYearTable` quase completamente implementados no arquivo. Leitura previa do arquivo-alvo evita re-implementar logica existente. Padrao a seguir: pure functions fora do componente + `useMemo` por dentro, igual a `buildChartData` / `buildPositionRows`.
