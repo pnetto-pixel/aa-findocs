@@ -340,6 +340,120 @@ await test('normalization: extra spaces / different case in the issuer text stil
   assert.equal(out.bondIncome[0].ticker, '949764WE0');
 });
 
+console.log('\n— mapSimplefinPayload: bond interest with coupon%/maturity IN the description (jul/2026 real format) —');
+
+// Confirmed with a real user screenshot (jul/2026): the interest description
+// is NOT always the bare issuer name assumed above -- it can carry the
+// bond's full "Symbol Description" text, coupon% + maturity included, e.g.
+// "INTEREST WELLS FARGO BANK NATL ASSN CD 3.95000% 05/08/2029 (Cash)". When
+// that's the case, extractBondMeta on the extracted text itself gives an
+// exact descKey with no need to cross-reference the account's holdings at
+// all -- this is Path 1 in the INTEREST branch (see lib/simplefin-map.js).
+const WF_CD_2029 = 'INTEREST WELLS FARGO BANK NATL ASSN CD 3.95000% 05/08/2029 (Cash)';
+const WF_CD_2029_DESCKEY = 'WELLS FARGO BANK NATL ASSN CD|3.95|2029-05-08';
+
+await test('(a) full description resolves via knownBondsByDescKey', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-full-1', posted: 1752900100, amount: '19.75', description: WF_CD_2029 },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([[WF_CD_2029_DESCKEY, '949764WE0']]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.kind, 'interest');
+  assert.equal(ev.ticker, '949764WE0');
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('(b) full description resolves via bondBindings (no knownBondsByDescKey entry)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-full-2', posted: 1752900100, amount: '19.75', description: WF_CD_2029 },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    bondBindings: { [WF_CD_2029_DESCKEY]: '  949764we0 ' },
+  });
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, '949764WE0'); // trimmed + uppercased
+  assert.equal(ev.descKey, undefined);
+});
+
+await test('(c) full description does not resolve -> ticker stays full text, descKey is set for a future bind', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-full-3', posted: 1752900100, amount: '19.75', description: WF_CD_2029 },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.ticker, 'WELLS FARGO BANK NATL ASSN CD 3.95000% 05/08/2029');
+  assert.equal(ev.descKey, WF_CD_2029_DESCKEY);
+});
+
+await test('(d) two bonds from the SAME issuer with different coupon/maturity resolve to their own distinct CUSIPs (the real bug case)', () => {
+  const WF_CD_2028 = 'INTEREST WELLS FARGO BANK NATL ASSN CD 5.00000% 03/01/2028 (Cash)';
+  const WF_CD_2028_DESCKEY = 'WELLS FARGO BANK NATL ASSN CD|5|2028-03-01';
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-full-4a', posted: 1752900100, amount: '19.75', description: WF_CD_2029 },
+          { id: 'TX-full-4b', posted: 1752900200, amount: '25.00', description: WF_CD_2028 },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([
+    [WF_CD_2029_DESCKEY, '949764WE0'],
+    [WF_CD_2028_DESCKEY, '949764XX1'],
+  ]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 2);
+  const ev2029 = out.bondIncome.find((e) => e.simplefinId === 'TX-full-4a');
+  const ev2028 = out.bondIncome.find((e) => e.simplefinId === 'TX-full-4b');
+  assert.equal(ev2029.ticker, '949764WE0');
+  assert.equal(ev2028.ticker, '949764XX1');
+  assert.notEqual(ev2029.ticker, ev2028.ticker);
+});
+
+await test('(e) "INTEREST as of YYYY-MM-DD ..." prefix + full coupon/maturity text still resolves', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-full-5',
+            posted: 1752900100,
+            amount: '19.75',
+            description: 'INTEREST as of 2026-01-15 WELLS FARGO BANK NATL ASSN CD 3.95000% 05/08/2029 (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const knownBondsByDescKey = new Map([[WF_CD_2029_DESCKEY, '949764WE0']]);
+  const out = mapSimplefinPayload(payload, { knownBondsByDescKey });
+  assert.equal(out.bondIncome.length, 1);
+  assert.equal(out.bondIncome[0].ticker, '949764WE0');
+});
+
 console.log('\n— mapSimplefinPayload: redemption —');
 
 await test('REDEMPTION PAYOUT maps to a sell transaction at face value', () => {
