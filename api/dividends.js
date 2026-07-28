@@ -18,9 +18,10 @@
 // for ADRs filing 20-F, e.g. TSM), we ALSO try Finnhub's /stock/dividend payDate field
 // as a second-opinion source (lazy, once per cold ticker, cached separately — see
 // `fetchFinnhubPayDates`/`loadFinnhubPayDateRows` below). Only if BOTH Polygon and
-// Finnhub fail to resolve a pay date do we fall back to the ex-date as `date`, and in
-// that case the event is flagged `payDateUncertain: true` so the UI can warn the user
-// instead of silently showing a wrong date (see Dividends.jsx "EX-DATE" badge).
+// Finnhub fail to resolve a pay date, the event's actual pay date is unknown, so it is
+// EXCLUDED from `events`/totals entirely (see v12 below) rather than shown against a
+// guessed ex-date — the ex-date has almost always already passed, so treating it as the
+// received date silently overcounted income that hadn't actually landed yet.
 // BRA Stocks is included in AUTO_CLASSES so US-listed tickers (e.g. VALE, a NYSE ADR)
 // that are tagged "BRA Stocks" are still fetched — isBrazilianTicker gates out B3 tickers.
 // Cache: Redis, versioned, TTL until next US market close.
@@ -41,6 +42,15 @@
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
+// v12: Events whose pay date could not be resolved by either Polygon or Finnhub (i.e.
+//      would have been flagged `payDateUncertain: true`) are now EXCLUDED from `events`
+//      and totals instead of being counted as received income against a guessed
+//      ex-date. The ex-date almost always precedes today, so the existing future-date
+//      guard never caught these, and they silently overcounted income before the real
+//      cash landed. Confirmed against a real Fidelity statement (June 2026): REXR
+//      $118.76, STAG $84.20, NKE $22.14, TSM $8.59 (~$233.69 total) do not appear in the
+//      statement because the actual pay date falls in a later month (July, or October
+//      for TSM). New `meta.payDateUncertainSkipped` counter for telemetry.
 // v11: "Today" for the future-pay-date guard now uses the client's local calendar
 //      day (body.todayISO) instead of the server's UTC clock — fixes dividends
 //      appearing as already-received hours early for negative-offset timezones
@@ -62,7 +72,7 @@ import { authenticate } from '../lib/auth.js';
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v11';
+const CACHE_VERSION = 'v12';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -434,6 +444,7 @@ export default async function handler(req, res) {
   let payDatesMissing = 0;
   let payDatesResolvedViaFinnhub = 0;
   let futureSkipped = 0;
+  let payDateUncertainSkipped = 0;
   // "Today" for the future-pay-date guard below MUST be the caller's LOCAL calendar
   // day, not the server's UTC clock — Vercel functions run in UTC, which rolls over
   // hours before local midnight for negative-offset timezones (US Central, Brazil,
@@ -540,6 +551,16 @@ export default async function handler(req, res) {
         futureSkipped++;
         continue;
       }
+      // Cash can't be counted as received if we don't actually know when it lands.
+      // Falling back to the ex-date as a stand-in `date` was wrong: the ex-date has
+      // almost always already passed, so this guard never caught these events and they
+      // were counted as received income before the real pay date (confirmed against a
+      // Fidelity statement — REXR/STAG/NKE/TSM, June 2026, ~$233 overcounted). Exclude
+      // them entirely rather than show an uncertain date.
+      if (payDateUncertain) {
+        payDateUncertainSkipped++;
+        continue;
+      }
       // De-dupe against Fidelity: if an exact Fidelity dividend already covers this
       // ticker+month, skip the API-reconstructed one so we don't double-count.
       if (fidelityCoveredMonths.has(`${ticker}|${date.slice(0, 7)}`)) continue;
@@ -555,7 +576,6 @@ export default async function handler(req, res) {
         totalReceived: Math.round(amount * qty * 100) / 100,
         currency: 'USD',
         source: 'api',
-        payDateUncertain,
       });
     }
   }
@@ -574,6 +594,7 @@ export default async function handler(req, res) {
       payDatesMissing,
       payDatesResolvedViaFinnhub,
       futureSkipped,
+      payDateUncertainSkipped,
       payDatesWarm: allWarm,
       payDatesSource: process.env.POLYGON_API_KEY ? 'polygon' : 'none',
     },

@@ -2044,19 +2044,11 @@ function DividendHistoryTable({ events, valuesHidden, open, onToggle }) {
                     const isTax = e.incomeType === "tax";
                     return (
                     <tr key={`${e.ticker}-${e.date}-${i}`} style={isTax ? { background: "rgba(232,140,140,0.04)" } : undefined}>
-                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.exDate ? `Ex-date: ${e.exDate}${e.payDate ? "" : " (pay date n/a — showing ex-date)"}` : undefined}>{e.date}</td>
+                      <td style={{ ...tdBase, textAlign: "left", color: T.textDim }} title={e.exDate ? `Ex-date: ${e.exDate}` : undefined}>{e.date}</td>
                       <td style={{ ...tdBase, textAlign: "left", color: T.gold, fontWeight: 600, letterSpacing: "0.06em" }}>
                         {e.ticker}
                         {isTax && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 8, color: T.red, marginLeft: 6, letterSpacing: "0.1em", border: "1px solid rgba(232,140,140,0.4)", borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}>TAX</span>
-                        )}
-                        {e.payDateUncertain && (
-                          <span
-                            title={e.exDate ? `Ex-date: ${e.exDate} (pay date n/a - showing ex-date)` : undefined}
-                            style={{ fontFamily: FONT_MONO, fontSize: 8, color: "#e0a458", marginLeft: 6, letterSpacing: "0.1em", border: "1px solid rgba(224,164,88,0.4)", borderRadius: 3, padding: "1px 4px", verticalAlign: "middle" }}
-                          >
-                            EX-DATE
-                          </span>
                         )}
                       </td>
                       <td style={tdBase}>{isTax ? "—" : fmtPerShare(e.amountPerShare, valuesHidden)}</td>
