@@ -5,7 +5,14 @@
 // table (previously two divergent implementations of the same math).
 
 import { strict as assert } from 'node:assert';
-import { computeBankBondsPrincipal, computeBankBondsValueAt, computeBankBondsMarketValue, computeBankBondsCost } from '../src/lib/bankBonds.js';
+import {
+  computeBankBondsPrincipal,
+  computeBankBondsValueAt,
+  computeBankBondsMarketValue,
+  computeBankBondsCost,
+  applyBankBondsHolding,
+  BANK_BONDS_ID,
+} from '../src/lib/bankBonds.js';
 
 let passed = 0;
 let failed = 0;
@@ -302,6 +309,102 @@ await test('computeBankBondsCost is independent of the SimpleFin market values p
   const txs = [bondA, bondB];
   // market values don't change COST
   assert.equal(computeBankBondsCost(txs), 15000);
+});
+
+console.log('\n— applyBankBondsHolding: Holdings tab must agree with Position Performance —');
+
+await test('regression: a bond present in transactions but ABSENT from bondMarketValues (SimpleFin snapshot gap) is counted at its cost, matching computeBankBondsMarketValue total exactly', () => {
+  // This is the exact bug reported: bondA has a SimpleFin-reported market
+  // value on record, bondB does NOT (e.g. matured/transferred/missing from
+  // the feed this cycle) - before the fix, the flat-sum path
+  // (marketValueOverride) would have silently dropped bondB's cost entirely
+  // instead of falling back to it, so Holdings < Position Performance by
+  // exactly bondB's cost (analogous to the reported ~$999.82 CD gap).
+  const txs = [bondA, bondB];
+  const bondMarketValues = { [descKeyA]: 10800 }; // bondB missing on purpose
+  const existingHolding = {
+    id: BANK_BONDS_ID,
+    type: 'manual',
+    manualMode: 'value',
+    ticker: 'US BANK BONDS',
+    name: 'US Bank Bonds',
+    assetClass: 'Bank Bonds',
+    manualValue: 999999, // stale, must be overwritten
+    costBasis: 0,
+    bondMarketValues,
+    derivedFromTransactions: true,
+  };
+  const patched = applyBankBondsHolding([existingHolding], txs, true);
+  assert.ok(patched, 'holding should be patched (value changed)');
+  const bb = patched.find((h) => h.id === BANK_BONDS_ID);
+  const perfSnapshot = computeBankBondsMarketValue(txs, bondMarketValues);
+  // bondA at its SimpleFin value (10800) + bondB falling back to its cost
+  // (5 * 1000 = 5000) = 15800 - never silently dropping bondB.
+  assert.equal(perfSnapshot.total, 15800);
+  assert.equal(bb.manualValue, perfSnapshot.total, 'Holdings tab total must equal Position Performance total');
+  assert.equal(bb.manualValue, 15800);
+  assert.equal(bb.costBasis, computeBankBondsCost(txs));
+});
+
+await test('no existing holding + has Bank Bonds transactions -> creates one with the resolved (not flat-sum) value', () => {
+  const txs = [bondA, bondB];
+  const bondMarketValues = { [descKeyA]: 10800 };
+  const patched = applyBankBondsHolding([], txs, true);
+  assert.ok(patched);
+  const bb = patched.find((h) => h.id === BANK_BONDS_ID);
+  assert.ok(bb, 'holding should be created');
+  // No bondMarketValues stored yet on a brand-new holding -> both bonds fall
+  // back to cost (10000 + 5000 = 15000), matching computeBankBondsCost.
+  assert.equal(bb.manualValue, 15000);
+  assert.equal(bb.costBasis, 15000);
+  assert.equal(bb.derivedFromTransactions, true);
+});
+
+await test('no Bank Bonds transactions and no existing holding -> no-op (returns null)', () => {
+  assert.equal(applyBankBondsHolding([], [], false), null);
+});
+
+await test('SimpleFin-seeded placeholder (derivedFromTransactions: false) with no Bank Bonds transactions yet is left untouched', () => {
+  const placeholder = {
+    id: BANK_BONDS_ID,
+    type: 'manual',
+    manualValue: 12345,
+    costBasis: 0,
+    bondMarketValues: {},
+    derivedFromTransactions: false,
+  };
+  assert.equal(applyBankBondsHolding([placeholder], [], false), null);
+});
+
+await test('placeholder graduates (derivedFromTransactions -> true) once a real Bank Bonds transaction shows up, adopting the resolved value', () => {
+  const placeholder = {
+    id: BANK_BONDS_ID,
+    type: 'manual',
+    manualValue: 12345, // stale SimpleFin flat-sum snapshot
+    costBasis: 0,
+    bondMarketValues: {},
+    derivedFromTransactions: false,
+  };
+  const txs = [bondA];
+  const patched = applyBankBondsHolding([placeholder], txs, true);
+  assert.ok(patched, 'graduation is itself a change, even before values are recomputed against the new tx');
+  const bb = patched.find((h) => h.id === BANK_BONDS_ID);
+  assert.equal(bb.derivedFromTransactions, true);
+  assert.equal(bb.manualValue, 10000); // bondA cost, no SimpleFin value on record yet
+  assert.equal(bb.costBasis, 10000);
+});
+
+await test('no change when value/cost already match -> returns null (no unnecessary re-render/save)', () => {
+  const txs = [bondA];
+  const holding = {
+    id: BANK_BONDS_ID,
+    type: 'manual',
+    manualValue: 10000,
+    costBasis: 10000,
+    bondMarketValues: {},
+    derivedFromTransactions: true,
+  };
+  assert.equal(applyBankBondsHolding([holding], txs, true), null);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

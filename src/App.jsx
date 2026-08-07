@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
-import { computeBankBondsMarketValue, computeBankBondsCost } from "./lib/bankBonds.js";
+import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -512,102 +512,12 @@ function applyTxQty(holdings, netQty) {
 }
 
 // Permanent aggregated "US Bank Bonds" holding (item 37). One manual holding
-// whose value is the net principal invested across all Bank Bonds CUSIPs.
-const BANK_BONDS_ID = "bank-bonds-aggregate";
-
-// computeBankBondsPrincipal now lives in ./lib/bankBonds.js (shared with
-// Performance.jsx's Position Performance / Composition Evolution), imported
-// at the top of this file.
-
-// Ensures a single manual "US Bank Bonds" holding reflects the portfolio's
-// bank bonds. Its displayed value (`manualValue`) is the CURRENT VALUE —
-// SimpleFin's reported market value (`marketValueOverride`, recorded by
-// applyFidelityBalanceUpdate on sync) when available, falling back to the
-// transaction-derived principal (cost) when SimpleFin hasn't reported a value
-// yet (jul/2026 — "Holdings should reflect total current value, not total
-// cost"). `costBasis` always carries the transaction principal so the Holdings
-// card can still show cost + gain/loss alongside the current value.
-// - Mirrors only the aggregated holding; Cash and other manual holdings (e.g.
-//   BRA Fixed Income) are never touched.
-// - When there are Bank Bonds transactions, the holding is created if missing
-//   and kept in sync.
-// - When principal is 0 AND no holding exists yet, nothing is added (avoids an
-//   empty placeholder for users with no bonds).
-// Returns a patched holdings array if anything changed, null otherwise.
-function applyBankBondsHolding(holdings, principal, hasBankBondTx) {
-  const arr = Array.isArray(holdings) ? holdings : [];
-  const existing = arr.find((h) => h && h.id === BANK_BONDS_ID);
-
-  // Current value = SimpleFin's reported market value when on record, else the
-  // transaction cost (principal). Read from the existing holding so this
-  // reconciliation (which runs on every transaction change) preserves the
-  // last synced value instead of reverting the card to cost.
-  const override =
-    existing && existing.marketValueOverride != null && isFinite(existing.marketValueOverride)
-      ? existing.marketValueOverride
-      : null;
-  const displayValue = override != null ? override : principal;
-
-  if (!existing) {
-    if (!hasBankBondTx) return null; // nothing to track yet
-    return [
-      ...arr,
-      {
-        id: BANK_BONDS_ID,
-        type: "manual",
-        manualMode: "value",
-        ticker: "US BANK BONDS",
-        name: "US Bank Bonds",
-        assetClass: "Bank Bonds",
-        assetClassOverride: "Bank Bonds",
-        manualCurrency: "USD",
-        qty: null,
-        manualPrice: null,
-        manualValue: displayValue,
-        costBasis: principal,
-        price: null,
-        target: existingTargetFallback(arr),
-        derivedFromTransactions: true,
-        lastUpdated: new Date().toISOString(),
-      },
-    ];
-  }
-
-  // A holding placeholder can exist without any Bank Bonds transactions yet
-  // (e.g. auto-created from a SimpleFin balance candidate — see
-  // applyFidelityBalanceUpdate). Its manualValue there is a real
-  // SimpleFin-reported number, not a placeholder 0 — with no Bank Bonds
-  // transactions the computed `principal` is always 0, so reconciling
-  // normally here would silently zero it back out on every load/refresh.
-  // Skip reconciliation for this holding until a real Bank Bonds transaction
-  // exists to derive a principal from.
-  if (!hasBankBondTx && existing.derivedFromTransactions === false) return null;
-
-  // Reaching here means hasBankBondTx === true (the guard above already
-  // returned for the false case), so this is the moment to graduate a
-  // not-yet-derived holding permanently, even if nothing else changed (the
-  // flag flip still is a change).
-  const needsGraduation = existing.derivedFromTransactions === false;
-  if (existing.manualValue === displayValue && existing.costBasis === principal && !needsGraduation) return null;
-  return arr.map((h) =>
-    h.id === BANK_BONDS_ID
-      ? {
-          ...h,
-          manualValue: displayValue,
-          costBasis: principal,
-          // Graduates the holding once a real Bank Bonds transaction shows
-          // up: from then on it reconciles normally, permanently.
-          derivedFromTransactions: true,
-          lastUpdated: new Date().toISOString(),
-        }
-      : h
-  );
-}
-
-// Keep a 0 target by default (consistent with new manual holdings).
-function existingTargetFallback() {
-  return 0;
-}
+// whose value/cost/reconciliation logic (applyBankBondsHolding, BANK_BONDS_ID)
+// now lives in ./lib/bankBonds.js (bugfix aug/2026 - moved so it shares the
+// exact same per-bond current-value resolution Performance.jsx's Position
+// Performance uses, instead of a separately-implemented flat SimpleFin sum
+// that could silently drop bonds SimpleFin didn't report), imported at the
+// top of this file.
 
 async function saveHoldingsToServer(auth, holdings) {
   const res = await fetch("/api/holdings", {
@@ -1802,13 +1712,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             didChange = true;
           }
           // Item 37: sync the aggregated "US Bank Bonds" manual holding value
-          // from the net principal invested across Bank Bonds transactions.
+          // (current value + cost basis, both derived from the transaction
+          // log via lib/bankBonds.js - same resolution Position Performance
+          // uses).
           const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
-          const bbPatched = applyBankBondsHolding(
-            loadedHoldings,
-            computeBankBondsCost(txs),
-            hasBankBondTx
-          );
+          const bbPatched = applyBankBondsHolding(loadedHoldings, txs, hasBankBondTx);
           if (bbPatched) {
             loadedHoldings = bbPatched;
             didChange = true;
@@ -2141,11 +2049,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       // Item 37: sync the aggregated "US Bank Bonds" manual holding value.
       if (txs) {
         const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
-        const bbPatched = applyBankBondsHolding(
-          updated,
-          computeBankBondsCost(txs),
-          hasBankBondTx
-        );
+        const bbPatched = applyBankBondsHolding(updated, txs, hasBankBondTx);
         if (bbPatched) updated = bbPatched;
       }
       return updated;
@@ -2186,11 +2090,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   function handleTransactionsChange(txs) {
     const netQty = computeNetQty(txs);
     const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
-    const principal = computeBankBondsCost(txs);
     setHoldings((prev) => {
       let next = applyTxQty(prev, netQty) ?? prev;
       // Item 37: keep the aggregated "US Bank Bonds" holding in sync.
-      const bbPatched = applyBankBondsHolding(next, principal, hasBankBondTx);
+      const bbPatched = applyBankBondsHolding(next, txs, hasBankBondTx);
       if (bbPatched) next = bbPatched;
       return next;
     });
@@ -2577,13 +2480,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // debounced effect.
   //
   // Cash writes straight to manualValue (the value actually displayed).
-  // Bank Bonds now DISPLAY the SimpleFin current value (jul/2026): the summed
-  // market value lands in both `marketValueOverride` (reference/back-compat)
-  // and `manualValue` (the displayed value), and the PER-BOND breakdown is
-  // stored in `bondMarketValues` (descKey -> market value) so Position
-  // Performance can match SimpleFin individually per bond. `bondHoldings` is
-  // the sync's per-bond snapshot (Transactions.jsx passes it through); each
-  // entry carries a descKey + marketValue.
+  // Bank Bonds DISPLAY a current value resolved per-bond via
+  // computeBankBondsMarketValue (bugfix aug/2026 - see the comment further
+  // down, on the "existing holding" branch, for why this is no longer a flat
+  // sum): `manualValue` is that resolved total, `marketValueOverride` keeps
+  // the raw flat SimpleFin sum only as a reference/back-compat field, and the
+  // PER-BOND breakdown is stored in `bondMarketValues` (descKey -> market
+  // value) so both this function and Position Performance resolve each bond
+  // identically. `bondHoldings` is the sync's per-bond snapshot
+  // (Transactions.jsx passes it through); each entry carries a descKey +
+  // marketValue.
   function applyFidelityBalanceUpdate(candidate, bondHoldings = []) {
     if (!candidate) return;
     const asOf = candidate.asOf || new Date().toISOString();
@@ -2658,16 +2564,34 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         });
         return;
       }
-      // Existing holding: display the SimpleFin current value (manualValue),
-      // keep the reference/back-compat marketValueOverride, and store the
-      // per-bond breakdown. costBasis is left to applyBankBondsHolding, which
-      // recomputes it from the transaction principal on the next change.
+      // Existing holding: display the current value using the SAME per-bond
+      // resolution applyBankBondsHolding/Position Performance use (bugfix
+      // aug/2026) rather than the raw flat SimpleFin sum (`candidate.proposed`,
+      // computeBalanceCandidates in lib/simplefin-map.js) - that flat sum
+      // silently drops any bond present in the transaction log but missing
+      // from this SimpleFin snapshot, which is exactly what produced the
+      // Holdings-vs-Position-Performance mismatch this fix addresses. Writing
+      // `candidate.proposed` straight into manualValue here would reintroduce
+      // that same wrong total for as long as it takes the next
+      // load/refresh/transaction-change to re-run applyBankBondsHolding - a
+      // real race, since this SimpleFin sync (refreshFromSimplefin) runs
+      // concurrently with "Refresh all"'s own applyBankBondsHolding call and
+      // either can land last. `candidate.proposed` is still kept as
+      // `marketValueOverride`, reference/back-compat only. Falls back to
+      // `candidate.proposed` when there are no Bank Bonds transactions yet to
+      // replay (mirrors applyBankBondsHolding's own not-yet-derived guard).
+      const hasBankBondTxNow = (transactions || []).some(
+        (t) => t && t.assetClass === "Bank Bonds"
+      );
+      const displayValue = hasBankBondTxNow
+        ? computeBankBondsMarketValue(transactions, bondMarketValues).total
+        : candidate.proposed;
       setHoldings((prev) =>
         prev.map((h) =>
           h.id === BANK_BONDS_ID
             ? {
                 ...h,
-                manualValue: candidate.proposed,
+                manualValue: displayValue,
                 marketValueOverride: candidate.proposed,
                 marketValueOverrideAsOf: asOf,
                 bondMarketValues,
