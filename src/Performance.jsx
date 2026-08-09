@@ -2796,8 +2796,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     letterSpacing: "0.04em",
                   }}
                 >
-                  Excludes Cash and Unallocated BRL assets. Updated daily after US market close.
-                  {" "}Total Return includes US dividends only (BRA and fixed income excluded).
+                  Total Return includes US dividends only (BRA and fixed income excluded).
                 </div>
               </>
             )}

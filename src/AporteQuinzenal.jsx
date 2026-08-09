@@ -1324,7 +1324,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         <div style={goldAccent} />
         <CardToggle
           label="Contribution History"
-          sub="All buy transactions · DELL excluded · converted to USD"
+          sub="DELL excluded"
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
         />
@@ -1460,7 +1460,6 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         <div style={goldAccent} />
         <CardToggle
           label="Contribution Capacity History"
-          sub="Planned capacity vs invested · per month · stored in Redis"
           open={capacityOpen}
           onToggle={() => setCapacityOpen((v) => !v)}
         />

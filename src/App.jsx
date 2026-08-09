@@ -5138,19 +5138,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           </>
           )}
 
-          <footer
-            style={{
-              marginTop: 36,
-              fontSize: 10,
-              color: T.textFaint,
-              textAlign: "center",
-              fontFamily: FONT_MONO,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-            }}
-          >
-            Prices via web search · Not investment advice
-          </footer>
         </div>
       </div>
     </>
