@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
+import { inferAssetClass } from "./lib/parsing.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -507,6 +508,58 @@ function applyTxQty(holdings, netQty) {
     if (h.qty === computed) return h;
     changed = true;
     return { ...h, qty: computed };
+  });
+  return changed ? updated : null;
+}
+
+// Resolve a ticker's asset class from its own transaction history (the
+// source of truth — see bugfix aug/2026: a price API's industry/sector label
+// used to silently overwrite the class the user set via transactions on
+// every refresh). Picks the most recent transaction (by date) that carries
+// an assetClass. `mixed` is true when more than one distinct assetClass
+// value appears across that ticker's history (a reclassification happened
+// at some point) — surfaced as a discreet warning badge in the Holdings UI.
+function resolveAssetClassFromTx(ticker, transactions) {
+  if (!ticker || !Array.isArray(transactions) || transactions.length === 0) {
+    return { assetClass: null, mixed: false };
+  }
+  const upper = String(ticker).toUpperCase();
+  const txs = transactions.filter(
+    (t) => t && (t.ticker || "").toUpperCase() === upper && t.assetClass
+  );
+  if (txs.length === 0) return { assetClass: null, mixed: false };
+  const sorted = [...txs].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const latest = sorted[sorted.length - 1].assetClass;
+  const distinct = new Set(txs.map((t) => t.assetClass));
+  return { assetClass: latest, mixed: distinct.size > 1 };
+}
+
+// Returns patched holdings array if any auto (ticker-backed) holding's
+// assetClass needed to change, null otherwise. Precedence: manual
+// assetClassOverride wins; else the most recent transaction's assetClass;
+// else inferAssetClass() heuristic; else "Uncategorized". Called at every
+// point that already syncs qty from the transaction log via applyTxQty
+// (initial load, "Refresh all", handleTransactionsChange) — same "patch if
+// changed" pattern, so it also doubles as a one-time backfill/scrub on load
+// for any holding whose stored assetClass drifted from the transaction log
+// (e.g. a ticker-backed holding that was never given an override and had its
+// class silently overwritten by industry metadata from the price API).
+function applyTxAssetClass(holdings, transactions) {
+  let changed = false;
+  const updated = holdings.map((h) => {
+    if (h.type === "manual" || h.derivedFromTransactions) return h;
+    if (h.assetClassOverride) {
+      if (h.assetClassMixed) {
+        changed = true;
+        return { ...h, assetClassMixed: false };
+      }
+      return h;
+    }
+    const { assetClass: txClass, mixed } = resolveAssetClassFromTx(h.ticker, transactions);
+    const resolved = txClass || inferAssetClass(h.ticker) || h.assetClass || "Uncategorized";
+    if (h.assetClass === resolved && !!h.assetClassMixed === mixed) return h;
+    changed = true;
+    return { ...h, assetClass: resolved, assetClassMixed: mixed };
   });
   return changed ? updated : null;
 }
@@ -1711,6 +1764,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             loadedHoldings = patched;
             didChange = true;
           }
+          // Bugfix aug/2026: recompute assetClass from the transaction log —
+          // also doubles as a one-time backfill for any holding whose stored
+          // class drifted from a stale price-API industry label.
+          const classPatched = applyTxAssetClass(loadedHoldings, txs);
+          if (classPatched) {
+            loadedHoldings = classPatched;
+            didChange = true;
+          }
           // Item 37: sync the aggregated "US Bank Bonds" manual holding value
           // (current value + cost basis, both derived from the transaction
           // log via lib/bankBonds.js - same resolution Position Performance
@@ -1891,7 +1952,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Build the updated holding object from fetched price data.
   // If `data` is quote-only (no name/assetClass), keep the existing profile fields.
   function buildHoldingPatch(existing, data, tickerSymbol) {
-    const isQuoteOnly = data.name == null && data.assetClass == null;
+    // data.name is only present on a full (non-quoteOnly) profile fetch —
+    // used to be `data.name == null && data.assetClass == null`, but
+    // api/price.js no longer returns assetClass at all (bugfix aug/2026).
+    const isQuoteOnly = data.name == null;
 
     const patch = {
       ...existing,
@@ -1912,11 +1976,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         data.name && data.name.toUpperCase() !== tickerSymbol.toUpperCase()
           ? data.name
           : existing.name || data.name;
-      patch.assetClass =
-        existing.assetClassOverride ||
-        data.assetClass ||
-        existing.assetClass ||
-        "Uncategorized";
+      // Class comes from the transaction log now, not the price API's
+      // industry/sector label (bugfix aug/2026 — see resolveAssetClassFromTx).
+      const { assetClass: txClass, mixed } = resolveAssetClassFromTx(tickerSymbol, transactions);
+      if (existing.assetClassOverride) {
+        patch.assetClass = existing.assetClassOverride;
+        patch.assetClassMixed = false;
+      } else {
+        patch.assetClass = txClass || inferAssetClass(tickerSymbol) || existing.assetClass || "Uncategorized";
+        patch.assetClassMixed = mixed;
+      }
       // Only mark profile loaded if we actually got a real name back
       if (patch.name && patch.name.toUpperCase() !== tickerSymbol.toUpperCase()) {
         patch.profileLoadedAt = new Date().toISOString();
@@ -2046,6 +2115,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         const patched = applyTxQty(updated, netQty);
         if (patched) updated = patched;
       }
+      // Bugfix aug/2026: keep assetClass in sync with the transaction log —
+      // covers holdings whose profile was "fresh" (quoteOnly fetch above, so
+      // buildHoldingPatch skipped its own class resolution).
+      if (txs) {
+        const classPatched = applyTxAssetClass(updated, txs);
+        if (classPatched) updated = classPatched;
+      }
       // Item 37: sync the aggregated "US Bank Bonds" manual holding value.
       if (txs) {
         const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
@@ -2092,6 +2168,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
     setHoldings((prev) => {
       let next = applyTxQty(prev, netQty) ?? prev;
+      // Bugfix aug/2026: keep assetClass in sync with the transaction log.
+      next = applyTxAssetClass(next, txs) ?? next;
       // Item 37: keep the aggregated "US Bank Bonds" holding in sync.
       const bbPatched = applyBankBondsHolding(next, txs, hasBankBondTx);
       if (bbPatched) next = bbPatched;
@@ -5259,6 +5337,14 @@ function HoldingRow({
               B3
             </span>
           )}
+          {holding.assetClassMixed && (
+            <span
+              title={`This ticker has divergent asset classes across its transaction history — using the most recent: ${holding.assetClass || "Uncategorized"}`}
+              style={{ display: "flex", alignItems: "center", color: T.red, flexShrink: 0, cursor: "help" }}
+            >
+              <AlertCircle size={11} />
+            </span>
+          )}
           {holding.name && (
             <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_DISPLAY, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {holding.name}
@@ -5385,18 +5471,28 @@ function HoldingRow({
           <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Class</span>
-              {hasTransactions ? (
-                <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: T.gold, padding: "1px 6px" }}>{holding.assetClass || "Uncategorized"}</span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => { onEditClass(); setDriftOpen(false); }}
-                  style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
-                >
-                  {holding.assetClass || "Uncategorized"}
-                  <Pencil size={7} />
-                </button>
-              )}
+              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                {holding.assetClassMixed && (
+                  <span
+                    title={`This ticker has divergent asset classes across its transaction history — using the most recent: ${holding.assetClass || "Uncategorized"}`}
+                    style={{ display: "flex", alignItems: "center", color: T.red, cursor: "help" }}
+                  >
+                    <AlertCircle size={11} />
+                  </span>
+                )}
+                {hasTransactions ? (
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", color: T.gold, padding: "1px 6px" }}>{holding.assetClass || "Uncategorized"}</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { onEditClass(); setDriftOpen(false); }}
+                    style={{ background: "rgba(201,169,97,0.08)", border: `1px solid ${T.goldDim}55`, color: T.gold, padding: "1px 6px", fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.08em", textTransform: "uppercase", borderRadius: 1, display: "flex", alignItems: "center", gap: 3 }}
+                  >
+                    {holding.assetClass || "Uncategorized"}
+                    <Pencil size={7} />
+                  </button>
+                )}
+              </span>
             </div>
             <button
               type="button"
