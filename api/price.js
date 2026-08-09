@@ -224,7 +224,14 @@ async function handleBrazilian(ticker, brapiKey, finnhubKey, quoteOnly = false, 
   return {
     ...base,
     name: brl.name,
-    assetClass: brl.sector || "Brazilian Equity",
+    // NOTE (bugfix aug/2026): this used to also return `assetClass: brl.sector`,
+    // which the frontend merged straight into holding.assetClass on every
+    // refresh, silently overwriting the class the user recorded in
+    // transactions (e.g. a stock reclassified as "Alternative"). brapi's
+    // `sector` is industry metadata, not one of the app's 9 fixed asset
+    // classes, so it's no longer surfaced as `assetClass` — kept only as
+    // `industryLabel` for potential future debug/display use.
+    industryLabel: brl.sector || null,
   };
 }
 
@@ -304,7 +311,15 @@ async function handleUS(ticker, finnhubKey, quoteOnly = false) {
     name,
     currency: "USD",
     previousClose: data.pc ?? null,
-    assetClass: industry || "Uncategorized",
+    // NOTE (bugfix aug/2026): no longer returning `assetClass: industry`.
+    // Finnhub's `finnhubIndustry` (e.g. "Technology Hardware, Storage &
+    // Peripherals") has no relation to the app's 9 fixed asset classes
+    // (Stocks, BRA Stocks, Alternative, Real Estate, ...); the frontend used
+    // to merge it straight into holding.assetClass on every refresh, which
+    // silently overwrote classes the user set via transactions. Kept as
+    // `industryLabel` only, for potential future debug/display use — not
+    // read as assetClass anywhere in the frontend.
+    industryLabel: industry || null,
     industry,
     sector: industry,
     market: "US",
