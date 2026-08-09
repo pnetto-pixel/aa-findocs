@@ -327,18 +327,6 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
         </ResponsiveContainer>
       </div>
       )}
-      <div
-        style={{
-          fontFamily: FONT_MONO,
-          fontSize: 10,
-          color: T.textFaint,
-          marginTop: 10,
-          letterSpacing: "0.04em",
-        }}
-      >
-        Tile size = current value · color = today's change (gray = no live price:
-        manual assets, cash, bonds).
-      </div>
     </>
   );
 }
