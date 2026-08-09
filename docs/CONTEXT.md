@@ -267,7 +267,7 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 Elementos principais:
 
 - **Page title:** "Performance" + badge **TEST ONLY** (gold)
-- **Disclaimer:** "Excludes Cash and Unallocated assets. Updated daily after US market close. Total Return includes US dividends only (BRA and fixed income excluded)."
+- **Disclaimer:** "Total Return includes US dividends only (BRA and fixed income excluded)." (a frase "Excludes Cash and Unallocated assets. Updated daily after US market close." foi removida em ago/2026, v1.16.5 — ver "UI cleanup — remocao de textos instrucionais" abaixo.)
 - **Period selector:** botões `1M | 6M | YTD | 1Y | 5Y | MAX`
 - **Toggle:** "Compare vs S&P 500" ↔ "← Net Worth" — controla a exibição de Portfolio + S&P 500 + Alpha
 - **Toggle independente "Show Total Return"** (jul/2026, commit `a60bb9f`): controla a linha/KPI de Total Return separadamente de "Compare vs S&P 500" — pode ser ligado junto ou sozinho. Default (ambos off) reproduz o comportamento visual anterior (pré-feature), sem regressão.
@@ -994,6 +994,19 @@ Ver Licoes Aprendidas abaixo — fixtures de teste escritas a partir de uma prem
 - `test/bank-bonds.test.mjs` ganhou 6 testes novos de `applyBankBondsHolding`, incluindo regressao explicita deste bug (bond nas transacoes mas ausente de `bondMarketValues` entra pelo custo; total do Holdings bate exatamente com `computeBankBondsMarketValue`). Suite: 18 passed / 0 failed (bank-bonds), 11 passed / 0 failed (perf-history). `npm run build` verde.
 
 **Nao tocado:** `lib/simplefin-map.js` (o flat sum segue existindo, so nao e mais o driver do valor exibido); `src/Performance.jsx` (ja correto — mantem sua propria copia local de `BANK_BONDS_ID`, import circular, decisao da v1.8.0, ainda intacta); o branch "holding nao existe ainda" de `applyFidelityBalanceUpdate` (so alcancavel sem nenhuma transacao Bank Bonds, corrigido pela proxima reconciliacao).
+
+-----
+
+### UI cleanup — remocao de textos instrucionais de 5 cards (ago/2026, merge `2c5d719`, feature commit `c564cdc`, v1.16.5)
+
+Mudanca cosmetica pura a pedido do usuario, sem alteracao de logica/dados. Cinco blocos de texto descritivo/instrucional removidos:
+- `src/AporteQuinzenal.jsx` — card "Contribution History": `sub` reduzido de "All buy transactions · DELL excluded · converted to USD" para so "DELL excluded".
+- `src/AporteQuinzenal.jsx` — card "Contribution Capacity History": prop `sub` ("Planned capacity vs invested · per month · stored in Redis") removida inteiramente.
+- `src/Performance.jsx` — card "Portfolio Performance & Net Worth": removida a frase "Excludes Cash and Unallocated BRL assets. Updated daily after US market close." do disclaimer (mantida a frase sobre Total Return — ver secao "UI (`Performance.jsx`)" acima, ja atualizada).
+- `src/TreemapCard.jsx` — card "Portfolio Map": removida a legenda "Tile size = current value · color = today's change (gray = no live price: manual assets, cash, bonds)."
+- `src/App.jsx` — removido o footer global "Prices via web search · Not investment advice".
+
+Sem mudanca de backend, sem bump de cache, sem novo teste (nao ha logica coberta).
 
 -----
 
