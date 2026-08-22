@@ -294,6 +294,11 @@ async function handleSync(req, res, auth) {
     knownBondsByDescKey,
     netQtyByTicker,
     bondBindings: pending.bondBindings,
+    // Raw array (not the aggregated netQtyByTicker map), so
+    // stockPositionDeltas can recompute a settled-as-of-snapshot qty per
+    // ticker and guard against staging a same-day buy as a phantom sell
+    // (aug/2026 bugfix -- see lib/simplefin-map.js stockPositionDeltas).
+    liveTransactions: liveTx,
   });
   const liveTxKeys = new Set(liveTx.map(dupKey));
   const liveTxSimplefinIds = new Set(liveTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));

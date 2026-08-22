@@ -990,6 +990,26 @@ await test('ignores rows with no ticker or no qty', () => {
   assert.deepEqual(net, {});
 });
 
+await test('beforeDate restricts the sum to strictly-earlier transactions (same-day tx excluded)', () => {
+  const net = computeNetQty(
+    [
+      { ticker: 'AAPL', side: 'buy', qty: 10, date: '2026-08-20' }, // before -> included
+      { ticker: 'AAPL', side: 'buy', qty: 12, date: '2026-08-21' }, // same day as beforeDate -> excluded
+      { ticker: 'AAPL', side: 'sell', qty: 1, date: '2026-08-22' }, // after -> excluded
+    ],
+    '2026-08-21'
+  );
+  assert.equal(net.AAPL, 10);
+});
+
+await test('omitting beforeDate preserves the unrestricted (pre-feature) sum', () => {
+  const net = computeNetQty([
+    { ticker: 'AAPL', side: 'buy', qty: 10, date: '2026-08-20' },
+    { ticker: 'AAPL', side: 'buy', qty: 12, date: '2026-08-21' },
+  ]);
+  assert.equal(net.AAPL, 22);
+});
+
 console.log('\n— mapSimplefinPayload: stock/ETF position deltas —');
 
 const SNAPSHOT_DATE = '2025-07-20'; // matches fidelityAccount()'s default balance-date fixture
@@ -1242,6 +1262,88 @@ await test('asset class inference: CUSIP-shaped symbol -> Bank Bonds, B3-shaped 
   assert.equal(byTicker['949764WE0'], 'Bank Bonds');
   assert.equal(byTicker['BBSE3'], 'BRA Stocks');
   assert.equal(byTicker['MSFT'], 'Stocks');
+});
+
+// ── snapshot-lag false-positive guard (aug/2026 bugfix) ─────────────────────
+// Reproduces the reported bug: a buy entered the same day as the SimpleFin
+// snapshot's own balance-date, before the snapshot's `shares` had caught up
+// to it, used to stage as a phantom "sell" of the exact same qty.
+console.log('\n— stockPositionDeltas: snapshot-lag false-positive guard (aug/2026) —');
+
+await test('a same-day buy the snapshot has not absorbed yet is skipped, not staged as a phantom sell', () => {
+  const liveTransactions = [
+    { ticker: 'AAPL', side: 'buy', qty: 5, date: '2025-07-10' }, // settled before the snapshot
+    { ticker: 'AAPL', side: 'buy', qty: 3, date: SNAPSHOT_DATE }, // same day as balance-date -- snapshot hasn't absorbed it
+  ];
+  const netQtyByTicker = computeNetQty(liveTransactions); // unrestricted -> 8, this is the pre-fix "knownQty"
+  assert.equal(netQtyByTicker.AAPL, 8);
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }], // still pre-buy: 5 shares
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
+});
+
+await test('backward compatible: omitting liveTransactions still stages the (buggy, pre-fix) phantom sell', () => {
+  const liveTransactions = [
+    { ticker: 'AAPL', side: 'buy', qty: 5, date: '2025-07-10' },
+    { ticker: 'AAPL', side: 'buy', qty: 3, date: SNAPSHOT_DATE },
+  ];
+  const netQtyByTicker = computeNetQty(liveTransactions);
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker }); // no liveTransactions passed
+  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(sells.length, 1);
+  assert.equal(sells[0].side, 'sell');
+  assert.equal(sells[0].qty, 3);
+});
+
+await test('a genuine sell not explained by any recent transaction is still staged even when liveTransactions is passed', () => {
+  const liveTransactions = [
+    { ticker: 'AAPL', side: 'buy', qty: 10, date: '2025-06-01' }, // well before asOf, nothing same-day
+  ];
+  const netQtyByTicker = computeNetQty(liveTransactions);
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', market_value: '600.00' }], // real reduction 10 -> 6
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
+  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
+  assert.equal(sells.length, 1);
+  assert.equal(sells[0].side, 'sell');
+  assert.equal(sells[0].qty, 4);
+});
+
+await test('a same-day sell the snapshot already reflects is caught by the pre-existing "unchanged" guard, not duplicated', () => {
+  const liveTransactions = [
+    { ticker: 'AAPL', side: 'buy', qty: 10, date: '2025-06-01' },
+    { ticker: 'AAPL', side: 'sell', qty: 4, date: SNAPSHOT_DATE }, // sold today, snapshot already caught up
+  ];
+  const netQtyByTicker = computeNetQty(liveTransactions); // 10 - 4 = 6
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', market_value: '600.00' }], // matches post-sale qty already
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
 });
 
 // ── INTEREST resolution via bondBindings (jul/2026) ──────────────────────────
