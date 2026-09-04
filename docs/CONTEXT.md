@@ -411,6 +411,21 @@ Holdings com `assetClass === "BRA Fixed Income"` aceitam valor em BRL (`manualCu
 - Tesouro Direto sem fonte live gratuita — mantido manual em BRL (ver Lições Aprendidas)
 - CDB Banco Guanabara (`121,50% CDI, venc. out/2028`) — manual em BRL até vencimento; não será renovado
 
+### Rebalance Suggestion card (set/2026, merge `c20d94c`, v1.17.0)
+
+Card no `useMemo` de rebalance de `src/App.jsx`, alvo de duas mudancas pedidas pelo usuario:
+
+- **Classes value-only agora sugerem.** `VALUE_TARGET_CLASSES = new Set(["BRA Fixed Income", "Bank Bonds"])` — unica excecao ao filtro que exclui holdings `manualMode === "value"` do calculo (sem preco por share, "no integer shares to buy"). Para esses dois casos, a sugestao vira um valor em dolar: `deltaShares: null`, `deltaDollars = min(PER_ASSET_TARGET, gap, remainingCash)`, sem banda nem arredondamento. `RebalanceRow` mostra badge `BUY` sem numero quando `deltaShares == null`. Candidatos BRA Fixed Income sao pulados enquanto `usdBrlRate` ainda nao carregou (`holdingValue()` retorna 0 nesse estado, o que infla o gap artificialmente) — `usdBrlRate` entrou nas deps do `useMemo`.
+- **Alvo de compra ~$1.000 +/-10% em vez de teto rigido.** `PER_ASSET_CAP` renomeada para `PER_ASSET_TARGET`, com `PER_ASSET_BAND_LOW = 900` / `PER_ASSET_BAND_HIGH = 1100`. Nova funcao pura de modulo `pickShareQty(price, resourceLimit)`:
+  - `resourceLimit < 900` (gap ou cash restante pequeno): comportamento antigo — maior qty que couber, sem overshoot deliberado.
+  - Senao, `idealQty = Math.round(1000 / price)`; se `idealQty * price` cair em `[900, min(1100, resourceLimit)]`, usa essa qty.
+  - Se a banda for inatingivel com qualquer inteiro, `floor(min(1000, resourceLimit) / price)` — o "mais proximo de $1K por baixo".
+  - `gap` e `remainingCash` continuam tetos rigidos — so o alvo de $1.000 deixou de ser.
+- Preco > $1.100 (1 share ja estoura a banda) -> holding e pulado, nao forca 1 share.
+- Sugestao de BRA Fixed Income exibida em USD apenas, sem linha auxiliar em BRL (nao pedido; ver Pendentes em `docs/Features_Roadmap.md`).
+- `VALUE_TARGET_CLASSES` compara contra `h.assetClass` (nao `assetClassOverride`) — seguro porque os dois campos sao gravados juntos para holdings manuais.
+- 100% client-side — nenhum endpoint, shape de resposta ou versao de cache mudou. `pickShareQty` nao se defende de `resourceLimit = NaN` (o call site ja garante finito; ver Pendentes).
+
 -----
 
 ## 💵 Feature: Contributions (Tab Aporte Quinzenal — PR #112 — jun/2026)
@@ -1236,6 +1251,9 @@ Sem mudanca de backend, sem bump de cache, sem novo teste (nao ha logica coberta
 |**Badge de "classe mista" em vez de escolher silenciosamente uma das classes historicas (ago/2026, v1.16.6)**|Quando as transactions de um ticker tem `assetClass` divergente entre si (reclassificacao ao longo do tempo), usar so a mais recente sem sinalizar esconderia a divergencia do usuario. `holding.assetClassMixed = true` + badge de aviso no `HoldingRow` deixa visivel que houve reclassificacao, mesma filosofia de "nunca resolver por aproximacao silenciosa" ja aplicada em outros pontos do app (ex: resolucao de ticker de Bank Bonds).|
 |**`computeNetQty(transactions, beforeDate)` compara contra o net qty "assentado" ANTES do `balance-date`, nao contra o total ao vivo (ago/2026, merge `de5338f`, v1.16.7)**|O snapshot de holdings do SimpleFin pode carimbar o `balance-date` no dia certo mas ainda nao refletir compras lançadas nesse mesmo dia — comparar `shares` do snapshot contra o net qty TOTAL (incluindo compras do proprio dia) gerava uma venda fantasma com qty identica a compra real. Filtro `date < beforeDate` estritamente menor trata transacoes do proprio dia do snapshot como "ainda nao assentadas", eliminando o falso-positivo sem reverter nenhum sinal de delta (que sempre esteve correto).|
 |**Skip silencioso (nao `unmapped`) quando `sharesNew` bate com o net qty "settled" (ago/2026, v1.16.7)**|Diferente de um caso ambiguo (que deveria ir pra `unmapped` para revisao humana), o caso "snapshot ainda nao alcançou o log" nao tem nada acionavel a mostrar — a compra ja esta no log do usuario, aprovar de novo criaria duplicata. `unmapped` fica reservado pra casos que realmente precisam de decisao humana.|
+|**`VALUE_TARGET_CLASSES` exceciona so BRA Fixed Income e Bank Bonds do filtro de candidatos do Rebalance (set/2026, merge `c20d94c`, v1.17.0)**|O filtro que excluia todo holding `manualMode === "value"` ("no integer shares to buy") removia justamente as duas classes value-only mais relevantes pro usuario. Uma excecao nomeada e explicita (em vez de remover o filtro inteiro) preserva a exclusao para Real Estate/Alternative/etc., que continuam sem sugestao acionavel.|
+|**Sugestao de valor em dolar para BRA Fixed Income/Bank Bonds, sem banda nem arredondamento (set/2026, v1.17.0)**|Essas classes nao tem preco por share — nao ha como calcular `deltaShares`. `deltaDollars = min(PER_ASSET_TARGET, gap, remainingCash)` da um numero acionavel (quanto aportar) sem fingir precisao de shares que nao existem. Candidatos BRA Fixed Income sao pulados enquanto `usdBrlRate` ainda nao carregou, senao `holdingValue()` retorna 0 e infla o gap artificialmente.|
+|**`PER_ASSET_CAP` virou `PER_ASSET_TARGET` com banda [900, 1100] em vez de teto rigido em $1.000 (set/2026, v1.17.0)**|Pedido explicito do usuario: a sugestao deve mirar ~$1.000 em shares inteiras, nao truncar sempre por baixo. `pickShareQty(price, resourceLimit)` escolhe o inteiro mais proximo de $1.000 dentro da banda quando possivel; cai no comportamento antigo (maior qty sem overshoot) quando `resourceLimit < 900`, e no "mais proximo por baixo" quando a banda e inatingivel com qualquer inteiro. `gap`/`remainingCash` continuam tetos rigidos — so o alvo de $1.000 deixou de ser um teto.|
 
 -----
 
