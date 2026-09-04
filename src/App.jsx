@@ -54,8 +54,14 @@ const PER_ASSET_BAND_LOW = PER_ASSET_TARGET * 0.9; // 900
 const PER_ASSET_BAND_HIGH = PER_ASSET_TARGET * 1.1; // 1100
 
 // resourceLimit = min(gap, remainingCash) - hard ceiling, never exceeded.
-function pickShareQty(price, resourceLimit) {
-  if (!(price > 0) || resourceLimit <= 0) return 0;
+// cashLimit = remainingCash alone (Infinity when no cash budget is set).
+function pickShareQty(price, resourceLimit, cashLimit) {
+  if (!(price > 0)) return 0;
+  // One share already costs more than the top of the band. Shares are
+  // indivisible, so suggest exactly one rather than hiding the holding -
+  // the gap ceiling cannot be honored here, but the cash budget still is.
+  if (price > PER_ASSET_BAND_HIGH) return price <= cashLimit ? 1 : 0;
+  if (resourceLimit <= 0) return 0;
   // Not enough room to reach the band - fall back to whatever fits.
   if (resourceLimit < PER_ASSET_BAND_LOW) return Math.floor(resourceLimit / price);
   const effectiveHigh = Math.min(PER_ASSET_BAND_HIGH, resourceLimit);
@@ -2975,8 +2981,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         continue;
       }
       const resourceLimit = Math.min(c.gap, remainingCash);
-      const qty = pickShareQty(c.price, resourceLimit);
-      if (qty <= 0) continue; // price too high for the available room
+      const qty = pickShareQty(c.price, resourceLimit, remainingCash);
+      if (qty <= 0) continue; // no affordable whole share for the available room
       const actualDollars = qty * c.price;
       suggestions.push({
         holding: c.holding,
@@ -4886,7 +4892,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         lineHeight: 1.4,
                       }}
                     >
-                      Suggestions are buys only, integer shares targeting ~${PER_ASSET_TARGET.toLocaleString()} per asset (+/-10%). BRA Fixed Income and Bank Bonds get a dollar amount instead (no share price). If cash is set, total purchases stay within it (most underweight first).
+                      Suggestions are buys only, integer shares targeting ~${PER_ASSET_TARGET.toLocaleString()} per asset (+/-10%). Shares priced above the band suggest 1 share. BRA Fixed Income and Bank Bonds get a dollar amount instead (no share price). If cash is set, total purchases stay within it (most underweight first).
                     </div>
                   </div>
 

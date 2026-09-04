@@ -421,7 +421,7 @@ Card no `useMemo` de rebalance de `src/App.jsx`, alvo de duas mudancas pedidas p
   - Senao, `idealQty = Math.round(1000 / price)`; se `idealQty * price` cair em `[900, min(1100, resourceLimit)]`, usa essa qty.
   - Se a banda for inatingivel com qualquer inteiro, `floor(min(1000, resourceLimit) / price)` — o "mais proximo de $1K por baixo".
   - `gap` e `remainingCash` continuam tetos rigidos — so o alvo de $1.000 deixou de ser.
-- Preco > $1.100 (1 share ja estoura a banda) -> holding e pulado, nao forca 1 share.
+- Preco > $1.100 (1 share ja estoura a banda) -> sugere exatamente **1 share** (set/2026, v1.17.1). Shares sao indivisiveis: nao ha como respeitar o teto do `gap` nesse caso, entao o `gap` e relaxado e o holding aparece na lista em vez de sumir. O orcamento de caixa continua sendo teto rigido — se 1 share nao couber no `remainingCash`, o holding e pulado. `pickShareQty` ganhou um 3o parametro (`cashLimit`) para distinguir os dois tetos. Comportamento anterior (v1.17.0) era pular esses holdings; revertido a pedido do usuario.
 - Sugestao de BRA Fixed Income exibida em USD apenas, sem linha auxiliar em BRL (nao pedido; ver Pendentes em `docs/Features_Roadmap.md`).
 - `VALUE_TARGET_CLASSES` compara contra `h.assetClass` (nao `assetClassOverride`) — seguro porque os dois campos sao gravados juntos para holdings manuais.
 - 100% client-side — nenhum endpoint, shape de resposta ou versao de cache mudou. `pickShareQty` nao se defende de `resourceLimit = NaN` (o call site ja garante finito; ver Pendentes).
