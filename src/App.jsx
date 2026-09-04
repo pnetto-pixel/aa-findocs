@@ -46,8 +46,30 @@ const DONUT_COLORS = [
 ];
 const UNALLOCATED_COLOR = "#3a3f48";
 
-// Rebalance: per-asset purchase cap in dollars
-const PER_ASSET_CAP = 1000;
+// Rebalance: per-asset purchase target in dollars. Whole-share buys aim for the
+// integer quantity closest to this, within +/-10%; outside that band, the largest
+// quantity that stays at or under the target.
+const PER_ASSET_TARGET = 1000;
+const PER_ASSET_BAND_LOW = PER_ASSET_TARGET * 0.9; // 900
+const PER_ASSET_BAND_HIGH = PER_ASSET_TARGET * 1.1; // 1100
+
+// resourceLimit = min(gap, remainingCash) - hard ceiling, never exceeded.
+function pickShareQty(price, resourceLimit) {
+  if (!(price > 0) || resourceLimit <= 0) return 0;
+  // Not enough room to reach the band - fall back to whatever fits.
+  if (resourceLimit < PER_ASSET_BAND_LOW) return Math.floor(resourceLimit / price);
+  const effectiveHigh = Math.min(PER_ASSET_BAND_HIGH, resourceLimit);
+  // value(n) is linear in n, so the nearest integer to the target is round(target/price).
+  const idealQty = Math.round(PER_ASSET_TARGET / price);
+  const idealValue = idealQty * price;
+  if (idealQty >= 1 && idealValue >= PER_ASSET_BAND_LOW && idealValue <= effectiveHigh) return idealQty;
+  // Band unreachable with any integer -> largest qty at or under the target.
+  return Math.floor(Math.min(PER_ASSET_TARGET, resourceLimit) / price);
+}
+
+// Manual value-only classes that can still be topped up with a dollar amount
+// (no share price, so the suggestion is a value, not a quantity).
+const VALUE_TARGET_CLASSES = new Set(["BRA Fixed Income", "Bank Bonds"]);
 
 // Permanent Cash account — cannot be deleted, only value and target editable
 const CASH_ID = "cash-permanent";
@@ -2893,9 +2915,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     reader.readAsText(file);
   }
 
-  // Rebalance: BUYS ONLY, integer shares, capped at $1000 per asset.
-  // If newCash specified, total purchases ≤ newCash. Otherwise no overall limit.
-  // Ordered by largest underweight first.
+  // Rebalance: BUYS ONLY, integer shares aiming for ~$1000 per asset (+/-10%).
+  // BRA Fixed Income / Bank Bonds (manual, value-only, no share price) get a
+  // plain dollar-value suggestion instead. If newCash specified, total
+  // purchases <= newCash. Otherwise no overall limit. Ordered by largest
+  // underweight first.
   const rebalance = useMemo(() => {
     const cash = parseFloat(newCash) || 0;
     const investableTotal = totalValue + cash;
@@ -2907,8 +2931,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         if (isCash(h)) return false; // cash sits separately, not rebalanced
         if (h.target <= 0) return false;
         if (h.type === "manual") {
-          // Manual value-only: no integer shares to buy. Skip from suggestions.
-          if (h.manualMode === "value") return false;
+          if (h.manualMode === "value") {
+            if (!VALUE_TARGET_CLASSES.has(h.assetClass)) return false;
+            // BRA Fixed Income reads as 0 USD when the live FX rate hasn't
+            // loaded yet - skip rather than suggest an inflated gap.
+            if (isBraFixedIncome(h) && !usdBrlRate) return false;
+            return true;
+          }
           return h.manualPrice != null && h.manualPrice > 0 && h.qty != null;
         }
         return h.price != null && h.price > 0;
@@ -2925,14 +2954,29 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     // Sort: largest gap first
     candidates.sort((a, b) => b.gap - a.gap);
 
-    // Allocate cash in $1K chunks (or up to gap, whichever is smaller)
+    // Allocate cash targeting ~$1K per asset (or up to gap, whichever is smaller)
     let remainingCash = cash > 0 ? cash : Infinity;
     const suggestions = [];
     for (const c of candidates) {
       if (remainingCash <= 0) break;
-      const allocDollars = Math.min(PER_ASSET_CAP, c.gap, remainingCash);
-      const qty = Math.floor(allocDollars / c.price);
-      if (qty <= 0) continue; // price > $1K with cash too small to buy 1 share
+      if (c.holding.manualMode === "value") {
+        // No share price: suggest the exact dollar amount, no band/floor.
+        const allocDollars = Math.min(PER_ASSET_TARGET, c.gap, remainingCash);
+        if (allocDollars <= 0) continue;
+        suggestions.push({
+          holding: c.holding,
+          currentValue: c.currentValue,
+          targetValue: c.targetValue,
+          deltaShares: null,
+          deltaDollars: allocDollars,
+          gap: c.gap,
+        });
+        remainingCash -= allocDollars;
+        continue;
+      }
+      const resourceLimit = Math.min(c.gap, remainingCash);
+      const qty = pickShareQty(c.price, resourceLimit);
+      if (qty <= 0) continue; // price too high for the available room
       const actualDollars = qty * c.price;
       suggestions.push({
         holding: c.holding,
@@ -2946,7 +2990,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
 
     return suggestions;
-  }, [holdings, totalValue, newCash]);
+  }, [holdings, totalValue, newCash, usdBrlRate]);
 
   // Build asset class dropdown options from existing holdings
   const assetClassOptions = useMemo(() => {
@@ -4842,7 +4886,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         lineHeight: 1.4,
                       }}
                     >
-                      Suggestions are buys only, integer shares, capped at ${PER_ASSET_CAP.toLocaleString()} per asset. If cash is set, total purchases stay within it (most underweight first).
+                      Suggestions are buys only, integer shares targeting ~${PER_ASSET_TARGET.toLocaleString()} per asset (+/-10%). BRA Fixed Income and Bank Bonds get a dollar amount instead (no share price). If cash is set, total purchases stay within it (most underweight first).
                     </div>
                   </div>
 
@@ -5679,7 +5723,7 @@ function RebalanceRow({ item, valuesHidden }) {
             display: "inline-block",
           }}
         >
-          BUY {deltaShares}
+          BUY{deltaShares == null ? "" : ` ${deltaShares}`}
         </div>
         <div
           style={{
