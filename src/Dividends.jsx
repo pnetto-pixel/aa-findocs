@@ -18,6 +18,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import DateMonthPicker from "./DateMonthPicker.jsx";
+import { fetchDividendsCached } from "./lib/dividendsCache.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -48,19 +49,6 @@ function authHeaders(auth) {
   if (auth?.googleToken) h["x-google-token"] = auth.googleToken;
   if (auth?.password) h["x-app-password"] = auth.password;
   return h;
-}
-
-// In-session cache for the POST /api/dividends response — tab switches
-// unmount this view and every revisit re-showed "Fetching dividends" while
-// re-posting identical payloads. Keyed by a hash of transactions+bondIncome
-// (+local day), so any data change misses the cache. Module scope: survives
-// remounts, dies with a page reload.
-const divSessionCache = new Map();
-function divSessionKey(payload) {
-  const s = JSON.stringify(payload);
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return (h >>> 0).toString(36);
 }
 
 function isBrazilianTicker(t) {
@@ -2132,23 +2120,34 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
           return;
         }
 
-        const divKey = divSessionKey({ txs, bi, day: localTodayISO() });
-        let divData = divSessionCache.get(divKey);
-        if (!divData) {
-          const divRes = await fetch("/api/dividends", {
-            method: "POST",
-            headers: { ...headers, "Content-Type": "application/json" },
-            body: JSON.stringify({ transactions: txs, bondIncome: bi, todayISO: localTodayISO() }),
-          });
-          if (divRes.status === 401) { onAuthFail?.(); return; }
-          if (!divRes.ok) throw new Error(`Dividends: ${divRes.status}`);
-          divData = await divRes.json();
-          divSessionCache.set(divKey, divData);
-        }
-        if (!cancelled) {
-          setEvents(Array.isArray(divData.events) ? divData.events : []);
-          setForeignTax(Array.isArray(divData.foreignTax) ? divData.foreignTax : []);
+        // Shared cache (memory + localStorage) across the Dividends/Performance/
+        // Contributions tabs — see src/lib/dividendsCache.js. `cached` (if any,
+        // from this session or a previous page load) renders instantly instead
+        // of showing "Fetching US dividends…"; `fresh` always re-fetches in the
+        // background and silently overwrites once it resolves.
+        const { cached, fresh } = fetchDividendsCached({
+          auth,
+          transactions: txs,
+          bondIncome: bi,
+          todayISO: localTodayISO(),
+        });
+        if (cached && !cancelled) {
+          setEvents(Array.isArray(cached.events) ? cached.events : []);
+          setForeignTax(Array.isArray(cached.foreignTax) ? cached.foreignTax : []);
           setState("done");
+        }
+        try {
+          const divData = await fresh;
+          if (!cancelled) {
+            setEvents(Array.isArray(divData.events) ? divData.events : []);
+            setForeignTax(Array.isArray(divData.foreignTax) ? divData.foreignTax : []);
+            setState("done");
+          }
+        } catch (err) {
+          if (err && err.code === 401) { onAuthFail?.(); return; }
+          // Cached value (if any) is already on screen — a background refresh
+          // failure shouldn't blow it away with an error state.
+          if (!cancelled && !cached) { setError(err.message); setState("error"); }
         }
       } catch (err) {
         if (!cancelled) { setError(err.message); setState("error"); }

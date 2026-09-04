@@ -3,6 +3,7 @@ import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, 
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 import { inferAssetClass } from "./lib/parsing.js";
+import { divCacheHash, setDivCacheEntry } from "./lib/dividendsCache.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
 const TreemapCard = lazy(() => import("./TreemapCard.jsx"));
@@ -409,15 +410,29 @@ function warmUpTabCaches(auth, transactions, bondIncome) {
           body: JSON.stringify({ transactions: [], allTransactions: transactions }),
         }).catch(() => {})
       );
+    // Writes into the shared dividends cache (src/lib/dividendsCache.js) so the
+    // prefetch actually benefits the first tab visit's client render, not just
+    // the Redis cache behind api/dividends.js — the hash MUST use the same
+    // normalized payload shape (`{ transactions, bondIncome, day }`) every call
+    // site (Dividends.jsx/Performance.jsx/AporteQuinzenal.jsx) hashes, or this
+    // warm entry silently misses.
+    const day = localTodayISO();
+    const bi = bondIncome || [];
+    const divHash = divCacheHash({ transactions, bondIncome: bi, day });
     fetch("/api/dividends", {
       method: "POST",
       headers,
       body: JSON.stringify({
         transactions,
-        bondIncome: bondIncome || [],
-        todayISO: localTodayISO(),
+        bondIncome: bi,
+        todayISO: day,
       }),
-    }).catch(() => {});
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) setDivCacheEntry(divHash, data, day);
+      })
+      .catch(() => {});
   }, 3000);
 }
 

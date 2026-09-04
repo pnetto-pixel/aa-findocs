@@ -81,6 +81,14 @@ const PAYDATE_CACHE_VERSION = 'v1';
 const PAYDATE_CACHE_TTL_SECONDS = 7 * 24 * 3600;
 // Polygon free tier ≈ 5 req/min. Warm at most this many cold tickers per request (burst).
 const MAX_FRESH_PAYDATE_FETCHES = 5;
+// Short TTL for a partial result (some pay dates still cold) — was not being cached at
+// all before, so every request from a portfolio with >MAX_FRESH_PAYDATE_FETCHES cold
+// tickers re-ran the full Yahoo/Finnhub/Polygon pipeline. A short-lived cache still lets
+// the next request warm a few more cold tickers (the response includes payDatesWarm:
+// false so callers know it may be incomplete), without redoing all the work within the
+// same short window (e.g. two tab visits a minute apart, or the App.jsx warm-up + first
+// tab visit).
+const PARTIAL_CACHE_TTL_SECONDS = 300;
 // Separate per-ticker cache for Finnhub-sourced pay dates (different source, different
 // coverage than Polygon — must not be conflated with payDateCacheKey). Finnhub free tier
 // is ~60 req/min, much more permissive than Polygon's 5/min, but we still cache since
@@ -433,7 +441,7 @@ export default async function handler(req, res) {
             divs = await fetchFinnhubDividends(ticker, finnhubKey);
           }
           return { ticker, divs };
-        }, 3)
+        }, 6)
       : Promise.resolve([]),
     loadPayDateRows(redis, tickers),
   ]);
@@ -600,10 +608,15 @@ export default async function handler(req, res) {
     },
   };
 
-  // Only persist the (expensive) result cache once every ticker's pay dates are warmed —
-  // otherwise keep recomputing so the next request can warm a few more cold tickers.
-  if (key && allWarm) {
-    await redis.set(key, JSON.stringify(result), 'EX', secondsUntilNextMarketClose()).catch(() => {});
+  // Always persist the result cache, even when some pay dates are still cold — the old
+  // behavior (skip caching entirely until allWarm) meant a portfolio with more cold
+  // tickers than MAX_FRESH_PAYDATE_FETCHES could pay could NEVER cache, redoing the full
+  // Yahoo/Finnhub/Polygon pipeline on every single request. Warm results get the full
+  // until-market-close TTL; partial results get a short TTL so the next request still
+  // warms a few more cold tickers instead of being stuck stale.
+  if (key) {
+    const ttl = allWarm ? secondsUntilNextMarketClose() : PARTIAL_CACHE_TTL_SECONDS;
+    await redis.set(key, JSON.stringify(result), 'EX', ttl).catch(() => {});
   }
 
   return res.status(200).json(result);
