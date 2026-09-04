@@ -38,6 +38,7 @@ import {
   computeBankBondsMarketValue,
   listBankBondsTickers,
 } from "./lib/bankBonds.js";
+import { fetchDividendsCached } from "./lib/dividendsCache.js";
 
 // Must match App.jsx's BANK_BONDS_ID - the id of the single aggregated "US
 // Bank Bonds" manual holding. Duplicated (not imported) because App.jsx is
@@ -1741,45 +1742,47 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         setTransactions(txs);
         setTransactionsLoaded(true);
 
-        let divJson = null;
-        const divKey = sessionKey("div", { txs, bondIncome, day: localTodayISO() });
-        if (sessionCache.has(divKey)) {
-          divJson = sessionCache.get(divKey);
-        } else {
-          try {
-            const r = await fetch("/api/dividends", {
-              method: "POST",
-              headers: { ...authHeaders(auth), "Content-Type": "application/json" },
-              body: JSON.stringify({ transactions: txs, bondIncome, todayISO: localTodayISO() }),
-            });
-            if (r.ok) {
-              divJson = await r.json();
-              sessionCache.set(divKey, divJson);
-            }
-          } catch {}
-        }
+        // Applies an /api/dividends response (cached or fresh) — shared between
+        // the optimistic cached render and the background-refreshed one below.
+        const applyDivJson = (json) => {
+          if (cancelled) return;
+          const stockEvents = Array.isArray(json?.events) ? json.events : [];
+          // Foreign tax withheld (negative totalReceived) — dividend events carry the
+          // GROSS amount Fidelity reported, so this must be netted in for Total Return
+          // and the Div TTM/Total columns below to reflect actual cash received.
+          const taxEvents = Array.isArray(json?.foreignTax) ? json.foreignTax : [];
+          const { events: bondEventsArr } = buildBondEvents(bondIncome);
+          const allEvents = [...stockEvents, ...bondEventsArr, ...taxEvents];
+          setDivEvents(allEvents);
+          const todayMs = Date.now();
+          const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
+          const map = {};
+          for (const e of allEvents) {
+            if (!e.ticker || !e.date) continue;
+            const t = e.ticker;
+            if (!map[t]) map[t] = { ttm: 0, total: 0 };
+            map[t].total += e.totalReceived;
+            if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
+          }
+          setDivByTicker(map);
+        };
 
-        if (cancelled) return;
-
-        const stockEvents = Array.isArray(divJson?.events) ? divJson.events : [];
-        // Foreign tax withheld (negative totalReceived) — dividend events carry the
-        // GROSS amount Fidelity reported, so this must be netted in for Total Return
-        // and the Div TTM/Total columns below to reflect actual cash received.
-        const taxEvents = Array.isArray(divJson?.foreignTax) ? divJson.foreignTax : [];
-        const { events: bondEventsArr } = buildBondEvents(bondIncome);
-        const allEvents = [...stockEvents, ...bondEventsArr, ...taxEvents];
-        setDivEvents(allEvents);
-        const todayMs = Date.now();
-        const ttmCutoff = new Date(todayMs - 365 * 86400000).toISOString().slice(0, 10);
-        const map = {};
-        for (const e of allEvents) {
-          if (!e.ticker || !e.date) continue;
-          const t = e.ticker;
-          if (!map[t]) map[t] = { ttm: 0, total: 0 };
-          map[t].total += e.totalReceived;
-          if (e.date >= ttmCutoff) map[t].ttm += e.totalReceived;
-        }
-        setDivByTicker(map);
+        // Shared cache (memory + localStorage) across the Dividends/Performance/
+        // Contributions tabs — see src/lib/dividendsCache.js. `cached` (if any,
+        // from this session or a previous page load) renders instantly; `fresh`
+        // always re-fetches in the background and silently overwrites once it
+        // resolves (matches the old code's silent-failure behavior on error).
+        const { cached, fresh } = fetchDividendsCached({
+          auth,
+          transactions: txs,
+          bondIncome,
+          todayISO: localTodayISO(),
+        });
+        if (cached) applyDivJson(cached);
+        try {
+          const divJson = await fresh;
+          applyDivJson(divJson);
+        } catch {}
       } catch (err) {
         if (cancelled) return;
         if (err.code === 401 && onAuthFail) {

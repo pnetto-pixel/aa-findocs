@@ -15,6 +15,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { fetchDividendsCached } from "./lib/dividendsCache.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -721,38 +722,45 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         setTransactions(txs);
         setBondIncome(bi);
         setTxLoading(false);
-        // Fetch dividends last month - silent failure
-        fetch("/api/dividends", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeaders(auth) },
-          body: JSON.stringify({ transactions: txs, bondIncome: bi, todayISO: localTodayISO() }),
-        })
-          .then((r) => (r.ok ? r.json() : null))
-          .then((data) => {
-            if (!data) return;
-            const now = new Date();
-            const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-            const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
-            // Bucket by e.date (= payDate when known, else ex-date) — the same basis
-            // the Dividends tab uses, so the two screens stay in lockstep. Foreign tax
-            // withheld (data.foreignTax, negative totalReceived) is netted in too —
-            // dividend events carry the GROSS amount Fidelity reported.
-            const apiTotal = [...(data.events || []), ...(data.foreignTax || [])]
-              .filter((e) => e.date && e.date.startsWith(prefix))
-              .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
-            // Add real bond interest payments not returned by /api/dividends.
-            // This MUST mirror buildBondEvents() in Dividends.jsx (which treats
-            // entries with kind="interest" OR no kind at all as real bond interest)
-            // so this KPI stays in lockstep with the Dividends tab's "previous
-            // month" total. Stock dividends (kind="dividend") are excluded here —
-            // they already arrive via apiTotal from /api/dividends, so counting
-            // them again would double-count.
-            const bondTotal = (bi || [])
-              .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
-              .reduce((sum, e) => sum + Number(e.amount), 0);
-            setDivLastMonth(apiTotal + bondTotal);
-          })
-          .catch(() => { setDivLastMonth(0); });
+        // Dividends last month - shared cache (memory + localStorage) across the
+        // Dividends/Performance/Contributions tabs, see src/lib/dividendsCache.js.
+        // A cached hit (from this session or a previous page load) renders
+        // instantly instead of "Loading…"; the fresh fetch always runs in the
+        // background and silently overwrites the KPI if the value differs.
+        const applyDivData = (data) => {
+          if (!data) return;
+          const now = new Date();
+          const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
+          // Bucket by e.date (= payDate when known, else ex-date) — the same basis
+          // the Dividends tab uses, so the two screens stay in lockstep. Foreign tax
+          // withheld (data.foreignTax, negative totalReceived) is netted in too —
+          // dividend events carry the GROSS amount Fidelity reported.
+          const apiTotal = [...(data.events || []), ...(data.foreignTax || [])]
+            .filter((e) => e.date && e.date.startsWith(prefix))
+            .reduce((sum, e) => sum + (parseFloat(e.totalReceived) || 0), 0);
+          // Add real bond interest payments not returned by /api/dividends.
+          // This MUST mirror buildBondEvents() in Dividends.jsx (which treats
+          // entries with kind="interest" OR no kind at all as real bond interest)
+          // so this KPI stays in lockstep with the Dividends tab's "previous
+          // month" total. Stock dividends (kind="dividend") are excluded here —
+          // they already arrive via apiTotal from /api/dividends, so counting
+          // them again would double-count.
+          const bondTotal = (bi || [])
+            .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
+            .reduce((sum, e) => sum + Number(e.amount), 0);
+          setDivLastMonth(apiTotal + bondTotal);
+        };
+        const { cached, fresh } = fetchDividendsCached({
+          auth,
+          transactions: txs,
+          bondIncome: bi,
+          todayISO: localTodayISO(),
+        });
+        if (cached) applyDivData(cached);
+        fresh
+          .then(applyDivData)
+          .catch(() => { if (!cached) setDivLastMonth(0); });
       })
       .catch((e) => {
         if (e.code === 401) {
