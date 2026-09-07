@@ -1458,5 +1458,633 @@ await test('omitting bondBindings keeps the pre-feature behavior', () => {
   assert.equal(ev.descKey, wfDescKey);
 });
 
+console.log('\n— core-account cash sweep (sep/2026) —');
+
+await test('PURCHASE INTO CORE ACCOUNT is excluded (already inside available-balance)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-sweep-1',
+            posted: 1752451200,
+            amount: '12405.56',
+            description: 'PURCHASE INTO CORE ACCOUNT CASH (315994103) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('REDEMPTION FROM CORE ACCOUNT is excluded too', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-sweep-2',
+            posted: 1752451200,
+            amount: '11689.24',
+            description: 'REDEMPTION FROM CORE ACCOUNT CASH (315994103) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('a REAL bond redemption still becomes a sell (the ^ anchor did not swallow it)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-redeem-1',
+            posted: 1752451200,
+            amount: '10000.00',
+            description: 'REDEMPTION PAYOUT WELLS FARGO BANK NATL ASSN CD 4.20000% 07/08/2030 (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.length, 1);
+  assert.equal(out.transactions[0].side, 'sell');
+  assert.equal(out.transactions[0].assetClass, 'Bank Bonds');
+  assert.equal(out.transactions[0].redemption, true);
+  assert.equal(out.unmapped.length, 0);
+});
+
+console.log('\n— FEE CHARGED -> tax income (sep/2026) —');
+
+await test('FEE CHARGED with a trailing ticker becomes a kind="tax" bondIncome with a POSITIVE amount', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-fee-1',
+            posted: 1752451200,
+            amount: '-2.24',
+            description: 'FEE CHARGED ITAU UNIBANCO HLDG S A SPON ADR REP PFD (ITUB) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 1);
+  const ev = out.bondIncome[0];
+  assert.equal(ev.kind, 'tax');
+  assert.equal(ev.ticker, 'ITUB');
+  assert.equal(ev.amount, 2.24); // positive: api/dividends.js filters amount > 0 and negates it itself
+  assert.equal(ev.date, '2025-07-14');
+  assert.equal(ev.source, 'simplefin');
+  assert.equal(ev.simplefinId, 'TX-fee-1');
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('FEE CHARGED whose issuer name contains INTO/other keywords is not stolen by a later branch', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-fee-2',
+            posted: 1752451200,
+            amount: '-1.13',
+            description: 'FEE CHARGED NOVO NORDISK A/S ADR-EACH CNV INTO 1 ORD DKK (NVO) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 1);
+  assert.equal(out.bondIncome[0].kind, 'tax');
+  assert.equal(out.bondIncome[0].ticker, 'NVO');
+  assert.equal(out.bondIncome[0].amount, 1.13);
+});
+
+await test('FEE CHARGED with no extractable ticker goes to unmapped, never invented', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-fee-3',
+            posted: 1752451200,
+            amount: '-9.00',
+            description: 'FEE CHARGED ACCOUNT MAINTENANCE',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 1);
+  assert.match(out.unmapped[0].reason, /fee charged/i);
+});
+
+console.log('\n— trade reconciliation: qty/price reported by the feed (sep/2026, UNVERIFIED path) —');
+
+await test('qty in tx.extra.shares wins: exact qty, price = |amount|/qty, and NO delta candidate for that ticker', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VTI', shares: '3', purchase_price: '250.00', market_value: '780.00' }],
+        transactions: [
+          {
+            id: 'TX-buy-vti',
+            posted: 1752451200,
+            amount: '759.16', // real data: BUYS ARRIVE POSITIVE
+            description: 'YOU BOUGHT VANGUARD INDEX FUNDS VANGUARD MORNIN... (VTI) (Cash)',
+            extra: { shares: '3' },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const vti = out.transactions.filter((t) => t.ticker === 'VTI');
+  assert.equal(vti.length, 1);
+  assert.equal(vti[0].side, 'buy');
+  assert.equal(vti[0].qty, 3);
+  assert.equal(vti[0].price, 759.16 / 3);
+  assert.equal(vti[0].date, '2025-07-14'); // the REAL trade date, not the snapshot's balance-date
+  assert.notEqual(vti[0].date, SNAPSHOT_DATE);
+  assert.equal(vti[0].qtyFromFeed, true);
+  assert.equal(vti[0].simplefinId, 'TX-buy-vti');
+  assert.equal(vti[0].assetClass, 'Stocks');
+  // The holdings-diff candidate for the same ticker must be suppressed --
+  // the server dedupe cannot catch it (different dates).
+  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff).length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('alternative spellings are recognized (extra.quantity, extra["unit-price"])', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-buy-agg',
+            posted: 1752451200,
+            amount: '970.45',
+            description: 'YOU BOUGHT ISHARES CORE US AGGREGATE BOND ETF (AGG) (Cash)',
+            extra: { quantity: 10, 'unit-price': 97.045 },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const agg = out.transactions.filter((t) => t.ticker === 'AGG');
+  assert.equal(agg.length, 1);
+  assert.equal(agg[0].qty, 10);
+  assert.equal(agg[0].price, 970.45 / 10);
+  assert.equal(agg[0].assetClass, 'Bonds'); // AGG is a fixed-income ETF
+  assert.equal(agg[0].qtyFromFeed, true);
+});
+
+await test('price-only in extra derives qty = |amount| / price', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-buy-qqq',
+            posted: 1752451200,
+            amount: '713.10',
+            description: 'YOU BOUGHT INVESCO QQQ TR UNIT SER 1 (QQQ) (Cash)',
+            extra: { share_price: '475.40' },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const qqq = out.transactions.filter((t) => t.ticker === 'QQQ');
+  assert.equal(qqq.length, 1);
+  assert.equal(qqq[0].price, 475.4);
+  assert.equal(qqq[0].qty, 713.1 / 475.4);
+  assert.equal(qqq[0].qtyFromFeed, true);
+});
+
+await test('feed qty beats an available holdings delta, with no duplicate staged', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        // Snapshot says +7 shares vs known qty, but the feed says the trade
+        // was 3 shares -- the feed is exact, the delta is not.
+        holdings: [{ id: 'H1', symbol: 'VTI', shares: '7', purchase_price: '250.00', market_value: '1800.00' }],
+        transactions: [
+          {
+            id: 'TX-buy-vti-2',
+            posted: 1752451200,
+            amount: '759.16',
+            description: 'YOU BOUGHT VANGUARD INDEX FUNDS (VTI) (Cash)',
+            extra: { shares: '3' },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const vti = out.transactions.filter((t) => t.ticker === 'VTI');
+  assert.equal(vti.length, 1);
+  assert.equal(vti[0].qty, 3);
+  assert.equal(vti[0].qtyFromFeed, true);
+  assert.equal(out.unmapped.filter((u) => (u.description || '').includes('VTI')).length, 0);
+});
+
+await test('a reported per-share price >1% away from total/qty keeps the derived price and records the reported one', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-buy-fee',
+            posted: 1752451200,
+            amount: '1030.00', // total includes a commission
+            description: 'YOU BOUGHT STAG INDUSTRIAL INC (STAG) (Cash)',
+            extra: { shares: 10, price: 100 },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const stag = out.transactions.find((t) => t.ticker === 'STAG');
+  assert.equal(stag.qty, 10);
+  assert.equal(stag.price, 103); // derived from the exact total, not the reported 100
+  assert.match(stag.notes, /per-share price of 100/);
+});
+
+console.log('\n— trade reconciliation: holdings-delta fallback (sep/2026) —');
+
+await test('1:1 buy: qty = delta, price = |amount|/qty, date = the transaction date (not the balance-date)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VNQ', shares: '11', purchase_price: '87.87', market_value: '966.55' }],
+        transactions: [
+          {
+            id: 'TX-buy-vnq',
+            posted: 1752451200,
+            amount: '966.55',
+            description: 'YOU BOUGHT VANGUARD REAL ESTATE ETF (VNQ) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const vnq = out.transactions.filter((t) => t.ticker === 'VNQ');
+  assert.equal(vnq.length, 1);
+  assert.equal(vnq[0].side, 'buy');
+  assert.equal(vnq[0].qty, 11);
+  assert.equal(vnq[0].price, 966.55 / 11);
+  assert.equal(vnq[0].date, '2025-07-14');
+  assert.notEqual(vnq[0].date, SNAPSHOT_DATE);
+  assert.equal(vnq[0].assetClass, 'Real Estate');
+  assert.equal(vnq[0].simplefinId, 'TX-buy-vnq');
+  assert.equal(vnq[0].reconciledFromDelta, true);
+  assert.equal(vnq[0].qtyFromFeed, undefined);
+  assert.equal(out.unmapped.length, 0);
+  // Delta suppression: no approximate holdings-diff candidate for VNQ.
+  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff).length, 0);
+});
+
+await test('two trades of the same ticker (XLRE) share one delta: qtys sum EXACTLY to |delta|, each price = |amount_i|/qty_i', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'XLRE', shares: '48', purchase_price: '40.88', market_value: '1962.40' }],
+        transactions: [
+          {
+            id: 'TX-xlre-1',
+            posted: 1752451200,
+            amount: '990.33',
+            description: 'YOU BOUGHT SELECT SECTOR SPDR TRUST STATE STREE... (XLRE) (Cash)',
+          },
+          {
+            id: 'TX-xlre-2',
+            posted: 1752624000,
+            amount: '972.07',
+            description: 'YOU BOUGHT SELECT SECTOR SPDR TRUST STATE STREE... (XLRE) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const rows = out.transactions.filter((t) => t.ticker === 'XLRE');
+  assert.equal(rows.length, 2);
+  const sum = rows.reduce((s, t) => s + t.qty, 0);
+  assert.ok(Math.abs(sum - 48) < 1e-9, `qtys must sum to the snapshot delta, got ${sum}`);
+  const byId = Object.fromEntries(rows.map((t) => [t.simplefinId, t]));
+  assert.ok(Math.abs(byId['TX-xlre-1'].price - 990.33 / byId['TX-xlre-1'].qty) < 1e-9);
+  assert.ok(Math.abs(byId['TX-xlre-2'].price - 972.07 / byId['TX-xlre-2'].qty) < 1e-9);
+  // Total cost is exact even though the per-trade split is proportional.
+  const totalCost = rows.reduce((s, t) => s + t.qty * t.price, 0);
+  assert.ok(Math.abs(totalCost - (990.33 + 972.07)) < 1e-9);
+  assert.equal(byId['TX-xlre-1'].date, '2025-07-14');
+  assert.equal(byId['TX-xlre-2'].date, '2025-07-16');
+  assert.match(rows[0].notes, /more than one trade/);
+  assert.equal(out.unmapped.length, 0);
+  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff).length, 0);
+});
+
+await test('full liquidation: ticker absent from the snapshot + YOU SOLD -> sell of the whole known position, exact price', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [], // DELL is gone from the snapshot entirely
+        transactions: [
+          {
+            id: 'TX-sell-dell',
+            posted: 1752451200,
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { DELL: 95 } });
+  const dell = out.transactions.filter((t) => t.ticker === 'DELL');
+  assert.equal(dell.length, 1);
+  assert.equal(dell[0].side, 'sell');
+  assert.equal(dell[0].qty, 95);
+  assert.equal(dell[0].price, 12119.75 / 95);
+  assert.equal(dell[0].date, '2025-07-14');
+  assert.match(dell[0].notes, /Full liquidation/);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('full liquidation listed at exactly 0 shares is reconciled too (closes the old "no market value" hole)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'DELL', shares: '0', market_value: '0' }],
+        transactions: [
+          {
+            id: 'TX-sell-dell-0',
+            posted: 1752451200,
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { DELL: 95 } });
+  const dell = out.transactions.filter((t) => t.ticker === 'DELL');
+  assert.equal(dell.length, 1);
+  assert.equal(dell[0].qty, 95);
+  assert.equal(dell[0].price, 12119.75 / 95);
+  // The pre-feature unmapped row ("no market value left to estimate a sell
+  // price") must be gone, not duplicated alongside the reconciled sell.
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('inconsistent sign (a BUY row against a shrinking position) is not reconciled -- pre-feature behavior preserved', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', purchase_price: '100.00', market_value: '600.00' }],
+        transactions: [
+          {
+            id: 'TX-buy-aapl',
+            posted: 1752451200,
+            amount: '500.00',
+            description: 'YOU BOUGHT APPLE INC (AAPL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
+  // The trade row is not reconciled...
+  const reconciled = out.transactions.filter((t) => t.reconciledFromDelta || t.qtyFromFeed);
+  assert.equal(reconciled.length, 0);
+  const u = out.unmapped.filter((x) => x.simplefinId === 'TX-buy-aapl');
+  assert.equal(u.length, 1);
+  assert.match(u[0].reason, /direction/);
+  // ...and the approximate holdings-diff candidate still fires, exactly as before.
+  const diff = out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'AAPL');
+  assert.equal(diff.length, 1);
+  assert.equal(diff[0].side, 'sell');
+  assert.equal(diff[0].qty, 4);
+});
+
+await test('mixed buys and sells of the same ticker are not reconciled (a single delta cannot be split by direction)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'O', shares: '20', purchase_price: '55.00', market_value: '1200.00' }],
+        transactions: [
+          { id: 'TX-o-buy', posted: 1752451200, amount: '1130.85', description: 'YOU BOUGHT REALTY INCOME CORP COM (O) (Cash)' },
+          { id: 'TX-o-sell', posted: 1752537600, amount: '130.85', description: 'YOU SOLD REALTY INCOME CORP COM (O) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.filter((t) => t.reconciledFromDelta).length, 0);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-o-buy').length, 1);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-o-sell').length, 1);
+  // Status quo: the approximate delta candidate is still staged.
+  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'O').length, 1);
+});
+
+await test('account isolation: a trade in account A never matches a delta in account B', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'ACT-A',
+        holdings: [], // no PLD position in this account
+        transactions: [
+          {
+            id: 'TX-buy-pld',
+            posted: 1752451200,
+            amount: '986.30',
+            description: 'YOU BOUGHT PROLOGIS INC. COM (PLD) (Cash)',
+          },
+        ],
+      }),
+      fidelityAccount({
+        id: 'ACT-B',
+        name: 'Fidelity Brokerage 2',
+        holdings: [{ id: 'H1', symbol: 'PLD', shares: '9', purchase_price: '109.59', market_value: '986.30' }],
+        transactions: [],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  // Account A's trade cannot be resolved (no PLD in A's snapshot, and it is a
+  // BUY so the liquidation path does not apply).
+  assert.equal(out.transactions.filter((t) => t.reconciledFromDelta).length, 0);
+  const u = out.unmapped.filter((x) => x.simplefinId === 'TX-buy-pld');
+  assert.equal(u.length, 1);
+  // Account B's delta is untouched by A's trade row.
+  const diff = out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'PLD');
+  assert.equal(diff.length, 1);
+  assert.equal(diff[0].qty, 9);
+});
+
+await test('a trade whose simplefinId is already live is skipped entirely (no transaction, no unmapped)', () => {
+  const liveTransactions = [
+    { ticker: 'VNQ', side: 'buy', qty: 11, date: '2025-07-14', simplefinId: 'TX-buy-vnq' },
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VNQ', shares: '11', purchase_price: '87.87', market_value: '966.55' }],
+        transactions: [
+          {
+            id: 'TX-buy-vnq',
+            posted: 1752451200,
+            amount: '966.55',
+            description: 'YOU BOUGHT VANGUARD REAL ESTATE ETF (VNQ) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(liveTransactions),
+    liveTransactions,
+  });
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('an approved sibling trade does not distort the delta split of the remaining one', () => {
+  // TX-xlre-1 was approved last sync (24 shares), TX-xlre-2 is new. The
+  // snapshot now has 48 shares and knownQty is 24, so only 24 remain to be
+  // allocated -- all of them to the row still pending.
+  const liveTransactions = [
+    { ticker: 'XLRE', side: 'buy', qty: 24, date: '2025-07-14', simplefinId: 'TX-xlre-1' },
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'XLRE', shares: '48', purchase_price: '40.88', market_value: '1962.40' }],
+        transactions: [
+          { id: 'TX-xlre-1', posted: 1752451200, amount: '990.33', description: 'YOU BOUGHT SELECT SECTOR SPDR (XLRE) (Cash)' },
+          { id: 'TX-xlre-2', posted: 1752624000, amount: '972.07', description: 'YOU BOUGHT SELECT SECTOR SPDR (XLRE) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(liveTransactions),
+    liveTransactions,
+  });
+  const rows = out.transactions.filter((t) => t.ticker === 'XLRE');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].simplefinId, 'TX-xlre-2');
+  assert.equal(rows[0].qty, 24);
+  assert.equal(rows[0].price, 972.07 / 24);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('an unresolvable trade row still goes to unmapped, carrying rawFields for diagnosis', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [],
+        transactions: [
+          {
+            id: 'TX-buy-tflo',
+            posted: 1752451200,
+            amount: '959.98',
+            description: 'YOU BOUGHT ISHARES TREASURY FLOATING RA (TFLO) (Cash)',
+            payee: 'FIDELITY',
+            pending: false,
+            extra: { 'mystery-share-field': '19.05', nested: { ignored: true } },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 1);
+  const u = out.unmapped[0];
+  assert.ok(u.rawFields, 'unresolved trade rows must preserve the raw feed fields');
+  assert.equal(u.rawFields['extra.mystery-share-field'], '19.05');
+  assert.equal(u.rawFields.payee, 'FIDELITY');
+  assert.equal(u.rawFields.pending, false);
+  // Known/handled keys are never echoed back, and non-primitives are dropped.
+  assert.equal(u.rawFields.description, undefined);
+  assert.equal(u.rawFields.amount, undefined);
+  assert.equal(u.rawFields.id, undefined);
+  assert.equal(u.rawFields['extra.nested'], undefined);
+});
+
+await test('rawFields is capped at 20 keys and truncates long values to 200 chars', () => {
+  const extra = { long: 'x'.repeat(500) };
+  for (let i = 0; i < 40; i++) extra[`f${i}`] = i + 1;
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [],
+        transactions: [
+          {
+            id: 'TX-buy-govt',
+            posted: 1752451200,
+            amount: '984.06',
+            description: 'YOU BOUGHT ISHARES TR US TREAS BD ETF (GOVT) (Cash)',
+            extra,
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const u = out.unmapped[0];
+  assert.equal(Object.keys(u.rawFields).length, 20);
+  assert.equal(u.rawFields['extra.long'].length, 200);
+});
+
+await test('backward compatible: without netQtyByTicker, trade rows keep going straight to unmapped', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VNQ', shares: '11', purchase_price: '87.87', market_value: '966.55' }],
+        transactions: [
+          {
+            id: 'TX-buy-vnq',
+            posted: 1752451200,
+            amount: '966.55',
+            description: 'YOU BOUGHT VANGUARD REAL ESTATE ETF (VNQ) (Cash)',
+            extra: { shares: '11' },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 1);
+  assert.match(out.unmapped[0].reason, /qty\/price/);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
