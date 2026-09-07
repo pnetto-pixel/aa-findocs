@@ -504,10 +504,16 @@ export default async function handler(req, res) {
         ...(isPlainObject(body.bondBindings) && {
           bondBindings: { ...current.bondBindings, ...body.bondBindings },
         }),
+        // Escape hatch for the union-merge below: dismissing is otherwise
+        // irreversible, and a row dismissed by mistake (or one whose
+        // `rawFields` the user still needs to read) could never be brought
+        // back. An explicit flag rather than `dismissedUnmapped: []`, because
+        // the merge treats an empty array as "nothing to add", not "clear".
+        ...(body.clearDismissedUnmapped === true && { dismissedUnmapped: [] }),
         // Same merge rule as bondBindings, for the same reason: a client
         // dismissing one row sends only that id, and must never drop
         // tombstones it doesn't know about. Union, deduped (sep/2026).
-        ...(Array.isArray(body.dismissedUnmapped) && {
+        ...(body.clearDismissedUnmapped !== true && Array.isArray(body.dismissedUnmapped) && {
           dismissedUnmapped: [
             ...new Set([
               ...current.dismissedUnmapped,

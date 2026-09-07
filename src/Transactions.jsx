@@ -2742,6 +2742,9 @@ function ImportModal({
   knownBankBondTickers = EMPTY_SET,
   pendingUnmapped = [],
   unmappedActionId,
+  dismissedUnmapped = [],
+  restoreDismissedUnmapped,
+  restoringDismissed = false,
   dismissUnmappedItem,
 }) {
   const [tab, setTab] = useState("sync"); // sync | upload | fidelity
@@ -4111,6 +4114,52 @@ function ImportModal({
                           </div>
                         </div>
                       )}
+
+                      {/* Undo for Dismiss. Rendered independently of
+                          pendingUnmapped so it is still reachable once every
+                          row has been dismissed and the section above is
+                          gone — which is exactly when a mistaken dismiss is
+                          impossible to notice, let alone undo. */}
+                      {dismissedUnmapped.length > 0 && (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flexWrap: "wrap",
+                            marginBottom: 16,
+                            padding: "8px 12px",
+                            background: T.card,
+                            border: `1px solid ${T.border}`,
+                            borderRadius: 4,
+                          }}
+                        >
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                            {dismissedUnmapped.length} dismissed row
+                            {dismissedUnmapped.length === 1 ? "" : "s"} hidden from future syncs
+                          </span>
+                          <button
+                            onClick={restoreDismissedUnmapped}
+                            disabled={restoringDismissed}
+                            style={{
+                              background: "transparent",
+                              color: T.textDim,
+                              border: `1px solid ${T.border}`,
+                              borderRadius: 4,
+                              padding: "4px 8px",
+                              fontFamily: FONT_MONO,
+                              fontSize: 9,
+                              letterSpacing: "0.1em",
+                              textTransform: "uppercase",
+                              cursor: restoringDismissed ? "default" : "pointer",
+                              opacity: restoringDismissed ? 0.5 : 1,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {restoringDismissed ? "…" : "Restore all"}
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -5025,6 +5074,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   // entry (e.g. external transfers already captured by the Cash balance).
   const [pendingUnmapped, setPendingUnmapped] = useState([]);
   const [unmappedActionId, setUnmappedActionId] = useState(null); // id of row mid Dismiss
+  // simplefinIds the user dismissed. Surfaced so Dismiss is reversible — see
+  // restoreDismissedUnmapped (sep/2026).
+  const [dismissedUnmapped, setDismissedUnmapped] = useState([]);
+  const [restoringDismissed, setRestoringDismissed] = useState(false);
   // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
   const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, nextSyncAt }
@@ -5175,6 +5228,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
       setPendingUnmapped(p.unmapped || []);
+      setDismissedUnmapped(p.dismissedUnmapped || []);
       setPendingBondHoldings(p.bondHoldings || []);
       setBondBindings(p.bondBindings || {});
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
@@ -5264,6 +5318,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setPendingFid(freshTx);
       setPendingFidBond(freshBond);
       setPendingUnmapped(p.unmapped || []);
+      setDismissedUnmapped(p.dismissedUnmapped || []);
       setPendingBondHoldings(p.bondHoldings || []);
       setBondBindings(p.bondBindings || {});
       setPendingFidChecked(new Set(freshTx.map((t) => t.id || dupKey(t))));
@@ -5447,8 +5502,27 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         ...(item.simplefinId ? { dismissedUnmapped: [item.simplefinId] } : {}),
       });
       setPendingUnmapped(remaining);
+      if (item.simplefinId) {
+        setDismissedUnmapped((prev) =>
+          prev.includes(item.simplefinId) ? prev : [...prev, item.simplefinId]
+        );
+      }
     } finally {
       setUnmappedActionId(null);
+    }
+  }
+
+  // Clears every dismiss tombstone, so the next sync re-stages those rows.
+  // Dismiss is otherwise a one-way door: the row is gone from `unmapped` AND
+  // the sync is told never to re-add it, which strands anything dismissed by
+  // mistake — or dismissed before the user read its `rawFields` diagnostic.
+  async function restoreDismissedUnmapped() {
+    setRestoringDismissed(true);
+    try {
+      const ok = await patchPendingFidelity(auth, { clearDismissedUnmapped: true });
+      if (ok) setDismissedUnmapped([]);
+    } finally {
+      setRestoringDismissed(false);
     }
   }
 
@@ -6228,6 +6302,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         pendingUnmapped={pendingUnmapped}
         unmappedActionId={unmappedActionId}
         dismissUnmappedItem={dismissUnmappedItem}
+        dismissedUnmapped={dismissedUnmapped}
+        restoreDismissedUnmapped={restoreDismissedUnmapped}
+        restoringDismissed={restoringDismissed}
       />
 
     </div>
