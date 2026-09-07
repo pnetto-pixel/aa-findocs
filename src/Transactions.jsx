@@ -4070,7 +4070,14 @@ function ImportModal({
                                         <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
                                           {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
                                         </td>
-                                        <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
+                                        <td
+                                          style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}
+                                          /* `rawFields` (sep/2026) carries whatever fields the SimpleFin
+                                             transaction had that the mapper does not understand -- the
+                                             diagnostic that replaced the removed `?resource=probe`. Shown
+                                             only as a native tooltip: it is a debugging aid, not UI. */
+                                          title={u.rawFields ? `${u.reason}\n\n${JSON.stringify(u.rawFields, null, 2)}` : undefined}
+                                        >
                                           {u.reason}
                                         </td>
                                         <td style={{ padding: "4px 8px", textAlign: "right" }}>
