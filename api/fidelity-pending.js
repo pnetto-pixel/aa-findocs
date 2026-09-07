@@ -28,13 +28,15 @@
 // (?resource=probe, the Fase 0 raw-payload diagnostic, was removed in the
 // SimpleFin Fase 3 cleanup once the sync path proved reliable — see §6.)
 //
-// ?resource=sync (Fase 1): fetches SimpleFin for real, maps the payload via
+// ?resource=sync (Fase 1, +force sep/2026): fetches SimpleFin for real, maps the payload via
 // lib/simplefin-map.js, and merges the result into the `:fidelity-pending`
 // staging blob (deduped against both live transactions/bondIncome and
 // whatever's already staged). Admin-only (same access-URL-holder assumption —
 // see docs/plans/simplefin-fidelity-feed.md §4.2). Throttled to one real
 // SimpleFin fetch per SYNC_THROTTLE_MS; calls inside the window return the
-// current staging state without re-fetching.
+// current staging state without re-fetching. `&force=1` bypasses the
+// throttle — used only by the explicit "Sync Fidelity" button, never by the
+// background refresh paths.
 //   POST -> { ok, synced, throttled, added, addedBond, addedBalance, addedUnmapped, lastSync, lastError, nextSyncAt }
 //
 // ?resource=status: cheap read of sync metadata, no fetch.
@@ -71,7 +73,9 @@ const SIMPLEFIN_TIMEOUT_MS = 8000;
 // (Fase 3) both surface as if it were a real failure. Stay comfortably under
 // the lower, "recommended" threshold so neither warning ever fires.
 const SIMPLEFIN_WINDOW_DAYS = 44;
-// Sync is on-demand (button click), not a cron — but throttled server-side so
+// Sync is on-demand (button click / refresh), not a cron — but throttled
+// server-side for the background callers (the explicit button sends
+// ?force=1 and is exempt; see handleSync) so
 // a chatty client (or a user mashing the button) can't hammer the Bridge.
 const SYNC_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h
 
@@ -199,8 +203,19 @@ async function handleSync(req, res, auth) {
 
   // Throttle: at most one real SimpleFin fetch per SYNC_THROTTLE_MS. Calls
   // inside the window return the current staging state without re-fetching —
-  // polite to the Bridge, and the "Sync Fidelity" button can be safely mashed.
-  if (pending.lastSyncAttempt) {
+  // polite to the Bridge, and the background callers can fire freely.
+  //
+  // `?force=1` opts out (sep/2026). The throttle exists to keep the automatic
+  // callers -- "Refresh all" and the Bank Bonds "Refresh price" button, both
+  // via src/App.jsx syncFidelityAndFetchCandidates -- from hitting the Bridge
+  // on every page interaction. But it also silently no-op'd the EXPLICIT
+  // "Sync Fidelity" button, which is the one case where the user is asking
+  // for fresh data right now and a stale answer is the wrong one (e.g. after
+  // making a trade, or after a deploy that changes how rows are mapped).
+  // Only that button passes force; every background path keeps the 6h window.
+  // Still admin-only (gated above), so this is not a public fetch trigger.
+  const force = req.query?.force === '1' || req.query?.force === 'true';
+  if (!force && pending.lastSyncAttempt) {
     const elapsed = Date.now() - new Date(pending.lastSyncAttempt).getTime();
     if (elapsed < SYNC_THROTTLE_MS) {
       return res.status(200).json({

@@ -5220,7 +5220,12 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     setFidSyncing(true);
     setFidSyncMessage(null);
     try {
-      const res = await fetch("/api/fidelity-pending?resource=sync", {
+      // `force=1`: this is the EXPLICIT "Sync Fidelity" button, so it always
+      // hits the Bridge for real. The 6h server-side throttle stays in place
+      // for the background callers (refreshAll / the Bank Bonds "Refresh
+      // price" button, via src/App.jsx syncFidelityAndFetchCandidates) --
+      // see api/fidelity-pending.js handleSync (sep/2026).
+      const res = await fetch("/api/fidelity-pending?resource=sync&force=1", {
         method: "POST",
         headers: authHeaders(auth),
       });
@@ -5240,7 +5245,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         nextSyncAt: data.nextSyncAt,
       });
       if (data.throttled) {
-        setFidSyncMessage("Synced recently — showing current staging (throttled to once per 6h).");
+        // Unreachable while this call sends force=1 — kept as an honest
+        // fallback in case the server ever throttles it again.
+        setFidSyncMessage("Synced recently — showing current staging.");
       } else {
         setFidSyncMessage(
           `Synced: +${data.added} trade${data.added === 1 ? "" : "s"}, +${data.addedBond} income, +${data.addedBalance} balance update${data.addedBalance === 1 ? "" : "s"}, +${data.addedUnmapped} unmapped.`

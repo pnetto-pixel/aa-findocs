@@ -210,6 +210,11 @@ async function fetchPrice(ticker, auth, quoteOnly = false) {
 // window just return the current staging state. Used by refreshAll/the Bank
 // Bonds "Refresh price" button so Cash/Bank Bonds current values track
 // SimpleFin the same way ticker prices do (jul/2026).
+//
+// This path deliberately does NOT send `?force=1`: it fires on every
+// "Refresh all" and on the Bank Bonds refresh, so the 6h window is what
+// keeps those from hammering the Bridge. Only the explicit "Sync Fidelity"
+// button in Transactions.jsx bypasses the throttle (sep/2026).
 async function syncFidelityAndFetchCandidates(auth) {
   try {
     await fetch("/api/fidelity-pending?resource=sync", {
