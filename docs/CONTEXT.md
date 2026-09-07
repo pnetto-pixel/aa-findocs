@@ -480,6 +480,7 @@ Tab nova, arquivo separado (`src/Dividends.jsx`), lazy-loaded como Performance. 
 
 - **Auto income** (US Stocks/ETFs): calculado server-side por `api/dividends.js`, cache Redis versionado. Sem storage manual.
 - **Fidelity dividend import (PR #95):** linhas `DIVIDEND RECEIVED`/`CASH DIV` capturadas por `parseFidelityCSV` e armazenadas em `bondIncome` (campo `bondIncome` no blob de `/api/transactions`, mesmo store de interest payments). Campo `kind: "dividend"` distingue de interest (`kind: "interest"`). Enviadas a `/api/dividends` no POST body como fonte autoritativa para os tickers cobertos.
+- **SimpleFin ADR custody fees (v1.19.0):** linhas `FEE CHARGED ... (TICKER)` do feed SimpleFin (casos reais: ITUB, NVO) mapeadas em `lib/simplefin-map.js` para `bondIncome` com `kind: "tax"` — mesmo slot ja usado pelo foreign tax withheld da Fidelity (merge `1cde08f`). `api/dividends.js` ja aplica o sinal negativo pra esse `kind`; nenhuma mudanca em `api/dividends.js`/`src/Dividends.jsx` foi necessaria.
 
 ### Fontes de dados (validadas via probe PR #58)
 
