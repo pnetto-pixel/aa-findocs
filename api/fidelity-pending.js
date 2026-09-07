@@ -19,7 +19,8 @@
 //               read-modify-write, like api/transactions.js) — lets the client
 //               remove approved/dismissed rows without wiping sync metadata or
 //               the other arrays.
-//   DELETE  -> clears the entire staging area (after the client has approved/discarded)
+//   DELETE  -> clears the staging area (after the client has approved/discarded);
+//              bondBindings and dismissedUnmapped survive as confirmed data
 //
 // ?resource=sync / ?resource=status route to SimpleFin feed operations (see
 // docs/plans/simplefin-fidelity-feed.md) instead of adding new files under
@@ -122,6 +123,17 @@ function normalizePending(pending) {
       pending.bondBindings && typeof pending.bondBindings === 'object' && !Array.isArray(pending.bondBindings)
         ? pending.bondBindings
         : {},
+    // `dismissedUnmapped` (simplefinId tombstones) is CONFIRMED data, same
+    // category as bondBindings: it records rows the user explicitly dismissed
+    // (sep/2026 bugfix). Before it existed, Dismiss only removed the row from
+    // `unmapped`, and the very next sync re-mapped the same SimpleFin
+    // transaction and appended it again — the dedupe below compares against
+    // what is currently staged, and a dismissed row is by definition no
+    // longer staged. The user reported 18 rows coming back "toda vez que
+    // roda". It must survive DELETE and is only ever merged, never replaced.
+    dismissedUnmapped: Array.isArray(pending.dismissedUnmapped)
+      ? pending.dismissedUnmapped.filter((id) => typeof id === 'string' && id)
+      : [],
     updatedAt: pending.updatedAt || null,
     lastSync: pending.lastSync || null,
     lastError: pending.lastError || null,
@@ -363,9 +375,14 @@ async function handleSync(req, res, auth) {
   // the same unresolved row every 6h; never silently dropped, just not
   // repeated once already visible.
   const pendingUnmappedIds = new Set(pending.unmapped.filter((u) => u.simplefinId).map((u) => u.simplefinId));
+  // Rows the user already dismissed never come back (sep/2026 — see
+  // normalizePending). Checked in addition to the staged-ids set above,
+  // which by construction can't contain a dismissed row.
+  const dismissedUnmappedIds = new Set(pending.dismissedUnmapped);
   const pendingUnmapped = [...pending.unmapped];
   let addedUnmapped = 0;
   for (const u of mapped.unmapped) {
+    if (u.simplefinId && dismissedUnmappedIds.has(u.simplefinId)) continue;
     if (u.simplefinId && pendingUnmappedIds.has(u.simplefinId)) continue;
     if (u.simplefinId) pendingUnmappedIds.add(u.simplefinId);
     pendingUnmapped.push(u);
@@ -409,6 +426,7 @@ async function handleSync(req, res, auth) {
     unmapped: pendingUnmapped,
     bondHoldings: pendingBondHoldings,
     bondBindings,
+    dismissedUnmapped: pending.dismissedUnmapped,
     updatedAt,
     lastSync: updatedAt,
     lastError: simplefinErrors.length ? simplefinErrors.join('; ') : null,
@@ -486,6 +504,17 @@ export default async function handler(req, res) {
         ...(isPlainObject(body.bondBindings) && {
           bondBindings: { ...current.bondBindings, ...body.bondBindings },
         }),
+        // Same merge rule as bondBindings, for the same reason: a client
+        // dismissing one row sends only that id, and must never drop
+        // tombstones it doesn't know about. Union, deduped (sep/2026).
+        ...(Array.isArray(body.dismissedUnmapped) && {
+          dismissedUnmapped: [
+            ...new Set([
+              ...current.dismissedUnmapped,
+              ...body.dismissedUnmapped.filter((id) => typeof id === 'string' && id),
+            ]),
+          ],
+        }),
         updatedAt: new Date().toISOString(),
       };
       await redis.set(pendingKey, JSON.stringify(next));
@@ -500,8 +529,14 @@ export default async function handler(req, res) {
       // bondHoldings, sync metadata) is intentionally wiped: they're all
       // recomputed fresh on the next sync.
       const current = normalizePending(readBlob(await redis.get(pendingKey)));
-      if (current.bondBindings && Object.keys(current.bondBindings).length > 0) {
-        await redis.set(pendingKey, JSON.stringify({ bondBindings: current.bondBindings }));
+      // `dismissedUnmapped` is confirmed data too — a clear must not
+      // resurrect every row the user ever dismissed on the next sync.
+      const keep = {
+        ...(Object.keys(current.bondBindings).length > 0 && { bondBindings: current.bondBindings }),
+        ...(current.dismissedUnmapped.length > 0 && { dismissedUnmapped: current.dismissedUnmapped }),
+      };
+      if (Object.keys(keep).length > 0) {
+        await redis.set(pendingKey, JSON.stringify(keep));
       } else {
         await redis.del(pendingKey);
       }

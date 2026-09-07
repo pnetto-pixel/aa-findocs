@@ -604,6 +604,87 @@ await test('YOU BOUGHT is recognized but routed to unmapped (no structured qty/p
   assert.match(out.unmapped[0].reason, /qty\/price/);
 });
 
+console.log('\n— fund names containing an Action keyword (sep/2026 regression) —');
+
+// Regression: SCHD ("Schwab US DIVIDEND Equity ETF") and NOBL ("ProShares
+// S&P 500 DIVIDEND Aristocrats") have "DIVIDEND" in the FUND NAME, so the
+// unanchored DIVIDEND_RX claimed their PURCHASES and staged ~$1,000 buys as
+// ~$1,000 of dividend income. Reported by the user, sep/2026.
+await test('YOU BOUGHT a fund whose NAME contains DIVIDEND is a trade, not income', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-schd-buy', posted: 1755734400, amount: '981.54',
+            description: 'YOU BOUGHT SCHWAB STRATEGIC TR US DIVIDEND EQUITY ETF (SCHD) (Cash)' },
+          { id: 'TX-nobl-buy', posted: 1755734400, amount: '997.73',
+            description: 'YOU BOUGHT PROSHARES TR S&P 500 DIVIDEND ARISTOCRAT (NOBL) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {}, liveTransactions: [] });
+  assert.equal(out.bondIncome.length, 0, 'a purchase must never become dividend income');
+  // No holdings snapshot here, so they cannot be priced -> unmapped, but as
+  // TRADES (the reason proves which branch owned them), never as income.
+  assert.equal(out.unmapped.length, 2);
+  for (const u of out.unmapped) assert.match(u.reason, /buy\/sell recognized/);
+});
+
+await test('a REAL dividend on those same funds still maps to income', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-schd-div', posted: 1755734400, amount: '24.10',
+            description: 'DIVIDEND RECEIVED SCHWAB STRATEGIC TR US DIVIDEND EQUITY ETF (SCHD) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {}, liveTransactions: [] });
+  assert.equal(out.unmapped.length, 0);
+  assert.equal(out.bondIncome.length, 1);
+  assert.equal(out.bondIncome[0].ticker, 'SCHD');
+  assert.equal(out.bondIncome[0].kind, 'dividend');
+  assert.equal(out.bondIncome[0].amount, 24.1);
+});
+
+await test('a fund name containing INTEREST/REDEMPTION does not steal its own purchase', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-tflo', posted: 1755734400, amount: '959.98',
+            description: 'YOU BOUGHT ISHARES TREASURY FLOATING RA INTEREST RATE ETF (TFLO) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {}, liveTransactions: [] });
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.unmapped.length, 1);
+  assert.match(out.unmapped[0].reason, /buy\/sell recognized/);
+});
+
+await test('the anchored trade branch is reached even in legacy mode (no netQtyByTicker)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-schd-legacy', posted: 1755734400, amount: '981.54',
+            description: 'YOU BOUGHT SCHWAB STRATEGIC TR US DIVIDEND EQUITY ETF (SCHD) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload); // no options at all
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 1);
+  assert.match(out.unmapped[0].reason, /qty\/price/);
+});
+
 console.log('\n— mapSimplefinPayload: balance candidates —');
 
 await test('CASH holding is not counted into the Bank Bonds sum', () => {

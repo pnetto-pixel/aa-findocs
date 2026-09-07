@@ -5437,7 +5437,15 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     setUnmappedActionId(rowId);
     try {
       const remaining = pendingUnmapped.filter((u, i) => (u.simplefinId || i) !== rowId);
-      await patchPendingFidelity(auth, { unmapped: remaining });
+      // Also record a tombstone so the next sync doesn't re-add the row
+      // (sep/2026 bugfix — Dismiss used to only drop it from `unmapped`, and
+      // the sync re-mapped the same SimpleFin transaction every 6h forever).
+      // Only possible when the row HAS a simplefinId; an index-keyed row has
+      // no durable identity to remember, same limitation as everywhere else.
+      await patchPendingFidelity(auth, {
+        unmapped: remaining,
+        ...(item.simplefinId ? { dismissedUnmapped: [item.simplefinId] } : {}),
+      });
       setPendingUnmapped(remaining);
     } finally {
       setUnmappedActionId(null);
