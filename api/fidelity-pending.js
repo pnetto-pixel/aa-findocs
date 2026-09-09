@@ -14,7 +14,7 @@
 // directly (only reads it, read-only, to skip rows already imported when
 // deduping) and never modifies `:holdings` here.
 //
-//   GET     -> { transactions, bondIncome, balanceCandidates, unmapped, updatedAt, lastSync, lastError }
+//   GET     -> { transactions, bondIncome, balanceCandidates, unmapped, updatedAt, lastSync, lastError, lastAdvisory }
 //   PUT     -> { transactions?, bondIncome?, balanceCandidates?, unmapped? } (partial;
 //               read-modify-write, like api/transactions.js) — lets the client
 //               remove approved/dismissed rows without wiping sync metadata or
@@ -38,10 +38,12 @@
 // current staging state without re-fetching. `&force=1` bypasses the
 // throttle — used only by the explicit "Sync Fidelity" button, never by the
 // background refresh paths.
-//   POST -> { ok, synced, throttled, added, addedBond, addedBalance, addedUnmapped, lastSync, lastError, nextSyncAt }
+//   POST -> { ok, synced, throttled, added, addedBond, addedBalance, addedUnmapped, lastSync,
+//             lastError, lastAdvisory, nextSyncAt, windowDays, fetchedAccounts,
+//             fetchedTransactions, excludedCount, excludedByReason }
 //
 // ?resource=status: cheap read of sync metadata, no fetch.
-//   GET -> { connected, lastSync, lastError, nextSyncAt }
+//   GET -> { connected, lastSync, lastError, lastAdvisory, nextSyncAt }
 //
 // A SimpleFin connection returns EVERY linked institution, not just Fidelity
 // (confirmed jul/2026: 22 accounts, only 1 Fidelity — 21 personal Chase/
@@ -52,7 +54,7 @@
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
-import { mapSimplefinPayload, computeNetQty } from '../lib/simplefin-map.js';
+import { mapSimplefinPayload, computeNetQty, classifySimplefinErrors } from '../lib/simplefin-map.js';
 import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
 
 function pendingKeyFromAuth(auth) {
@@ -66,14 +68,21 @@ function txKeyFromAuth(auth) {
 }
 
 const SIMPLEFIN_TIMEOUT_MS = 8000;
-// SimpleFin has a hard cap at 90 days (requesting exactly that got capped, per
-// a warning seen in payload.errors) AND a lower "recommended" range of 45 days
-// — going over 45 already produces a payload.errors advisory ("may be capped
-// in the future") even though nothing is actually capped yet. Either warning
-// becomes `lastError` here, which the Transactions tab and the sync heartbeat
-// (Fase 3) both surface as if it were a real failure. Stay comfortably under
-// the lower, "recommended" threshold so neither warning ever fires.
-const SIMPLEFIN_WINDOW_DAYS = 44;
+// SimpleFin has a hard cap at 90 days AND a lower "recommended" range of 45
+// days — going over 45 produces a payload.errors advisory ("may be capped in
+// the future") even though nothing is actually capped yet.
+//
+// This used to be 44, chosen purely to keep that advisory string from landing
+// in `lastError` (which the Transactions tab and the sync heartbeat both
+// render as a hard failure). That traded away half the available history for
+// a cosmetic problem, and it is a real data loss: a bond/CD coupon that
+// posted 45–90 days ago is plainly visible in Fidelity's own activity view
+// but was never even requested from the Bridge, so it could never be staged
+// (reported set/2026 — four bank-bond INTEREST payments visible at Fidelity,
+// nothing in the sync). Ask for the full window the Bridge allows and fix the
+// actual problem instead: classifySimplefinErrors() below keeps date-range
+// advisories out of `lastError`.
+const SIMPLEFIN_WINDOW_DAYS = 89;
 // Sync is on-demand (button click / refresh), not a cron — but throttled
 // server-side for the background callers (the explicit button sends
 // ?force=1 and is exempt; see handleSync) so
@@ -137,6 +146,10 @@ function normalizePending(pending) {
     updatedAt: pending.updatedAt || null,
     lastSync: pending.lastSync || null,
     lastError: pending.lastError || null,
+    // Informational date-range notices from the Bridge — kept apart from
+    // lastError so they never render as a failed sync (see
+    // classifySimplefinErrors).
+    lastAdvisory: pending.lastAdvisory || null,
     lastSyncAttempt: pending.lastSyncAttempt || null,
   };
 }
@@ -186,6 +199,7 @@ async function handleStatus(req, res, auth) {
     connected: !!process.env.SIMPLEFIN_ACCESS_URL,
     lastSync: pending.lastSync,
     lastError: pending.lastError,
+    lastAdvisory: pending.lastAdvisory,
     nextSyncAt,
   });
 }
@@ -241,6 +255,7 @@ async function handleSync(req, res, auth) {
         addedBondBindings: 0,
         lastSync: pending.lastSync,
         lastError: pending.lastError,
+        lastAdvisory: pending.lastAdvisory,
         nextSyncAt: new Date(new Date(pending.lastSyncAttempt).getTime() + SYNC_THROTTLE_MS).toISOString(),
         totalPending: pending.transactions.length,
       });
@@ -294,7 +309,9 @@ async function handleSync(req, res, auth) {
     return res.status(502).json({ error: fetchError });
   }
 
-  const simplefinErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const { lastError: simplefinFailure, lastAdvisory } = classifySimplefinErrors(
+    Array.isArray(payload?.errors) ? payload.errors : []
+  );
 
   // Live transactions/bondIncome are read ONLY to skip rows already imported
   // (or already approved from a previous sync) — and, for `liveTx`, to also
@@ -418,6 +435,18 @@ async function handleSync(req, res, auth) {
     }
   }
 
+  // Exclusion summary (set/2026). Intentional drops are still not staged —
+  // they are noise by definition — but a sync that adds nothing must be able
+  // to say WHY: "SimpleFin sent 12 Fidelity rows, 12 were sweep cycles" and
+  // "SimpleFin sent 0 Fidelity rows" look identical from the old response,
+  // and telling them apart is the whole diagnosis when an expected payment
+  // doesn't show up.
+  const excludedByReason = {};
+  for (const e of mapped.excluded || []) {
+    const reason = e.reason || 'unspecified';
+    excludedByReason[reason] = (excludedByReason[reason] || 0) + 1;
+  }
+
   const updatedAt = new Date().toISOString();
   const next = {
     transactions: pendingTx,
@@ -429,7 +458,8 @@ async function handleSync(req, res, auth) {
     dismissedUnmapped: pending.dismissedUnmapped,
     updatedAt,
     lastSync: updatedAt,
-    lastError: simplefinErrors.length ? simplefinErrors.join('; ') : null,
+    lastError: simplefinFailure,
+    lastAdvisory,
     lastSyncAttempt: attemptAt,
   };
   await redis.set(pendingKey, JSON.stringify(next));
@@ -445,8 +475,15 @@ async function handleSync(req, res, auth) {
     addedBondBindings,
     lastSync: next.lastSync,
     lastError: next.lastError,
+    lastAdvisory: next.lastAdvisory,
     nextSyncAt: new Date(new Date(attemptAt).getTime() + SYNC_THROTTLE_MS).toISOString(),
     totalPending: pendingTx.length,
+    // Diagnostics — not persisted, just this run's accounting.
+    windowDays: SIMPLEFIN_WINDOW_DAYS,
+    fetchedAccounts: mapped.fetched?.accounts ?? 0,
+    fetchedTransactions: mapped.fetched?.transactions ?? 0,
+    excludedCount: (mapped.excluded || []).length,
+    excludedByReason,
   });
 }
 

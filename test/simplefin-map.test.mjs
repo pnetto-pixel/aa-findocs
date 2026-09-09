@@ -4,7 +4,12 @@
 // docs/plans/simplefin-fidelity-feed.md, "Incerteza nº 1").
 
 import { strict as assert } from 'node:assert';
-import { mapSimplefinPayload, isFidelityOrg, computeNetQty } from '../lib/simplefin-map.js';
+import {
+  mapSimplefinPayload,
+  isFidelityOrg,
+  computeNetQty,
+  classifySimplefinErrors,
+} from '../lib/simplefin-map.js';
 
 let passed = 0;
 let failed = 0;
@@ -2165,6 +2170,142 @@ await test('backward compatible: without netQtyByTicker, trade rows keep going s
   assert.equal(out.transactions.length, 0);
   assert.equal(out.unmapped.length, 1);
   assert.match(out.unmapped[0].reason, /qty\/price/);
+});
+
+// ── Silent-drop regressions (set/2026) ───────────────────────────────────────
+// Origin: four bank-bond INTEREST payments visible in the user's Fidelity
+// account never appeared anywhere in the app -- not staged, not unmapped, no
+// count. Two defects made that possible and both are covered here: the
+// cash-sweep purge could swallow a real bond by name, and an intentional drop
+// left no trace at all for the sync response to report.
+console.log('\n— exclusions are anchored and traceable —');
+
+await test('a bond whose NAME contains "EARNED CASH" is not swallowed by the sweep purge', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-int-earnedcash-name',
+            posted: 1752900400,
+            amount: '41.50',
+            // Contrived, but this is exactly the shape the unanchored regex
+            // dropped: the sweep words appear inside the SECURITY NAME, not
+            // as the Fidelity Action.
+            description: 'INTEREST CASH EARNED CASH MGMT BANK CD 4.15000% 09/05/2029 (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.excluded.length, 0);
+  assert.equal(out.bondIncome.length, 1);
+  assert.equal(out.bondIncome[0].kind, 'interest');
+  assert.equal(out.bondIncome[0].amount, 41.5);
+});
+
+await test('the real core-cash sweep cycle is still excluded, now with a reason', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-cyc-a', posted: 1752900400, amount: '0.42', description: 'INTEREST EARNED CASH (123456789) (Cash)' },
+          { id: 'TX-cyc-b', posted: 1752900500, amount: '-0.42', description: 'REINVESTMENT CASH (123456789) (Cash)' },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.transactions.length, 0);
+  assert.equal(out.unmapped.length, 0);
+  assert.equal(out.excluded.length, 2);
+  for (const e of out.excluded) assert.equal(e.reason, 'core-cash sweep cycle');
+  assert.deepEqual(
+    out.excluded.map((e) => e.simplefinId).sort(),
+    ['TX-cyc-a', 'TX-cyc-b']
+  );
+});
+
+await test('the "INTEREST as of <date> EARNED CASH" variant is still excluded', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-cyc-asof',
+            posted: 1752900400,
+            amount: '0.42',
+            description: 'INTEREST as of 2026-09-01 EARNED CASH (123456789) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.bondIncome.length, 0);
+  assert.equal(out.excluded.length, 1);
+});
+
+await test('fetched counts only Fidelity rows, so "not in the feed" is distinguishable', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          { id: 'TX-f1', posted: 1752900400, amount: '0.42', description: 'INTEREST EARNED CASH (123456789) (Cash)' },
+          { id: 'TX-f2', posted: 1752900500, amount: '12.34', description: 'DIVIDEND RECEIVED APPLE INC (AAPL) (Cash)' },
+        ],
+      }),
+      {
+        id: 'chase-1',
+        name: 'Chase Checking',
+        org: { name: 'Chase', domain: 'chase.com' },
+        transactions: [{ id: 'TX-chase', posted: 1752900400, amount: '-9.99', description: 'COFFEE' }],
+      },
+    ],
+  };
+  const out = mapSimplefinPayload(payload);
+  assert.equal(out.fetched.accounts, 1);
+  assert.equal(out.fetched.transactions, 2);
+  assert.equal(out.excluded.length, 1);
+  assert.equal(out.bondIncome.length, 1);
+});
+
+// ── classifySimplefinErrors ──────────────────────────────────────────────────
+// Gates whether the app shows "SimpleFin: falha ao sincronizar". A real error
+// misfiled as an advisory would be hidden from the user, so the failure side
+// is the one that must never lose a message.
+console.log('\n— classifySimplefinErrors —');
+
+await test('date-range notices are advisories, not failures', () => {
+  const r = classifySimplefinErrors([
+    'Date range capped to 90 days.',
+    'Requested start-date exceeds the recommended range of 45 days.',
+  ]);
+  assert.equal(r.lastError, null);
+  assert.match(r.lastAdvisory, /capped/);
+  assert.match(r.lastAdvisory, /start-date/);
+});
+
+await test('real failures stay failures', () => {
+  const r = classifySimplefinErrors(['Connection to Fidelity failed', 'Account needs re-authentication']);
+  assert.equal(r.lastAdvisory, null);
+  assert.equal(r.lastError, 'Connection to Fidelity failed; Account needs re-authentication');
+});
+
+await test('a mixed batch keeps both sides, losing nothing', () => {
+  const r = classifySimplefinErrors(['Date range capped to 90 days.', 'Account needs re-authentication']);
+  assert.equal(r.lastError, 'Account needs re-authentication');
+  assert.equal(r.lastAdvisory, 'Date range capped to 90 days.');
+});
+
+await test('empty / missing / blank input yields nulls', () => {
+  for (const input of [[], undefined, null, ['', '   ']]) {
+    const r = classifySimplefinErrors(input);
+    assert.equal(r.lastError, null);
+    assert.equal(r.lastAdvisory, null);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

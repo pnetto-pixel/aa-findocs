@@ -204,6 +204,7 @@ async function fetchPendingFidelity(auth) {
       updatedAt: d.updatedAt || null,
       lastSync: d.lastSync || null,
       lastError: d.lastError || null,
+      lastAdvisory: d.lastAdvisory || null,
     };
   } catch {
     return empty;
@@ -3510,6 +3511,11 @@ function ImportModal({
                           {fidSyncStatus.lastError}
                         </span>
                       )}
+                      {fidSyncStatus?.lastAdvisory && (
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                          {fidSyncStatus.lastAdvisory}
+                        </span>
+                      )}
                       {fidSyncMessage && (
                         <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
                           {fidSyncMessage}
@@ -5080,7 +5086,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [restoringDismissed, setRestoringDismissed] = useState(false);
   // Sync controls (admin-only).
   const [fidSyncing, setFidSyncing] = useState(false);
-  const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, nextSyncAt }
+  const [fidSyncStatus, setFidSyncStatus] = useState(null); // { connected, lastSync, lastError, lastAdvisory, nextSyncAt }
   const [fidSyncMessage, setFidSyncMessage] = useState(null);
   // Ticker resolution status: { [TICKER]: "ok" | "error" } — cached in localStorage
   // so we don't re-hit the price API for already-validated tickers every load.
@@ -5296,6 +5302,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         connected: true,
         lastSync: data.lastSync,
         lastError: data.lastError,
+        lastAdvisory: data.lastAdvisory,
         nextSyncAt: data.nextSyncAt,
       });
       if (data.throttled) {
@@ -5303,8 +5310,20 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         // fallback in case the server ever throttles it again.
         setFidSyncMessage("Synced recently — showing current staging.");
       } else {
+        // The accounting line matters as much as the counts: a sync that adds
+        // nothing is ambiguous otherwise ("SimpleFin never sent the row" vs
+        // "we dropped it on purpose"), which is exactly what made a batch of
+        // missing bank-bond interest payments impossible to diagnose from the
+        // app (set/2026).
+        const diag = [
+          `${data.fetchedTransactions ?? 0} row${data.fetchedTransactions === 1 ? "" : "s"} in feed`,
+          `${data.windowDays ?? "?"}d window`,
+          data.excludedCount ? `${data.excludedCount} skipped` : null,
+        ]
+          .filter(Boolean)
+          .join(" \u00b7 ");
         setFidSyncMessage(
-          `Synced: +${data.added} trade${data.added === 1 ? "" : "s"}, +${data.addedBond} income, +${data.addedBalance} balance update${data.addedBalance === 1 ? "" : "s"}, +${data.addedUnmapped} unmapped.`
+          `Synced: +${data.added} trade${data.added === 1 ? "" : "s"}, +${data.addedBond} income, +${data.addedBalance} balance update${data.addedBalance === 1 ? "" : "s"}, +${data.addedUnmapped} unmapped. (${diag})`
         );
       }
       const p = await fetchPendingFidelity(auth);

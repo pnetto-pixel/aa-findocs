@@ -759,7 +759,7 @@ Extensao pontual sobre as Fases 1-3 (nao uma nova fase do plano `docs/plans/simp
 
 ### SimpleFin Feed — Auto-discard silencioso de "Electronic Funds Transfer Received" (jul/2026, sha `7a11f40`, merged em main, v1.7.1)
 
-Transacoes Fidelity com description "Electronic Funds Transfer Received" caiam em `unmapped` (reason "unrecognized description") a cada sync. Como a dedupe em `api/fidelity-pending.js` so compara contra o staging atual, nao contra o historico de decisoes ja tomadas (dentro da janela de 44 dias, `SIMPLEFIN_WINDOW_DAYS`), o mesmo item reaparecia sync apos sync exigindo Dismiss manual repetido.
+Transacoes Fidelity com description "Electronic Funds Transfer Received" caiam em `unmapped` (reason "unrecognized description") a cada sync. Como a dedupe em `api/fidelity-pending.js` so compara contra o staging atual, nao contra o historico de decisoes ja tomadas (dentro da janela do `SIMPLEFIN_WINDOW_DAYS` — 44 dias na epoca, 89 desde set/2026), o mesmo item reaparecia sync apos sync exigindo Dismiss manual repetido.
 
 - **`lib/simplefin-map.js`:** terceiro padrao de exclusao silenciosa, `EXCLUDE_EFT_RECEIVED_RX = /^ELECTRONIC FUNDS TRANSFER RECEIVED/i`, aplicado em `mapOneTransaction()` no mesmo bloco de excludes ja existente (`EXCLUDE_CASH_CYCLE_RX` para EARNED CASH/REINVESTMENT CASH, `DISTRIBUTION_RX`), antes de qualquer classificacao (foreign tax, dividend, interest, redemption, trade) e antes do fallback `unmapped`. `{ excluded: true }` — nunca chega a `unmapped`, nunca aparece na UI.
 - **Escopo:** so "Received", nao "Sent" — decisao explicita do usuario. Um EFT enviado pode representar saida real de capital que vale rastrear; um EFT recebido ja e capturado pelo balance update de Cash (auto-apply, ver secao acima), entao e puro ruido de staging.
@@ -1123,6 +1123,28 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 **Trade-off aceito conscientemente:** sem throttle, o botao fica sem protecao contra clique repetido alem do `disabled` durante o request em voo. Se o Bridge do SimpleFin passar a devolver rate limit, o conserto e um piso curto (~30s) no caminho `force`, nao a volta dos 6h — a decisao do usuario foi remover o limite do botao manual, nao troca-lo por outro numero.
 
 **Arquivos:** `api/fidelity-pending.js` (leitura do `force`, guard `!force && pending.lastSyncAttempt`, comentarios de header), `src/Transactions.jsx` (URL com `&force=1`; a mensagem de "throttled" virou fallback inalcancavel mas honesto), `src/App.jsx` (comentario explicitando por que este caminho NAO manda `force`). `package.json` 1.19.0 -> 1.19.1. Build verde, 186 testes passam (nenhuma logica coberta por teste mudou).
+
+-----
+
+### SimpleFin Feed — juros de bank bonds nao chegavam: janela de 44 dias + exclusao silenciosa (set/2026, v1.20.0)
+
+**Sintoma reportado:** o usuario viu 4 pagamentos de INTEREST de bank bonds (US) na conta Fidelity e nenhum deles apareceu no sync — nem em "Fidelity Income", nem em "Unmapped", nem como contagem. Pergunta literal: "e possivel que esteja ignorando interests vindo do simplefin?".
+
+**Diagnostico:** o branch INTEREST de `mapOneTransaction()` esta correto e coberto por testes (mapeia issuer/coupon/maturity, auto-resolve pra CUSIP por `knownBondsByDescKey`/`bondBindings`). O problema estava antes e depois dele:
+
+1. **`SIMPLEFIN_WINDOW_DAYS = 44` (causa raiz mais provavel).** O valor nao tinha nada a ver com o SimpleFin — o cap duro do Bridge e 90 dias. Ele foi escolhido apenas pra ficar abaixo do "recommended range" de 45 dias e evitar que o aviso informativo do Bridge caisse em `payload.errors` e virasse `lastError`, que `src/App.jsx` renderiza como "SimpleFin: falha ao sincronizar". Ou seja: metade do historico disponivel foi trocada por um problema cosmetico. Um cupom que postou 45-90 dias atras aparece na activity da Fidelity mas **nunca chegou a ser pedido ao Bridge**, entao nenhum ajuste de parser poderia recupera-lo.
+2. **`EXCLUDE_CASH_CYCLE_RX = /EARNED CASH|REINVESTMENT CASH/i` sem ancora.** Mesma armadilha ja documentada pra `TRADE_ANCHORED_RX` e `EXCLUDE_CORE_SWEEP_RX`: a description do SimpleFin e `"<Action> <nome do papel> (Cash)"`, e o parser CSV de onde essa regra veio testa "EARNED CASH" **so contra a coluna Action**. A porta sem ancora testava tambem o nome do papel, entao qualquer bond/CD com essas palavras no nome era descartado antes do branch INTEREST.
+3. **`{ excluded: true }` nao deixava rastro nenhum.** "O SimpleFin nao mandou a linha" e "a gente jogou a linha fora de proposito" eram indistinguiveis na resposta do sync — que so devolvia contagens de coisas ADICIONADAS. Sem isso, esse bug so podia ser investigado lendo codigo.
+
+**Fix:**
+- `SIMPLEFIN_WINDOW_DAYS` 44 -> **89** (logo abaixo do cap duro de 90).
+- `classifySimplefinErrors(errors)` novo em `lib/simplefin-map.js` (funcao pura, exportada e testada): separa `payload.errors` em falhas reais (`lastError`, vermelho, dispara o alerta de sync) e avisos de date-range (`lastAdvisory`, campo proprio, cinza). **Conservador por construcao** — o que nao le claramente como aviso de janela continua sendo falha; esconder um erro real e o pior dos dois erros. `lastAdvisory` atravessa `normalizePending`, `?resource=status`, a resposta de `?resource=sync` e a UI.
+- `EXCLUDE_CASH_CYCLE_RX` ancorada: `/^(?:INTEREST(?:\s+AS\s+OF\s+\d{4}-\d{2}-\d{2})?\s+EARNED\s+CASH|REINVESTMENT\s+CASH)\b/i`. O sweep real do core sempre comeca pela Action, entao ancorar nao perde nenhuma exclusao legitima.
+- **Exclusoes viraram rastreaveis.** `mapOneTransaction()` devolve `{ excluded: "<reason>", item: {...} }` em vez de `{ excluded: true }`, e `mapSimplefinPayload()` devolve dois campos novos: `excluded[]` (linhas descartadas de proposito, com motivo) e `fetched { accounts, transactions }` (o que o feed realmente entregou pra Fidelity, antes de qualquer classificacao). Continuam **fora** do staging — sao ruido por definicao —, mas a resposta de `?resource=sync` agora reporta `windowDays`, `fetchedAccounts`, `fetchedTransactions`, `excludedCount` e `excludedByReason`, e a mensagem do botao Sync mostra `(N rows in feed · 89d window · M skipped)`.
+
+**Regra que sai daqui:** nenhuma linha do feed pode sumir sem contagem. Descartar de proposito e legitimo; descartar sem deixar como sabe-lo transforma qualquer bug de mapeamento numa investigacao de codigo-fonte. E: nunca encolher a janela de dados pra silenciar um aviso — classifique o aviso.
+
+**Arquivos:** `lib/simplefin-map.js`, `api/fidelity-pending.js`, `src/Transactions.jsx`, `test/simplefin-map.test.mjs` (8 casos novos: nome de bond contendo "EARNED CASH" nao e engolido, sweep real continua excluido com motivo, variante "as of", `fetched` conta so Fidelity, e 4 de `classifySimplefinErrors`). `package.json` 1.19.3 -> 1.20.0. Build verde, 198 testes passam.
 
 -----
 
