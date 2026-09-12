@@ -1,12 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "rewrites": [
-    {
-      "source": "/api/mcp",
-      "destination": "/api/portfolio-summary?resource=mcp"
-    }
-  ],
   "functions": {
     "api/price.js": {
       "maxDuration": 30

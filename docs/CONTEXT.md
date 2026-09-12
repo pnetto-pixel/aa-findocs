@@ -1557,25 +1557,3 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 > "Atualize `docs/CONTEXT.md` e/ou `docs/Features_Roadmap.md` refletindo o que foi feito nesta session. Commitar no mesmo PR ou abrir PR separado de docs."
 
 **Não criar `Handoff-v4`, `Handoff-v5`…** — GitHub já versiona.
-
------
-
-## 🔐 Integração ChatGPT — portfolio summary read-only (set/2026, v1.20.0)
-
-- Endpoint dedicado: `GET /api/portfolio-summary`, autenticado exclusivamente por `Authorization: Bearer ...`; não reutiliza `APP_PASSWORD`, Google OAuth ou a sessão do app.
-- O token fica em `CHATGPT_PORTFOLIO_READ_TOKEN`. O portfolio é fixado server-side por `CHATGPT_PORTFOLIO_OWNER_EMAIL`; não existe parâmetro de usuário na URL/body. Como hardening contra configuração acidental, esse email também precisa constar em `ADMIN_EMAILS`.
-- A rota aceita somente GET (`405` nos demais métodos), executa exclusivamente dois `Redis GET` (holdings e contributions-history do owner) e responde com `Cache-Control: private, no-store`. Não retorna email, flags admin, storage keys, tokens ou credenciais.
-- A projeção pura em `lib/portfolio-summary.js` retorna holdings crus, total USD calculado, Cash, agregação/target por asset class, allocation, drift e gap USD, além da capacidade/histórico de contribuições sanitizado. `underOverTargetUSD` positivo significa abaixo do target; negativo significa acima.
-- Limitação explícita: o USD/BRL live existe somente no `localStorage` do browser, não no Redis. Portanto holdings manuais `manualCurrency: "BRL"` preservam `nativeValue` em BRL, têm `valueUSD: null` e fazem `portfolio.valuationComplete: false`; elas não são silenciosamente tratadas como USD. O array `portfolio.unvaluedHoldings` identifica a parcela incompleta. Preços de holdings auto são o último preço persistido no blob, e `asOf` é o `savedAt` desse blob.
-- Env vars novas obrigatórias na Vercel: `CHATGPT_PORTFOLIO_READ_TOKEN` (segredo longo e aleatório, revogável por rotação/remoção) e `CHATGPT_PORTFOLIO_OWNER_EMAIL` (email exato do owner/admin cujo storage key será derivado).
-
-### MCP remoto para ChatGPT (set/2026, v1.21.1)
-
-- Endpoint MCP Streamable HTTP stateless: `POST https://aa-findocs.vercel.app/api/mcp`. A rota exige `Authorization: Bearer <CHATGPT_MCP_ACCESS_TOKEN>` antes de processar JSON-RPC; portanto **não deve ser registrada como no-auth**.
-- **Compatibilidade com Vercel Hobby (v1.21.1):** o MCP foi consolidado na mesma Serverless Function de `api/portfolio-summary.js`; `vercel.json` reescreve `/api/mcp` internamente para `/api/portfolio-summary?resource=mcp`. As duas URLs e os dois tokens dedicados permanecem distintos no contrato externo, enquanto o deployment volta a ter 12 funções. `test/deployment-config.test.mjs` impede regressão acima do limite.
-- Tool única: `get_portfolio_summary`. Seu `inputSchema` não tem propriedades e usa `additionalProperties: false`; email, user ID, storage key, ticker e qualquer outro seletor são recusados. As annotations MCP declaram `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` e `openWorldHint: false`.
-- O MCP usa a mesma função server-side de leitura/projeção de `GET /api/portfolio-summary`, preservado sem mudança de URL ou contrato. Ambos continuam fixados ao owner de `CHATGPT_PORTFOLIO_OWNER_EMAIL` e fazem somente os dois `Redis GET` já documentados.
-- Novo secret obrigatório: `CHATGPT_MCP_ACCESS_TOKEN`, longo, aleatório e diferente de `CHATGPT_PORTFOLIO_READ_TOKEN` e `APP_PASSWORD`. O token antigo nunca é retornado nem enviado pela implementação MCP; o credential MCP é cadastrado no campo secreto de bearer authentication do ChatGPT, que o envia apenas no header HTTP ao servidor.
-- O endpoint implementa `initialize`, `ping`, `tools/list`, `tools/call` e notifications sem resposta, sem resources, prompts, subscriptions ou operações de escrita. Respostas usam `Cache-Control: private, no-store`.
-- Registro no ChatGPT: em **Settings → Apps → Create**, informar um nome, a URL acima e autenticação **Bearer**; colar como credential o valor de `CHATGPT_MCP_ACCESS_TOKEN`. Não usar no-auth. OAuth seria a evolução indicada para distribuição multiusuário, mas adicionaria authorization server/consentimento e não é necessário para esta app pessoal owner-bound.
-- Disponibilidade do menu de criação/conectores varia por plano, região, workspace e rollout do ChatGPT. Plus/Pro não transforma a app em pública, mas também não garante que Developer mode/Create esteja liberado em toda conta; se o campo Bearer não existir na UI disponível, **não fazer fallback para no-auth** — parar e adotar OAuth ou aguardar suporte ao mecanismo.
