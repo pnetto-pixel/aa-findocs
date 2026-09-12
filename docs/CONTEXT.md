@@ -1557,3 +1557,14 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 > "Atualize `docs/CONTEXT.md` e/ou `docs/Features_Roadmap.md` refletindo o que foi feito nesta session. Commitar no mesmo PR ou abrir PR separado de docs."
 
 **Não criar `Handoff-v4`, `Handoff-v5`…** — GitHub já versiona.
+
+-----
+
+## 🔐 Integração ChatGPT — portfolio summary read-only (set/2026, v1.20.0)
+
+- Endpoint dedicado: `GET /api/portfolio-summary`, autenticado exclusivamente por `Authorization: Bearer ...`; não reutiliza `APP_PASSWORD`, Google OAuth ou a sessão do app.
+- O token fica em `CHATGPT_PORTFOLIO_READ_TOKEN`. O portfolio é fixado server-side por `CHATGPT_PORTFOLIO_OWNER_EMAIL`; não existe parâmetro de usuário na URL/body. Como hardening contra configuração acidental, esse email também precisa constar em `ADMIN_EMAILS`.
+- A rota aceita somente GET (`405` nos demais métodos), executa exclusivamente dois `Redis GET` (holdings e contributions-history do owner) e responde com `Cache-Control: private, no-store`. Não retorna email, flags admin, storage keys, tokens ou credenciais.
+- A projeção pura em `lib/portfolio-summary.js` retorna holdings crus, total USD calculado, Cash, agregação/target por asset class, allocation, drift e gap USD, além da capacidade/histórico de contribuições sanitizado. `underOverTargetUSD` positivo significa abaixo do target; negativo significa acima.
+- Limitação explícita: o USD/BRL live existe somente no `localStorage` do browser, não no Redis. Portanto holdings manuais `manualCurrency: "BRL"` preservam `nativeValue` em BRL, têm `valueUSD: null` e fazem `portfolio.valuationComplete: false`; elas não são silenciosamente tratadas como USD. O array `portfolio.unvaluedHoldings` identifica a parcela incompleta. Preços de holdings auto são o último preço persistido no blob, e `asOf` é o `savedAt` desse blob.
+- Env vars novas obrigatórias na Vercel: `CHATGPT_PORTFOLIO_READ_TOKEN` (segredo longo e aleatório, revogável por rotação/remoção) e `CHATGPT_PORTFOLIO_OWNER_EMAIL` (email exato do owner/admin cujo storage key será derivado).

@@ -265,3 +265,10 @@ Fatia 3 — desambiguacao de INTEREST por valor esperado quando 2+ holdings do S
 - **Bug pre-existente, nao corrigido nesta entrega (nao e regressao):** o `useEffect` de load em `AporteQuinzenal.jsx` (~linhas 708-763) nao tem flag `cancelled`/cleanup — `setDivLastMonth` pode disparar apos unmount do componente.
 
 
+
+### ChatGPT portfolio summary read-only — ENTREGUE (set/2026, v1.20.0)
+
+- `GET /api/portfolio-summary` com bearer token dedicado (`CHATGPT_PORTFOLIO_READ_TOKEN`) e owner fixo server-side (`CHATGPT_PORTFOLIO_OWNER_EMAIL`, obrigatoriamente presente em `ADMIN_EMAILS`). Sem seletor de usuário e sem reutilizar `APP_PASSWORD`/Google OAuth.
+- Somente leitura: dois `Redis GET`, nenhum caminho de escrita; métodos diferentes de GET recebem `405`. Resposta crua + derivada cobre holdings, total/Cash, classes, targets, allocation, drift, gap e histórico/capacidade de aportes, sem identidade ou secrets.
+- Cobertura automatizada: 401 sem token/token incorreto, 200 com token correto, owner key fixa, ausência de writes, matemática de totals/allocation/drift e ausência de campos sensíveis.
+- Limitação conhecida: BRA Fixed Income manual em BRL não pode ser convertido de forma verificável pelo endpoint porque o câmbio do dashboard só existe no `localStorage`; a resposta marca valuation incompleta e preserva o valor BRL cru em vez de inventar USD.
