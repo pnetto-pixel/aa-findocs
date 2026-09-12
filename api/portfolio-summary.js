@@ -28,6 +28,35 @@ function parseContributionHistory(raw) {
   return parsed.history && typeof parsed.history === 'object' ? parsed.history : parsed;
 }
 
+export async function readOwnerPortfolioSummary({ redisFactory = getRedis } = {}) {
+  const ownerEmail = String(process.env.CHATGPT_PORTFOLIO_OWNER_EMAIL || '').trim().toLowerCase();
+  if (!ownerEmail || !isAdmin(ownerEmail)) {
+    const error = new Error('Portfolio owner is not configured as an admin');
+    error.status = 503;
+    throw error;
+  }
+
+  let redis;
+  try {
+    redis = redisFactory();
+  } catch (cause) {
+    const error = new Error(`Storage unavailable: ${cause.message}`);
+    error.status = 503;
+    throw error;
+  }
+
+  const holdingsKey = emailStorageKey(ownerEmail);
+  const contributionsKey = holdingsKey.replace(/:holdings$/, ':contributions-history');
+  // Deliberately only GET: every consumer of this helper is read-only.
+  const [holdingsRaw, contributionsRaw] = await Promise.all([
+    redis.get(holdingsKey),
+    redis.get(contributionsKey),
+  ]);
+  const { holdings, savedAt } = parseHoldings(holdingsRaw);
+  const contributionHistory = parseContributionHistory(contributionsRaw);
+  return buildPortfolioSummary({ holdings, savedAt, contributionHistory });
+}
+
 export function createPortfolioSummaryHandler({ redisFactory = getRedis } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'GET') {
@@ -42,31 +71,11 @@ export function createPortfolioSummaryHandler({ redisFactory = getRedis } = {}) 
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const ownerEmail = String(process.env.CHATGPT_PORTFOLIO_OWNER_EMAIL || '').trim().toLowerCase();
-    if (!ownerEmail || !isAdmin(ownerEmail)) {
-      return res.status(503).json({ error: 'Portfolio owner is not configured as an admin' });
-    }
-
-    let redis;
     try {
-      redis = redisFactory();
-    } catch (error) {
-      return res.status(503).json({ error: `Storage unavailable: ${error.message}` });
-    }
-
-    try {
-      const holdingsKey = emailStorageKey(ownerEmail);
-      const contributionsKey = holdingsKey.replace(/:holdings$/, ':contributions-history');
-      // Deliberately only GET: this endpoint has no write path or Redis mutation.
-      const [holdingsRaw, contributionsRaw] = await Promise.all([
-        redis.get(holdingsKey),
-        redis.get(contributionsKey),
-      ]);
-      const { holdings, savedAt } = parseHoldings(holdingsRaw);
-      const contributionHistory = parseContributionHistory(contributionsRaw);
       res.setHeader('Cache-Control', 'private, no-store');
-      return res.status(200).json(buildPortfolioSummary({ holdings, savedAt, contributionHistory }));
+      return res.status(200).json(await readOwnerPortfolioSummary({ redisFactory }));
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
       console.error('portfolio-summary handler error:', error);
       return res.status(500).json({ error: 'Internal error' });
     }
