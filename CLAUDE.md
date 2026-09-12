@@ -137,6 +137,8 @@ GOOGLE_CLIENT_ID       — Google OAuth client ID (for token verification)
 APP_PASSWORD           — fallback password auth
 ALLOWED_EMAILS         — comma-separated list of allowed Google emails
 ADMIN_EMAILS           — comma-separated list of admin emails
+CHATGPT_PORTFOLIO_READ_TOKEN — dedicated bearer secret for GET /api/portfolio-summary
+CHATGPT_PORTFOLIO_OWNER_EMAIL — admin email whose portfolio that read-only route exposes
 ```
 
 ### Design tokens
