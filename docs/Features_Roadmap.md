@@ -273,10 +273,11 @@ Fatia 3 — desambiguacao de INTEREST por valor esperado quando 2+ holdings do S
 - Cobertura automatizada: 401 sem token/token incorreto, 200 com token correto, owner key fixa, ausência de writes, matemática de totals/allocation/drift e ausência de campos sensíveis.
 - Limitação conhecida: BRA Fixed Income manual em BRL não pode ser convertido de forma verificável pelo endpoint porque o câmbio do dashboard só existe no `localStorage`; a resposta marca valuation incompleta e preserva o valor BRL cru em vez de inventar USD.
 
-### MCP remoto read-only para ChatGPT — ENTREGUE (set/2026, v1.21.0)
+### MCP remoto read-only para ChatGPT — ENTREGUE (set/2026, v1.21.1)
 
 - `POST /api/mcp` implementa MCP Streamable HTTP stateless protegido por bearer próprio (`CHATGPT_MCP_ACCESS_TOKEN`), separado de `CHATGPT_PORTFOLIO_READ_TOKEN` e `APP_PASSWORD`; no-auth é explicitamente proibido para o registro desta app.
 - Expõe exatamente uma tool, `get_portfolio_summary`, sem parâmetros (`additionalProperties: false`) e com annotations read-only/non-destructive/idempotent/closed-world. Não expõe resources, prompts ou escrita.
 - A tool chama a mesma leitura server-side do endpoint `/api/portfolio-summary`, fixada por `CHATGPT_PORTFOLIO_OWNER_EMAIL`; o endpoint REST original permanece disponível e seu token não é enviado ao modelo/cliente MCP.
 - Testes cobrem autenticação obrigatória, inventário de uma única tool, recusa de seletores e tool desconhecida/de escrita, somente `Redis GET`, igualdade entre conteúdo textual/estruturado e ausência dos três secrets e do email do owner na resposta.
+- Hotfix v1.21.1: o endpoint MCP foi consolidado em `api/portfolio-summary.js` e mantido em `/api/mcp` por rewrite do Vercel, reduzindo o deployment de 13 para 12 Serverless Functions (limite do Hobby). Um teste de configuração passa a bloquear novas regressões de contagem.
 - Limitação operacional: a criação de custom apps/Developer mode depende de plano, região, workspace e rollout do ChatGPT. Se a UI da conta não oferecer Bearer, não cadastrar como no-auth; OAuth é o fallback seguro a implementar antes de conectar.

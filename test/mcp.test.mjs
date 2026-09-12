@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMcpHandler } from '../api/mcp.js';
+import { createMcpHandler } from '../api/portfolio-summary.js';
 import { emailStorageKey } from '../lib/auth.js';
 
 function response() {
