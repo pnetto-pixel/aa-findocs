@@ -462,13 +462,15 @@ Renderizada em `src/AporteQuinzenal.jsx`. Colunas: Month, Fixed, Dividends, DELL
 
 Meses anteriores ao primeiro uso da feature nao possuem `monthlyFixed`/extras gravados no Redis — o historico so existe a partir da primeira vez que o usuario carregou a tab apos o deploy do PR #112. O historico se acumula organicamente daqui para frente.
 
-#### Restore de `extras` a partir do snapshot Redis (bug fix — PR #118 — jul/2026)
+#### Restore de `extras` a partir do snapshot Redis (PR #118; corrigido na v1.19.4 — set/2026)
 
 O auto-snapshot do Redis **nao e write-only**: ele tambem serve como rede de seguranca de leitura. Bug original: usuario adicionava uma extra label no card "Monthly Plan" (ex: "BRK.B Sale - $3500") e ela sumia ao reabrir o app no dia seguinte, porque `localStorage["aporteConfig"]` era a unica fonte de verdade para `config.extras` e podia ser perdido (ex: Safari iOS limpando site storage).
 
-Fix: `useMemo` `currentMonthSnapshot` le `capacityHistory[currentMonthKey()]`; `useEffect` de restore one-time (guard via ref `seededExtras`, mesmo padrao ja usado por `seededFixed` para `monthlyFixed`) repopula `config.extras` a partir do snapshot Redis do mes corrente **somente quando** o array local esta vazio E o snapshot tem `extras.length > 0` — nunca sobrescreve edicoes feitas pelo usuario apos o load inicial. Mapeia o shape do Redis (`{name, amount}`) de volta para o shape do estado local (`{label, value}`).
+O PR #118 restaurava o snapshot quando `(config.extras || []).length === 0`. Isso confundia dois estados distintos: campo `extras` ausente no `localStorage` (storage perdido, deve restaurar) e `extras: []` explicitamente persistido (usuario deletou a ultima entrada, nao deve restaurar). Como o snapshot Redis antigo ainda continha a venda BRK.B de $3.500, cada novo load a ressuscitava.
 
-**Nao repetir:** qualquer novo campo de `aporteConfig` (localStorage) que tambem seja snapshotted no Redis deve seguir esse mesmo padrao de restore one-time — caso contrario o snapshot fica write-only e nao protege contra perda de localStorage. Limitacao que permanece: `aporteConfig` ainda nao tem month-scoping real (blob global no localStorage), e se o PUT do snapshot falhar silenciosamente antes do localStorage ser perdido, os dados sao irrecuperaveis.
+Fix v1.19.4: `loadConfigState()` registra a presenca explicita da propriedade `extras` via `hasOwnProperty`; `extras: []` funciona como tombstone duravel. O restore one-time so chama o helper puro `extrasFromSnapshotForRestore()` quando a propriedade estava ausente e o snapshot tem dados. Qualquer edicao de extras marca a presenca imediatamente, inclusive a delecao da ultima linha. O helper preserva o mapeamento Redis `{name, amount}` -> estado local `{label, value}` e tem 4 testes de regressao em `test/contribution-extras.test.mjs`: campo ausente restaura; array vazio persistido nao ressuscita; extras locais nao sao sobrescritos; snapshot vazio/ausente e no-op.
+
+**Nao repetir:** para campos restaurados de snapshot, vazio nao significa ausente. A decisao de restore deve usar presenca/proveniencia explicita (tombstone), nunca apenas `length === 0`. Limitacao que permanece: `aporteConfig` ainda nao tem month-scoping real (blob global no localStorage), e se o PUT do snapshot falhar silenciosamente antes do localStorage ser perdido, os dados sao irrecuperaveis.
 
 -----
 
