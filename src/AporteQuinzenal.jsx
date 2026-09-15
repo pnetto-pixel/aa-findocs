@@ -16,6 +16,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
+import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -77,12 +78,20 @@ const PERIOD_OPTIONS = ["Month", "Quarter", "Half", "Year"];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function loadConfig() {
+function loadConfigState() {
   try {
     const v = localStorage.getItem(LS_CONFIG);
-    if (v) return { ...DEFAULT_CONFIG, ...JSON.parse(v) };
+    if (v) {
+      const stored = JSON.parse(v);
+      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+        return {
+          config: { ...DEFAULT_CONFIG, ...stored },
+          extrasWerePersisted: Object.prototype.hasOwnProperty.call(stored, "extras"),
+        };
+      }
+    }
   } catch {}
-  return { ...DEFAULT_CONFIG };
+  return { config: { ...DEFAULT_CONFIG }, extrasWerePersisted: false };
 }
 
 // Sums DELL sell transactions for the given year+month.
@@ -670,7 +679,13 @@ function MonthlyFixedRow({ value, prevMonthValue, valuesHidden, onSave }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
-  const [config, setConfig] = useState(loadConfig);
+  const initialConfig = useRef(null);
+  if (initialConfig.current === null) initialConfig.current = loadConfigState();
+  const [config, setConfig] = useState(initialConfig.current.config);
+  // This provenance is deliberately separate from config.extras: [] can mean
+  // either "never stored" or "the user deleted every extra". Only the former
+  // is eligible for the Redis safety-net restore.
+  const extrasWerePersisted = useRef(initialConfig.current.extrasWerePersisted);
 
   const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
   useEffect(() => {
@@ -774,6 +789,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   function updateConfig(patch) {
     const next = { ...config, ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "extras")) {
+      extrasWerePersisted.current = true;
+    }
     setConfig(next);
     localStorage.setItem(LS_CONFIG, JSON.stringify(next));
   }
@@ -811,7 +829,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     [capacityHistory]
   );
 
-  // One-time restore: if localStorage has no extras for this session but the
+  // One-time restore: if localStorage has no extras field for this session but the
   // last Redis snapshot for the current month does, repopulate config.extras
   // from it. Converts the Redis snapshot shape ({name, amount}) back to the
   // local state shape ({label, value}). Runs only once so it never clobbers
@@ -820,15 +838,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   useEffect(() => {
     if (!capacityLoaded || seededExtras.current) return;
     seededExtras.current = true;
-    const snapshotExtras = currentMonthSnapshot?.extras;
-    if ((config.extras || []).length === 0 && Array.isArray(snapshotExtras) && snapshotExtras.length > 0) {
-      updateConfig({
-        extras: snapshotExtras.map((e) => ({
-          label: e.name ?? "",
-          value: e.amount != null ? String(e.amount) : "",
-        })),
-      });
-    }
+    const restoredExtras = extrasFromSnapshotForRestore({
+      extrasWerePersisted: extrasWerePersisted.current,
+      snapshotExtras: currentMonthSnapshot?.extras,
+    });
+    if (restoredExtras) updateConfig({ extras: restoredExtras });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capacityLoaded, currentMonthSnapshot]);
 
