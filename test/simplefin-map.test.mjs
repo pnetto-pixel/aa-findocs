@@ -1098,341 +1098,18 @@ await test('omitting beforeDate preserves the unrestricted (pre-feature) sum', (
   assert.equal(net.AAPL, 22);
 });
 
-console.log('\n— mapSimplefinPayload: stock/ETF position deltas —');
-
+// Sep/2026: this file used to have an entire suite here for
+// stockPositionDeltas() -- buy/sell candidates synthesized purely from a
+// holdings-snapshot share delta, with no real SimpleFin transaction row
+// backing them at all (price = average cost / market value estimate). The
+// user decided that kind of estimate is no longer acceptable (see
+// lib/simplefin-map.js, the comment above computeNetQty, and the
+// reconcileTrades header for the "August case" this enabled) and the
+// function was removed along with those tests. `SNAPSHOT_DATE` is kept below
+// -- still used by the reconcileTrades holdings-delta fallback tests further
+// down, which compare a real trade's date against the snapshot's balance-date
+// to prove the transaction's own date wins, not the snapshot's.
 const SNAPSHOT_DATE = '2025-07-20'; // matches fidelityAccount()'s default balance-date fixture
-
-await test('new ticker (net qty 0) becomes a buy priced at purchase_price', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(buys.length, 1);
-  assert.equal(buys[0].side, 'buy');
-  assert.equal(buys[0].qty, 5);
-  assert.equal(buys[0].price, 150);
-  assert.equal(buys[0].assetClass, 'Stocks');
-  assert.equal(buys[0].source, 'simplefin');
-  assert.equal(buys[0].derivedFromHoldingsDiff, true);
-  // simplefinId is anchored to accountId+ticker+sharesNew (the snapshot's
-  // TARGET position), never to asOf/balance-date -- see the idempotency
-  // tests below.
-  assert.equal(buys[0].simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:5`);
-  assert.match(buys[0].notes, /New position detected/);
-});
-
-await test('shares increased (existing position) becomes a delta buy priced at average cost', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '8', purchase_price: '120.00', market_value: '960.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 3 } });
-  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(buys.length, 1);
-  assert.equal(buys[0].side, 'buy');
-  assert.equal(buys[0].qty, 5); // 8 - 3
-  assert.equal(buys[0].price, 120);
-  assert.match(buys[0].notes, /Position increase detected/);
-});
-
-await test('shares decreased (partial, holding still present) becomes a delta sell priced at market_value proxy', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', purchase_price: '100.00', market_value: '600.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
-  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(sells.length, 1);
-  assert.equal(sells[0].side, 'sell');
-  assert.equal(sells[0].qty, 4); // 10 - 6
-  assert.equal(sells[0].price, 100); // 600 / 6
-  assert.equal(sells[0].derivedFromHoldingsDiff, true);
-  assert.match(sells[0].notes, /Sell price estimated from SimpleFin market value/);
-  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
-});
-
-await test('full liquidation (holding listed at 0 shares) has no market_value proxy -> goes to unmapped, no invented sell', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '0', market_value: '0' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
-  const txs = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(txs.length, 0);
-  const unmapped = out.unmapped.filter((u) => u.description && u.description.includes('AAPL'));
-  assert.equal(unmapped.length, 1);
-  assert.match(unmapped[0].reason, /no market value left/);
-  // Regression: unmapped rows derived from a delta must carry a simplefinId
-  // too (same as every other unmapped item in this file), or
-  // api/fidelity-pending.js's simplefinId-based dedupe never fires and the
-  // row piles up unbounded every sync. See simplefinId form assertion below.
-  assert.ok(unmapped[0].simplefinId);
-  assert.equal(unmapped[0].simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:0`);
-});
-
-await test('unmapped rows from a delta with no purchase_price/cost_basis also carry a simplefinId, and it is stable across repeated syncs', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out1 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const out2 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const u1 = out1.unmapped.find((u) => u.description && u.description.includes('AAPL'));
-  const u2 = out2.unmapped.find((u) => u.description && u.description.includes('AAPL'));
-  assert.ok(u1 && u1.simplefinId);
-  assert.equal(u1.simplefinId, u2.simplefinId);
-});
-
-await test('unmapped rows from a partial decrease with no market_value also carry a simplefinId', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '4', market_value: '0' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: { AAPL: 10 } });
-  const u = out.unmapped.find((u) => u.description && u.description.includes('AAPL'));
-  assert.ok(u && u.simplefinId);
-  assert.equal(u.simplefinId, `sfstock-delta:ACT-fidelity-1:AAPL:4`);
-});
-
-await test('missing shares field is skipped gracefully (no transaction, no unmapped)', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
-  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
-});
-
-await test('missing purchase_price/cost_basis on a buy delta goes to unmapped, not guessed', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
-  const unmapped = out.unmapped.filter((u) => u.description && u.description.includes('AAPL'));
-  assert.equal(unmapped.length, 1);
-  assert.match(unmapped[0].reason, /no purchase_price\/cost_basis/);
-});
-
-await test('cost_basis/shares fallback is used when purchase_price is absent', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', cost_basis: '500.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const buys = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(buys.length, 1);
-  assert.equal(buys[0].price, 100); // 500 / 5
-});
-
-await test('simplefinId is deterministic per accountId+ticker+sharesNew (idempotent across repeated syncs on the same day)', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out1 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const out2 = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  assert.equal(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
-});
-
-await test('the SAME unresolved delta detected on two different days (asOf/balance-date advances, target position unchanged) produces the SAME simplefinId -- real cross-day idempotency', () => {
-  // This is the case that used to break: the account's balance-date moves
-  // forward every business day the sync runs, but as long as the user hasn't
-  // acted on the delta yet, knownQty (from netQtyByTicker) stays 0 and
-  // sharesNew stays 5 -- the SAME delta re-detected, not a new one. Anchoring
-  // the id to asOf (the pre-fix approach) would mint a new id every day and
-  // pile up duplicate candidates in the Trades queue; anchoring to the
-  // target position (accountId+ticker+sharesNew) keeps it stable instead.
-  const day1 = {
-    accounts: [
-      fidelityAccount({
-        'balance-date': 1753000000,
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const day2 = {
-    accounts: [
-      fidelityAccount({
-        'balance-date': 1753000000 + 86400 * 30, // 30 days later, still unresolved
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out1 = mapSimplefinPayload(day1, { netQtyByTicker: {} });
-  const out2 = mapSimplefinPayload(day2, { netQtyByTicker: {} });
-  assert.equal(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
-  // date still reflects each snapshot's own asOf (only the identity is
-  // asOf-independent, not the transaction's date field).
-  assert.notEqual(out1.transactions[0].date, out2.transactions[0].date);
-});
-
-await test('a genuinely different delta (different target sharesNew) produces a DIFFERENT simplefinId, even same-day', () => {
-  const firstDelta = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const secondDelta = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '9', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out1 = mapSimplefinPayload(firstDelta, { netQtyByTicker: {} });
-  const out2 = mapSimplefinPayload(secondDelta, { netQtyByTicker: {} });
-  assert.notEqual(out1.transactions[0].simplefinId, out2.transactions[0].simplefinId);
-});
-
-await test('omitting netQtyByTicker entirely skips delta detection (backward compatible, pre-feature behavior)', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload);
-  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
-});
-
-await test('asset class inference: CUSIP-shaped symbol -> Bank Bonds, B3-shaped -> BRA Stocks, plain -> Stocks', () => {
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [
-          { id: 'H1', symbol: '949764WE0', shares: '2', purchase_price: '1000.00', market_value: '2000.00' },
-          { id: 'H2', symbol: 'BBSE3', shares: '100', purchase_price: '30.00', market_value: '3000.00' },
-          { id: 'H3', symbol: 'MSFT', shares: '10', purchase_price: '300.00', market_value: '3000.00' },
-        ],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const byTicker = Object.fromEntries(out.transactions.map((t) => [t.ticker, t.assetClass]));
-  assert.equal(byTicker['949764WE0'], 'Bank Bonds');
-  assert.equal(byTicker['BBSE3'], 'BRA Stocks');
-  assert.equal(byTicker['MSFT'], 'Stocks');
-});
-
-// ── snapshot-lag false-positive guard (aug/2026 bugfix) ─────────────────────
-// Reproduces the reported bug: a buy entered the same day as the SimpleFin
-// snapshot's own balance-date, before the snapshot's `shares` had caught up
-// to it, used to stage as a phantom "sell" of the exact same qty.
-console.log('\n— stockPositionDeltas: snapshot-lag false-positive guard (aug/2026) —');
-
-await test('a same-day buy the snapshot has not absorbed yet is skipped, not staged as a phantom sell', () => {
-  const liveTransactions = [
-    { ticker: 'AAPL', side: 'buy', qty: 5, date: '2025-07-10' }, // settled before the snapshot
-    { ticker: 'AAPL', side: 'buy', qty: 3, date: SNAPSHOT_DATE }, // same day as balance-date -- snapshot hasn't absorbed it
-  ];
-  const netQtyByTicker = computeNetQty(liveTransactions); // unrestricted -> 8, this is the pre-fix "knownQty"
-  assert.equal(netQtyByTicker.AAPL, 8);
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }], // still pre-buy: 5 shares
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
-  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
-  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
-});
-
-await test('backward compatible: omitting liveTransactions still stages the (buggy, pre-fix) phantom sell', () => {
-  const liveTransactions = [
-    { ticker: 'AAPL', side: 'buy', qty: 5, date: '2025-07-10' },
-    { ticker: 'AAPL', side: 'buy', qty: 3, date: SNAPSHOT_DATE },
-  ];
-  const netQtyByTicker = computeNetQty(liveTransactions);
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', market_value: '900.00' }],
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker }); // no liveTransactions passed
-  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(sells.length, 1);
-  assert.equal(sells[0].side, 'sell');
-  assert.equal(sells[0].qty, 3);
-});
-
-await test('a genuine sell not explained by any recent transaction is still staged even when liveTransactions is passed', () => {
-  const liveTransactions = [
-    { ticker: 'AAPL', side: 'buy', qty: 10, date: '2025-06-01' }, // well before asOf, nothing same-day
-  ];
-  const netQtyByTicker = computeNetQty(liveTransactions);
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', market_value: '600.00' }], // real reduction 10 -> 6
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
-  const sells = out.transactions.filter((t) => t.ticker === 'AAPL');
-  assert.equal(sells.length, 1);
-  assert.equal(sells[0].side, 'sell');
-  assert.equal(sells[0].qty, 4);
-});
-
-await test('a same-day sell the snapshot already reflects is caught by the pre-existing "unchanged" guard, not duplicated', () => {
-  const liveTransactions = [
-    { ticker: 'AAPL', side: 'buy', qty: 10, date: '2025-06-01' },
-    { ticker: 'AAPL', side: 'sell', qty: 4, date: SNAPSHOT_DATE }, // sold today, snapshot already caught up
-  ];
-  const netQtyByTicker = computeNetQty(liveTransactions); // 10 - 4 = 6
-  const payload = {
-    accounts: [
-      fidelityAccount({
-        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '6', market_value: '600.00' }], // matches post-sale qty already
-      }),
-    ],
-  };
-  const out = mapSimplefinPayload(payload, { netQtyByTicker, liveTransactions });
-  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
-  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
-});
 
 // ── INTEREST resolution via bondBindings (jul/2026) ──────────────────────────
 // Second resolution source for the INTEREST branch: the descKey -> CUSIP binds
@@ -1857,7 +1534,7 @@ await test('1:1 buy: qty = delta, price = |amount|/qty, date = the transaction d
   assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff).length, 0);
 });
 
-await test('two trades of the same ticker (XLRE) share one delta: qtys sum EXACTLY to |delta|, each price = |amount_i|/qty_i', () => {
+await test('two trades of the same ticker (XLRE) sharing one delta: NO split -- both go to unmapped (sep/2026, replaces the old proportional split)', () => {
   const payload = {
     accounts: [
       fidelityAccount({
@@ -1880,21 +1557,10 @@ await test('two trades of the same ticker (XLRE) share one delta: qtys sum EXACT
     ],
   };
   const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
-  const rows = out.transactions.filter((t) => t.ticker === 'XLRE');
-  assert.equal(rows.length, 2);
-  const sum = rows.reduce((s, t) => s + t.qty, 0);
-  assert.ok(Math.abs(sum - 48) < 1e-9, `qtys must sum to the snapshot delta, got ${sum}`);
-  const byId = Object.fromEntries(rows.map((t) => [t.simplefinId, t]));
-  assert.ok(Math.abs(byId['TX-xlre-1'].price - 990.33 / byId['TX-xlre-1'].qty) < 1e-9);
-  assert.ok(Math.abs(byId['TX-xlre-2'].price - 972.07 / byId['TX-xlre-2'].qty) < 1e-9);
-  // Total cost is exact even though the per-trade split is proportional.
-  const totalCost = rows.reduce((s, t) => s + t.qty * t.price, 0);
-  assert.ok(Math.abs(totalCost - (990.33 + 972.07)) < 1e-9);
-  assert.equal(byId['TX-xlre-1'].date, '2025-07-14');
-  assert.equal(byId['TX-xlre-2'].date, '2025-07-16');
-  assert.match(rows[0].notes, /more than one trade/);
-  assert.equal(out.unmapped.length, 0);
-  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff).length, 0);
+  assert.equal(out.transactions.filter((t) => t.ticker === 'XLRE').length, 0);
+  const unmapped = out.unmapped.filter((u) => u.simplefinId === 'TX-xlre-1' || u.simplefinId === 'TX-xlre-2');
+  assert.equal(unmapped.length, 2);
+  for (const u of unmapped) assert.match(u.reason, /more than one trade for this ticker/);
 });
 
 await test('full liquidation: ticker absent from the snapshot + YOU SOLD -> sell of the whole known position, exact price', () => {
@@ -1973,14 +1639,12 @@ await test('inconsistent sign (a BUY row against a shrinking position) is not re
   const u = out.unmapped.filter((x) => x.simplefinId === 'TX-buy-aapl');
   assert.equal(u.length, 1);
   assert.match(u[0].reason, /direction/);
-  // ...and the approximate holdings-diff candidate still fires, exactly as before.
-  const diff = out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'AAPL');
-  assert.equal(diff.length, 1);
-  assert.equal(diff[0].side, 'sell');
-  assert.equal(diff[0].qty, 4);
+  // No holdings-diff estimate is staged either (that path was removed,
+  // sep/2026) -- the row is simply left unresolved.
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
 });
 
-await test('mixed buys and sells of the same ticker are not reconciled (a single delta cannot be split by direction)', () => {
+await test('mixed buys and sells of the same ticker are not reconciled (more than one row for the ticker -- no split, no guess)', () => {
   const payload = {
     accounts: [
       fidelityAccount({
@@ -1996,8 +1660,8 @@ await test('mixed buys and sells of the same ticker are not reconciled (a single
   assert.equal(out.transactions.filter((t) => t.reconciledFromDelta).length, 0);
   assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-o-buy').length, 1);
   assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-o-sell').length, 1);
-  // Status quo: the approximate delta candidate is still staged.
-  assert.equal(out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'O').length, 1);
+  // No holdings-diff estimate either (removed, sep/2026).
+  assert.equal(out.transactions.filter((t) => t.ticker === 'O').length, 0);
 });
 
 await test('account isolation: a trade in account A never matches a delta in account B', () => {
@@ -2029,10 +1693,10 @@ await test('account isolation: a trade in account A never matches a delta in acc
   assert.equal(out.transactions.filter((t) => t.reconciledFromDelta).length, 0);
   const u = out.unmapped.filter((x) => x.simplefinId === 'TX-buy-pld');
   assert.equal(u.length, 1);
-  // Account B's delta is untouched by A's trade row.
-  const diff = out.transactions.filter((t) => t.derivedFromHoldingsDiff && t.ticker === 'PLD');
-  assert.equal(diff.length, 1);
-  assert.equal(diff[0].qty, 9);
+  // Account B's holdings are entirely untouched by A's trade row -- no
+  // transaction/unmapped item is produced for account B at all (it has no
+  // trade rows of its own).
+  assert.equal(out.transactions.filter((t) => t.ticker === 'PLD').length, 0);
 });
 
 await test('a trade whose simplefinId is already live is skipped entirely (no transaction, no unmapped)', () => {
@@ -2119,14 +1783,39 @@ await test('an unresolvable trade row still goes to unmapped, carrying rawFields
   assert.equal(u.rawFields['extra.mystery-share-field'], '19.05');
   assert.equal(u.rawFields.payee, 'FIDELITY');
   assert.equal(u.rawFields.pending, false);
-  // Known/handled keys are never echoed back, and non-primitives are dropped.
+  // Known/handled keys are never echoed back.
   assert.equal(u.rawFields.description, undefined);
   assert.equal(u.rawFields.amount, undefined);
   assert.equal(u.rawFields.id, undefined);
-  assert.equal(u.rawFields['extra.nested'], undefined);
+  // A nested object one level deep is captured as truncated JSON text, not
+  // dropped (sep/2026).
+  assert.equal(u.rawFields['extra.nested'], JSON.stringify({ ignored: true }));
 });
 
-await test('rawFields is capped at 20 keys and truncates long values to 200 chars', () => {
+await test('rawFields captures a nested extra object as truncated JSON text', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [],
+        transactions: [
+          {
+            id: 'TX-buy-nested',
+            posted: 1752451200,
+            amount: '500.00',
+            description: 'YOU BOUGHT SOME FUND (NESTED) (Cash)',
+            extra: { trade: { shares: 3, price: 100 }, tags: ['a', 'b'] },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const u = out.unmapped[0];
+  assert.equal(u.rawFields['extra.trade'], JSON.stringify({ shares: 3, price: 100 }));
+  assert.equal(u.rawFields['extra.tags'], JSON.stringify(['a', 'b']));
+});
+
+await test('rawFields is capped at 30 keys and truncates long values to 200 chars', () => {
   const extra = { long: 'x'.repeat(500) };
   for (let i = 0; i < 40; i++) extra[`f${i}`] = i + 1;
   const payload = {
@@ -2147,8 +1836,395 @@ await test('rawFields is capped at 20 keys and truncates long values to 200 char
   };
   const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
   const u = out.unmapped[0];
-  assert.equal(Object.keys(u.rawFields).length, 20);
+  assert.equal(Object.keys(u.rawFields).length, 30);
   assert.equal(u.rawFields['extra.long'].length, 200);
+});
+
+await test('feed-qty path: feedQtyField is set and rawFields is attached to the resolved candidate, not just unmapped rows', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        transactions: [
+          {
+            id: 'TX-buy-feedfield',
+            posted: 1752451200,
+            amount: '964.50',
+            description: 'YOU BOUGHT SOME FUND (FEEDF) (Cash)',
+            extra: { shares: 3, price: 321.5 },
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const row = out.transactions.find((t) => t.ticker === 'FEEDF');
+  assert.ok(row);
+  assert.equal(row.qtyFromFeed, true);
+  assert.equal(row.feedQtyField, 'shares');
+  assert.equal(row.feedPriceField, 'price');
+  assert.ok(row.rawFields, 'a resolved feed-qty candidate must still carry rawFields');
+  assert.equal(row.rawFields['extra.shares'], 3);
+  assert.equal(row.rawFields['extra.price'], 321.5);
+});
+
+await test('holdings-delta path: a resolved single-row candidate also carries rawFields when the feed sent extra fields', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VNQ', shares: '11', purchase_price: '87.87', market_value: '966.55' }],
+        transactions: [
+          {
+            id: 'TX-buy-vnq-raw',
+            posted: 1752451200,
+            amount: '966.55',
+            description: 'YOU BOUGHT VANGUARD REAL ESTATE ETF (VNQ) (Cash)',
+            payee: 'FIDELITY',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  const row = out.transactions.find((t) => t.ticker === 'VNQ');
+  assert.ok(row);
+  assert.equal(row.reconciledFromDelta, true);
+  assert.ok(row.rawFields);
+  assert.equal(row.rawFields.payee, 'FIDELITY');
+});
+
+await test('a new/changed stock position with no corroborating SimpleFin trade row never produces a sfstock-delta: candidate (removed, sep/2026)', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        // A brand-new AAPL position with no trade row at all -- pre-removal
+        // this used to synthesize a `sfstock-delta:` estimate buy.
+        holdings: [{ id: 'H1', symbol: 'AAPL', shares: '5', purchase_price: '150.00', market_value: '900.00' }],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'AAPL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.description && u.description.includes('AAPL')).length, 0);
+  const allIds = [...out.transactions, ...out.unmapped].map((x) => x.simplefinId).filter(Boolean);
+  assert.ok(allIds.every((id) => !String(id).startsWith('sfstock-delta:')), 'no sfstock-delta: id anywhere in the output');
+});
+
+console.log('\n— "already recorded" coverage rule (sep/2026, closes the August VT case) —');
+
+// Reproduces the reported bug: the user approved a VT buy back when this file
+// still staged buy/sell candidates estimated purely from a holdings-snapshot
+// share delta (simplefinId `sfstock-delta:...`, price = average cost, dated
+// to the snapshot's own balance-date -- 2026-08-22 here). The next sync then
+// saw the REAL SimpleFin "YOU BOUGHT ... (VT) (Cash)" rows for 08-21 and
+// 09-22 (different ids, non-matching totals -- pruneSemanticallyMatchedTrades
+// only matches id-less legacy rows, so neither could be recognized as
+// already-live), and without this rule the ticker's one remaining snapshot
+// delta would be split across both. The coverage rule instead drops the
+// 08-21 row outright (already covered by the approved 08-22 estimate) and
+// leaves only the 09-22 row to resolve, with the FULL delta.
+await test('August VT case: the covered 08-21 row is dropped, only 09-22 is staged with the full delta', () => {
+  const live = [
+    {
+      ticker: 'VT',
+      side: 'buy',
+      qty: 100,
+      price: 300,
+      date: '2026-08-22',
+      simplefinId: 'sfstock-delta:acct1:VT:100',
+    },
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0821',
+            posted: 1787270400, // 2026-08-21
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+          {
+            id: 'TX-vt-0922',
+            posted: 1790035200, // 2026-09-22
+            amount: '965.30',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  const vt = out.transactions.filter((t) => t.ticker === 'VT');
+  assert.equal(vt.length, 1);
+  assert.equal(vt[0].simplefinId, 'TX-vt-0922');
+  assert.equal(vt[0].qty, 3);
+  assert.equal(vt[0].price, 965.3 / 3);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-vt-0821').length, 0);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('same case with a CSV/manual live row (no simplefinId) dated 08-21 -> 08-21 is skipped the same way', () => {
+  const live = [
+    { ticker: 'VT', side: 'buy', qty: 100, price: 300, date: '2026-08-21' }, // no simplefinId: CSV/manual
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0821',
+            posted: 1787270400, // 2026-08-21
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+          {
+            id: 'TX-vt-0922',
+            posted: 1790035200, // 2026-09-22
+            amount: '965.30',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  const vt = out.transactions.filter((t) => t.ticker === 'VT');
+  assert.equal(vt.length, 1);
+  assert.equal(vt[0].simplefinId, 'TX-vt-0922');
+  assert.equal(vt[0].qty, 3);
+  assert.equal(out.unmapped.length, 0);
+});
+
+await test('two UNCOVERED same-ticker rows (no covering live record) both go to unmapped -- no split, no guess', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0904',
+            posted: 1788480000, // 2026-09-04
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+          {
+            id: 'TX-vt-0922',
+            posted: 1790035200, // 2026-09-22
+            amount: '965.30',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {} });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'VT').length, 0);
+  const unmapped = out.unmapped.filter((u) => u.simplefinId === 'TX-vt-0904' || u.simplefinId === 'TX-vt-0922');
+  assert.equal(unmapped.length, 2);
+  for (const u of unmapped) assert.match(u.reason, /more than one trade for this ticker/);
+});
+
+await test('coverage rule never fires against a live row carrying a REAL SimpleFin id -- that case is id-only, handled by approvedSimplefinIds', () => {
+  // A real (non-estimate, non-CSV) live simplefinId dated after this row must
+  // NOT cover it via the date-based rule -- only an exact id match does, and
+  // this live id does not match either trade row's id, so both remain
+  // unresolved (single-row groups after grouping, since they're processed
+  // independently -- here there's only one row so it goes to the holdings
+  // delta path, but with a DIFFERENT ticker there's nothing to fall back to).
+  const live = [{ ticker: 'VT', side: 'buy', qty: 100, price: 300, date: '2026-08-22', simplefinId: 'REAL-SF-ID-999' }];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0821',
+            posted: 1787270400, // 2026-08-21
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  // Not covered by the date rule (live id is real, not empty/estimate), so it
+  // resolves via the normal single-row holdings-delta path instead.
+  const vt = out.transactions.filter((t) => t.ticker === 'VT');
+  assert.equal(vt.length, 1);
+  assert.equal(vt[0].simplefinId, 'TX-vt-0821');
+  assert.equal(vt[0].qty, 3); // 103 - 100
+});
+
+// ── side-match regression (auditor-caught before this ever shipped) ─────────
+// isAlreadyCoveredByLiveRecord originally ignored `side`: a live SELL dated
+// after an unrecorded real BUY of the same ticker would silently "cover" and
+// drop the buy -- no transaction, no unmapped row, just gone. A sell proves
+// nothing about whether an earlier buy was ever recorded.
+await test('an unrelated manual SELL does not cover a never-recorded real BUY of the same ticker (side must match)', () => {
+  const live = [
+    { ticker: 'VOO', side: 'sell', qty: 2, price: 500, date: '2026-08-01' }, // no simplefinId: CSV/manual
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        // No VOO holding in this account's snapshot at all -> the buy can't
+        // resolve via the holdings-delta path either, so it must surface as
+        // unmapped, never be silently dropped.
+        holdings: [],
+        transactions: [
+          {
+            id: 'TX-voo-buy-0701',
+            posted: Math.floor(Date.parse('2026-07-01T00:00:00Z') / 1000),
+            amount: '1000.00',
+            description: 'YOU BOUGHT VANGUARD S&P 500 ETF (VOO) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  // Must NOT be silently dropped: it lands in unmapped (or, with a matching
+  // holdings snapshot, would resolve via the delta path) -- never nothing.
+  assert.equal(out.transactions.filter((t) => t.ticker === 'VOO').length, 0);
+  const u = out.unmapped.filter((x) => x.simplefinId === 'TX-voo-buy-0701');
+  assert.equal(u.length, 1);
+});
+
+await test('same case but WITH a matching holdings snapshot: the buy resolves via the delta path instead of being silently dropped', () => {
+  const live = [
+    { ticker: 'VOO', side: 'sell', qty: 2, price: 500, date: '2026-08-01' }, // unrelated sell, no simplefinId
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VOO', shares: '3', purchase_price: '333.33', market_value: '1000.00' }],
+        transactions: [
+          {
+            id: 'TX-voo-buy-0701',
+            posted: Math.floor(Date.parse('2026-07-01T00:00:00Z') / 1000),
+            amount: '1000.00',
+            description: 'YOU BOUGHT VANGUARD S&P 500 ETF (VOO) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  const voo = out.transactions.filter((t) => t.ticker === 'VOO');
+  assert.equal(voo.length, 1);
+  assert.equal(voo[0].simplefinId, 'TX-voo-buy-0701');
+  assert.equal(voo[0].side, 'buy');
+  // knownQty from the live SELL is -2 (0 buys - 2 sells), snapshot has 3 ->
+  // delta = 3 - (-2) = 5.
+  assert.equal(voo[0].qty, 5);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-voo-buy-0701').length, 0);
+});
+
+await test('buy-covers-buy still works with the side check in place (existing behavior unaffected)', () => {
+  const live = [{ ticker: 'VT', side: 'buy', qty: 100, price: 300, date: '2026-08-22', simplefinId: 'sfstock-delta:acct1:VT:100' }];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0821',
+            posted: 1787270400, // 2026-08-21
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'VT').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-vt-0821').length, 0);
+});
+
+await test('sell covered by a later same-side legacy sell', () => {
+  const live = [
+    { ticker: 'DELL', side: 'sell', qty: 95, price: 130, date: '2026-08-15' }, // no simplefinId: CSV/manual, already covers the later SimpleFin sell row
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [], // fully liquidated
+        transactions: [
+          {
+            id: 'TX-dell-sell-0810',
+            posted: Math.floor(Date.parse('2026-08-10T00:00:00Z') / 1000),
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  // Covered: the live sell (08-15) is dated on/after the row (08-10), same
+  // ticker, same side, no simplefinId -> silently skipped.
+  assert.equal(out.transactions.filter((t) => t.ticker === 'DELL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-dell-sell-0810').length, 0);
+});
+
+await test('Case B full liquidation is unaffected by the side check: an uncovered SELL with no matching holding still liquidates the full known position', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [], // DELL absent from the snapshot entirely -- full liquidation path
+        transactions: [
+          {
+            id: 'TX-sell-dell-full',
+            posted: 1752451200,
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  // No liveTransactions at all -> nothing can cover this row; Case B (full
+  // liquidation of the known position) still applies exactly as before.
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { DELL: 95 } });
+  const dell = out.transactions.filter((t) => t.ticker === 'DELL');
+  assert.equal(dell.length, 1);
+  assert.equal(dell[0].side, 'sell');
+  assert.equal(dell[0].qty, 95);
+  assert.match(dell[0].notes, /Full liquidation/);
+  assert.equal(out.unmapped.length, 0);
 });
 
 await test('backward compatible: without netQtyByTicker, trade rows keep going straight to unmapped', () => {
@@ -2363,6 +2439,27 @@ await test('synthetic sfbond-buy:/sfstock-delta: staged ids are always dropped a
   assert.equal(transactions.length, 1);
   assert.equal(transactions[0].qty, 1);
   assert.equal(added, 0);
+});
+
+await test('a leftover sfstock-delta: staged row (from before that estimate path was removed) is dropped on the next sync, and a stale 08-21 staged trade whose id is in seenTradeSourceIds is dropped too', () => {
+  const staged = [
+    // Leftover from before sfstock-delta: candidates were removed -- must be
+    // dropped unconditionally, even though `fresh` produces nothing for it.
+    { id: 's1', simplefinId: 'sfstock-delta:acct1:VT:100', source: 'simplefin', date: '2026-08-22', side: 'buy', ticker: 'VT', qty: 100, price: 300 },
+    // Stale sibling of a real trade this sync re-derives -- its id was seen
+    // in this sync's window (seenTradeSourceIds), so it is dropped and
+    // replaced by whatever `fresh` produced (nothing, here -- it is now
+    // covered by the approved 08-22 estimate and correctly omitted).
+    { id: 's2', simplefinId: 'TX-vt-0821', source: 'simplefin', date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 3, price: 321.55 },
+  ];
+  const fresh = [
+    { id: 'f1', simplefinId: 'TX-vt-0922', source: 'simplefin', date: '2026-09-22', side: 'buy', ticker: 'VT', qty: 3, price: 321.77 },
+  ];
+  const seenTradeSourceIds = new Set(['TX-vt-0821', 'TX-vt-0922']);
+  const { transactions, added } = mergeStagedTrades(staged, fresh, { liveTx: [], seenTradeSourceIds });
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].simplefinId, 'TX-vt-0922');
+  assert.equal(added, 1);
 });
 
 console.log('\n-- bond/CD trade rows link to the synthesized bond buy (sep/2026) --');

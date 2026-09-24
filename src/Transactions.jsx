@@ -2759,6 +2759,12 @@ function ImportModal({
   const [editingIdx, setEditingIdx] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const fileInputRef = useRef(null);
+  // Tap-to-expand detail row (iPhone -- no hover) for the Fidelity Import
+  // staged-trades table and the Unmapped table: shows the row's full `notes`
+  // (otherwise truncated with an ellipsis) and its `rawFields` diagnostic, if
+  // any. Keyed the same way each table already keys its rows.
+  const [expandedFidId, setExpandedFidId] = useState(null);
+  const [expandedUnmappedId, setExpandedUnmappedId] = useState(null);
 
   // Ticker → asset class from saved transactions (last occurrence wins). Used to
   // reuse a known class instead of inferring one for the same ticker.
@@ -3644,9 +3650,14 @@ function ImportModal({
                                       : t.syncedBond
                                       ? { label: "BOND BUY", color: T.textDim }
                                       : null;
+                                    const expanded = expandedFidId === key;
                                     return (
-                                      <tr key={key} style={{ borderTop: `1px solid ${T.border}` }}>
-                                        <td style={{ padding: "4px 0" }}>
+                                      <React.Fragment key={key}>
+                                      <tr
+                                        onClick={() => setExpandedFidId(expanded ? null : key)}
+                                        style={{ borderTop: `1px solid ${T.border}`, cursor: "pointer" }}
+                                      >
+                                        <td style={{ padding: "4px 0" }} onClick={(e) => e.stopPropagation()}>
                                           <input
                                             type="checkbox"
                                             checked={pendingFidChecked.has(key)}
@@ -3688,7 +3699,6 @@ function ImportModal({
                                               </span>
                                             )}
                                             <span
-                                              title={t.notes || ""}
                                               style={{
                                                 fontFamily: FONT_MONO,
                                                 fontSize: 10,
@@ -3705,6 +3715,27 @@ function ImportModal({
                                           </div>
                                         </td>
                                       </tr>
+                                      {expanded && (
+                                        <tr style={{ borderTop: `1px solid ${T.border}` }}>
+                                          <td colSpan={7} style={{ padding: "8px", background: T.cardElev }}>
+                                            <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim, lineHeight: 1.5, marginBottom: t.rawFields ? 8 : 0 }}>
+                                              {t.notes || "--"}
+                                            </div>
+                                            <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
+                                              {t.rawFields ? (
+                                                Object.entries(t.rawFields).map(([k, v]) => (
+                                                  <div key={k}>
+                                                    <span style={{ color: T.textDim }}>{k}</span>: {String(v)}
+                                                  </div>
+                                                ))
+                                              ) : (
+                                                "SimpleFin sent no extra fields"
+                                              )}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                      </React.Fragment>
                                     );
                                   })}
                                 </tbody>
@@ -4062,8 +4093,13 @@ function ImportModal({
                                   {pendingUnmapped.map((u, i) => {
                                     const rowId = u.simplefinId || i;
                                     const inFlight = unmappedActionId === rowId;
+                                    const expanded = expandedUnmappedId === rowId;
                                     return (
-                                      <tr key={rowId} style={{ borderTop: `1px solid ${T.border}` }}>
+                                      <React.Fragment key={rowId}>
+                                      <tr
+                                        onClick={() => setExpandedUnmappedId(expanded ? null : rowId)}
+                                        style={{ borderTop: `1px solid ${T.border}`, cursor: "pointer" }}
+                                      >
                                         <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, padding: "4px 8px" }}>
                                           {u.date || "—"}
                                         </td>
@@ -4073,19 +4109,15 @@ function ImportModal({
                                         <td style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.text, textAlign: "right", padding: "4px 8px" }}>
                                           {valuesHidden ? "•••" : u.amount != null ? fmtMoney(u.amount, "USD") : "—"}
                                         </td>
-                                        <td
-                                          style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}
-                                          /* `rawFields` (sep/2026) carries whatever fields the SimpleFin
-                                             transaction had that the mapper does not understand -- the
-                                             diagnostic that replaced the removed `?resource=probe`. Shown
-                                             only as a native tooltip: it is a debugging aid, not UI. */
-                                          title={u.rawFields ? `${u.reason}\n\n${JSON.stringify(u.rawFields, null, 2)}` : undefined}
-                                        >
+                                        <td style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, padding: "4px 8px" }}>
                                           {u.reason}
                                         </td>
                                         <td style={{ padding: "4px 8px", textAlign: "right" }}>
                                           <button
-                                            onClick={() => dismissUnmappedItem(u, i)}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              dismissUnmappedItem(u, i);
+                                            }}
                                             disabled={inFlight}
                                             style={{
                                               background: "transparent",
@@ -4106,6 +4138,27 @@ function ImportModal({
                                           </button>
                                         </td>
                                       </tr>
+                                      {expanded && (
+                                        <tr style={{ borderTop: `1px solid ${T.border}` }}>
+                                          <td colSpan={5} style={{ padding: "8px", background: T.cardElev }}>
+                                            <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim, lineHeight: 1.5, marginBottom: 8 }}>
+                                              {u.reason}
+                                            </div>
+                                            <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.textFaint }}>
+                                              {u.rawFields ? (
+                                                Object.entries(u.rawFields).map(([k, v]) => (
+                                                  <div key={k}>
+                                                    <span style={{ color: T.textDim }}>{k}</span>: {String(v)}
+                                                  </div>
+                                                ))
+                                              ) : (
+                                                "SimpleFin sent no extra fields"
+                                              )}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                      </React.Fragment>
                                     );
                                   })}
                                 </tbody>
@@ -5361,9 +5414,15 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
     if (selected.length === 0) return;
     setApprovingFid(true);
     try {
-      // Merge selected staged trades into live, deduped by dupKey.
+      // Merge selected staged trades into live, deduped by dupKey. `rawFields`
+      // / `feedQtyField` / `feedPriceField` are a staging-only diagnostic (see
+      // collectRawFields in lib/simplefin-map.js) -- stripped here so live
+      // transactions stay clean; `simplefinId` is kept (still needed for
+      // dedupe on future syncs).
       const liveKeys = new Set(transactions.map(dupKey));
-      const toAdd = selected.filter((t) => !liveKeys.has(dupKey(t)));
+      const toAdd = selected
+        .filter((t) => !liveKeys.has(dupKey(t)))
+        .map(({ rawFields, feedQtyField, feedPriceField, ...rest }) => rest);
       const nextTx = [...transactions, ...toAdd];
       await persist(nextTx);
       // Only remove the approved rows from staging — leaves unchecked trades

@@ -310,11 +310,10 @@ async function handleSync(req, res, auth) {
   const liveTx = Array.isArray(live.transactions) ? live.transactions : [];
   const liveBond = Array.isArray(live.bondIncome) ? live.bondIncome : [];
   const knownBondsByDescKey = buildKnownBondsByDescKey(liveTx);
-  // Stock/ETF position delta detection (jul/2026): net qty per ticker from
-  // the user's own live transactions, so mapSimplefinPayload can diff each
-  // account's stock/ETF holdings snapshot against what's already known and
-  // stage buy/sell candidates for whatever moved (see
-  // lib/simplefin-map.js stockPositionDeltas).
+  // Net qty per ticker from the user's own live transactions, forwarded to
+  // reconcileTrades (via mapSimplefinPayload) as the known-position baseline
+  // a holdings-snapshot delta is measured against (see lib/simplefin-map.js
+  // reconcileTrades).
   const netQtyByTicker = computeNetQty(liveTx);
   // `pending.bondBindings` (descKey -> CUSIP) is confirmed data that survives
   // DELETE — it carries the binds the user made by picking a CUSIP on a
@@ -326,10 +325,9 @@ async function handleSync(req, res, auth) {
     knownBondsByDescKey,
     netQtyByTicker,
     bondBindings: pending.bondBindings,
-    // Raw array (not the aggregated netQtyByTicker map), so
-    // stockPositionDeltas can recompute a settled-as-of-snapshot qty per
-    // ticker and guard against staging a same-day buy as a phantom sell
-    // (aug/2026 bugfix -- see lib/simplefin-map.js stockPositionDeltas).
+    // Raw array (not the aggregated netQtyByTicker map), so reconcileTrades
+    // can apply its "already recorded" coverage rule and its
+    // already-live-by-id guard (see lib/simplefin-map.js reconcileTrades).
     liveTransactions: liveTx,
   });
   const liveBondKeys = new Set(liveBond.map(bondKey));
@@ -338,9 +336,10 @@ async function handleSync(req, res, auth) {
   // Staged trades are DERIVED state, not an append-only log (sep/2026
   // bugfix): mergeStagedTrades drops every staged row this sync could have
   // re-derived (its id was seen among this sync's trade-description rows, or
-  // it is one of the always-recomputed sfbond-buy:/sfstock-delta: synthetic
-  // kinds) and replaces it with whatever `mapped.transactions` produced for
-  // it this time -- otherwise a stale multi-row snapshot-delta split (see
+  // it is one of the always-recomputed sfbond-buy: kinds, or a leftover
+  // sfstock-delta: row from before that estimate path was removed) and
+  // replaces it with whatever `mapped.transactions` produced for it this
+  // time -- otherwise a stale multi-row snapshot-delta split (see
   // reconcileTrades) never gets corrected once one of its sibling rows is
   // recognized as already-live, and the sync reports "+0 trades" forever
   // even though the staged rows are wrong. See lib/simplefin-map.js
