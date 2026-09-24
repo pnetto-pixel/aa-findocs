@@ -4,7 +4,12 @@
 // docs/plans/simplefin-fidelity-feed.md, "Incerteza nº 1").
 
 import { strict as assert } from 'node:assert';
-import { mapSimplefinPayload, isFidelityOrg, computeNetQty } from '../lib/simplefin-map.js';
+import {
+  mapSimplefinPayload,
+  isFidelityOrg,
+  computeNetQty,
+  pruneSemanticallyMatchedTrades,
+} from '../lib/simplefin-map.js';
 
 let passed = 0;
 let failed = 0;
@@ -2165,6 +2170,81 @@ await test('backward compatible: without netQtyByTicker, trade rows keep going s
   assert.equal(out.transactions.length, 0);
   assert.equal(out.unmapped.length, 1);
   assert.match(out.unmapped[0].reason, /qty\/price/);
+});
+
+console.log('\n— legacy trade semantic reconciliation —');
+
+const tradeRow = (id, posted, amount, ticker = 'VT') => ({
+  id,
+  posted,
+  amount: String(amount),
+  description: `YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (${ticker}) (Cash)`,
+});
+
+await test('legacy live trade on 08-21 is excluded before 09-22 delta allocation and consumes the raw delta candidate', () => {
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10, fee: 0 }];
+  const out = mapSimplefinPayload({ accounts: [fidelityAccount({
+    'balance-date': 1790035200,
+    holdings: [{ symbol: 'VT', shares: '20', purchase_price: '10', market_value: '200' }],
+    transactions: [tradeRow('old-feed-id', 1787270400, 100), tradeRow('new-feed-id', 1790035200, 100)],
+  })] }, { netQtyByTicker: computeNetQty(live), liveTransactions: live });
+  assert.equal(out.transactions.length, 1);
+  assert.equal(out.transactions[0].simplefinId, 'new-feed-id');
+  assert.equal(out.transactions[0].date, '2026-09-22');
+  assert.equal(out.transactions[0].qty, 10);
+  assert.equal(out.transactions[0].reconciledFromDelta, true);
+});
+
+await test('simplefinId remains the strongest approved-trade match', () => {
+  const candidates = [{ simplefinId: 'same-id', date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 999 }];
+  const live = [{ simplefinId: 'same-id', date: '2020-01-01', side: 'sell', ticker: 'OTHER', qty: 1, price: 1 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades(candidates, live), []);
+});
+
+await test('different simplefinIds prove distinct trades even when economics are identical', () => {
+  const candidate = { simplefinId: 'feed-A', date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const live = [{ simplefinId: 'feed-B', date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), [candidate]);
+
+  const out = mapSimplefinPayload({ accounts: [fidelityAccount({
+    'balance-date': 1790035200,
+    holdings: [{ symbol: 'VT', shares: '20', purchase_price: '10', market_value: '200' }],
+    transactions: [tradeRow('feed-A', 1787270400, 100)],
+  })] }, { netQtyByTicker: computeNetQty(live), liveTransactions: live });
+  assert.equal(out.transactions.length, 1);
+  assert.equal(out.transactions[0].simplefinId, 'feed-A');
+});
+
+await test('zero economic totals are never semantic matches', () => {
+  const candidate = { date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 0 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 0, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), [candidate]);
+});
+
+await test('same ticker/side/date with a different economic value is preserved', () => {
+  const candidate = { date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 101 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), [candidate]);
+});
+
+await test('semantic matching is a consumable multiset and chooses the closest cents', () => {
+  const exact = { id: 'exact', date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const near = { id: 'near', date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 100.01 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([near, exact], live), [near]);
+});
+
+await test('semantic totals accept canonical fee adjustment and one-cent rounding tolerance', () => {
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 3, price: 33.333, fee: 0.02 }];
+  const adjusted = { date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 100.03 };
+  assert.deepEqual(pruneSemanticallyMatchedTrades([adjusted], live), []);
+});
+
+await test('retroactive staged prune removes the old equivalent and keeps a new trade', () => {
+  const old = { simplefinId: 'old-stage', date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 };
+  const fresh = { simplefinId: 'new-stage', date: '2026-09-22', side: 'buy', ticker: 'VT', qty: 10, price: 10 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([old, fresh], live), [fresh]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

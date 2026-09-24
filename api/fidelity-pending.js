@@ -52,7 +52,7 @@
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
-import { mapSimplefinPayload, computeNetQty } from '../lib/simplefin-map.js';
+import { mapSimplefinPayload, computeNetQty, pruneSemanticallyMatchedTrades } from '../lib/simplefin-map.js';
 import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
 
 function pendingKeyFromAuth(auth) {
@@ -332,7 +332,11 @@ async function handleSync(req, res, auth) {
   const liveBondKeys = new Set(liveBond.map(bondKey));
   const liveBondSimplefinIds = new Set(liveBond.filter((e) => e.simplefinId).map((e) => e.simplefinId));
 
-  const pendingTx = [...pending.transactions];
+  // Also clean up append-only staging left behind by older syncs. This uses
+  // the same consumable semantic matcher as reconciliation, so one legacy
+  // live trade removes one equivalent staged row without swallowing a
+  // distinct same-day transaction.
+  const pendingTx = pruneSemanticallyMatchedTrades(pending.transactions, liveTx);
   const pendingTxKeys = new Set(pendingTx.map(dupKey));
   const pendingTxSimplefinIds = new Set(pendingTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
   let added = 0;
