@@ -2070,6 +2070,163 @@ await test('coverage rule never fires against a live row carrying a REAL SimpleF
   assert.equal(vt[0].qty, 3); // 103 - 100
 });
 
+// ── side-match regression (auditor-caught before this ever shipped) ─────────
+// isAlreadyCoveredByLiveRecord originally ignored `side`: a live SELL dated
+// after an unrecorded real BUY of the same ticker would silently "cover" and
+// drop the buy -- no transaction, no unmapped row, just gone. A sell proves
+// nothing about whether an earlier buy was ever recorded.
+await test('an unrelated manual SELL does not cover a never-recorded real BUY of the same ticker (side must match)', () => {
+  const live = [
+    { ticker: 'VOO', side: 'sell', qty: 2, price: 500, date: '2026-08-01' }, // no simplefinId: CSV/manual
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        // No VOO holding in this account's snapshot at all -> the buy can't
+        // resolve via the holdings-delta path either, so it must surface as
+        // unmapped, never be silently dropped.
+        holdings: [],
+        transactions: [
+          {
+            id: 'TX-voo-buy-0701',
+            posted: Math.floor(Date.parse('2026-07-01T00:00:00Z') / 1000),
+            amount: '1000.00',
+            description: 'YOU BOUGHT VANGUARD S&P 500 ETF (VOO) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  // Must NOT be silently dropped: it lands in unmapped (or, with a matching
+  // holdings snapshot, would resolve via the delta path) -- never nothing.
+  assert.equal(out.transactions.filter((t) => t.ticker === 'VOO').length, 0);
+  const u = out.unmapped.filter((x) => x.simplefinId === 'TX-voo-buy-0701');
+  assert.equal(u.length, 1);
+});
+
+await test('same case but WITH a matching holdings snapshot: the buy resolves via the delta path instead of being silently dropped', () => {
+  const live = [
+    { ticker: 'VOO', side: 'sell', qty: 2, price: 500, date: '2026-08-01' }, // unrelated sell, no simplefinId
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VOO', shares: '3', purchase_price: '333.33', market_value: '1000.00' }],
+        transactions: [
+          {
+            id: 'TX-voo-buy-0701',
+            posted: Math.floor(Date.parse('2026-07-01T00:00:00Z') / 1000),
+            amount: '1000.00',
+            description: 'YOU BOUGHT VANGUARD S&P 500 ETF (VOO) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  const voo = out.transactions.filter((t) => t.ticker === 'VOO');
+  assert.equal(voo.length, 1);
+  assert.equal(voo[0].simplefinId, 'TX-voo-buy-0701');
+  assert.equal(voo[0].side, 'buy');
+  // knownQty from the live SELL is -2 (0 buys - 2 sells), snapshot has 3 ->
+  // delta = 3 - (-2) = 5.
+  assert.equal(voo[0].qty, 5);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-voo-buy-0701').length, 0);
+});
+
+await test('buy-covers-buy still works with the side check in place (existing behavior unaffected)', () => {
+  const live = [{ ticker: 'VT', side: 'buy', qty: 100, price: 300, date: '2026-08-22', simplefinId: 'sfstock-delta:acct1:VT:100' }];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [{ id: 'H1', symbol: 'VT', shares: '103', purchase_price: '300.00', market_value: '30900.00' }],
+        transactions: [
+          {
+            id: 'TX-vt-0821',
+            posted: 1787270400, // 2026-08-21
+            amount: '964.66',
+            description: 'YOU BOUGHT VANGUARD TOTAL WORLD STOCK ETF (VT) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  assert.equal(out.transactions.filter((t) => t.ticker === 'VT').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-vt-0821').length, 0);
+});
+
+await test('sell covered by a later same-side legacy sell', () => {
+  const live = [
+    { ticker: 'DELL', side: 'sell', qty: 95, price: 130, date: '2026-08-15' }, // no simplefinId: CSV/manual, already covers the later SimpleFin sell row
+  ];
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [], // fully liquidated
+        transactions: [
+          {
+            id: 'TX-dell-sell-0810',
+            posted: Math.floor(Date.parse('2026-08-10T00:00:00Z') / 1000),
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: computeNetQty(live),
+    liveTransactions: live,
+  });
+  // Covered: the live sell (08-15) is dated on/after the row (08-10), same
+  // ticker, same side, no simplefinId -> silently skipped.
+  assert.equal(out.transactions.filter((t) => t.ticker === 'DELL').length, 0);
+  assert.equal(out.unmapped.filter((u) => u.simplefinId === 'TX-dell-sell-0810').length, 0);
+});
+
+await test('Case B full liquidation is unaffected by the side check: an uncovered SELL with no matching holding still liquidates the full known position', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        id: 'acct1',
+        holdings: [], // DELL absent from the snapshot entirely -- full liquidation path
+        transactions: [
+          {
+            id: 'TX-sell-dell-full',
+            posted: 1752451200,
+            amount: '12119.75',
+            description: 'YOU SOLD DELL TECHNOLOGIES INC CL C (DELL) (Cash)',
+          },
+        ],
+      }),
+    ],
+  };
+  // No liveTransactions at all -> nothing can cover this row; Case B (full
+  // liquidation of the known position) still applies exactly as before.
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: { DELL: 95 } });
+  const dell = out.transactions.filter((t) => t.ticker === 'DELL');
+  assert.equal(dell.length, 1);
+  assert.equal(dell[0].side, 'sell');
+  assert.equal(dell[0].qty, 95);
+  assert.match(dell[0].notes, /Full liquidation/);
+  assert.equal(out.unmapped.length, 0);
+});
+
 await test('backward compatible: without netQtyByTicker, trade rows keep going straight to unmapped', () => {
   const payload = {
     accounts: [
