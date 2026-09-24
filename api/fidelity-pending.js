@@ -52,7 +52,12 @@
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
-import { mapSimplefinPayload, computeNetQty, pruneSemanticallyMatchedTrades } from '../lib/simplefin-map.js';
+import {
+  mapSimplefinPayload,
+  computeNetQty,
+  mergeStagedTrades,
+  tradeDupKey,
+} from '../lib/simplefin-map.js';
 import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
 
 function pendingKeyFromAuth(auth) {
@@ -152,11 +157,11 @@ function bondHoldingKey(h) {
 }
 
 // Mirrors dupKey(tx) in src/lib/parsing.js / src/Transactions.jsx so
-// server-side dedupe matches the app.
-function dupKey(tx) {
-  const tk = String(tx.ticker || '').trim().toUpperCase();
-  return `${tk}|${tx.side}|${Number(tx.qty)}|${tx.date}`;
-}
+// server-side dedupe matches the app. Trade rows use the shared
+// lib/simplefin-map.js tradeDupKey (must stay in lock-step with this one --
+// see its own comment); this local copy is kept for bondIncome's bondKey,
+// which is a distinct shape.
+const dupKey = tradeDupKey;
 
 function bondKey(ev) {
   const tk = String(ev.ticker || '').trim().toUpperCase();
@@ -327,28 +332,23 @@ async function handleSync(req, res, auth) {
     // (aug/2026 bugfix -- see lib/simplefin-map.js stockPositionDeltas).
     liveTransactions: liveTx,
   });
-  const liveTxKeys = new Set(liveTx.map(dupKey));
-  const liveTxSimplefinIds = new Set(liveTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
   const liveBondKeys = new Set(liveBond.map(bondKey));
   const liveBondSimplefinIds = new Set(liveBond.filter((e) => e.simplefinId).map((e) => e.simplefinId));
 
-  // Also clean up append-only staging left behind by older syncs. This uses
-  // the same consumable semantic matcher as reconciliation, so one legacy
-  // live trade removes one equivalent staged row without swallowing a
-  // distinct same-day transaction.
-  const pendingTx = pruneSemanticallyMatchedTrades(pending.transactions, liveTx);
-  const pendingTxKeys = new Set(pendingTx.map(dupKey));
-  const pendingTxSimplefinIds = new Set(pendingTx.filter((t) => t.simplefinId).map((t) => t.simplefinId));
-  let added = 0;
-  for (const tx of mapped.transactions) {
-    if (tx.simplefinId && (liveTxSimplefinIds.has(tx.simplefinId) || pendingTxSimplefinIds.has(tx.simplefinId))) continue;
-    const k = dupKey(tx);
-    if (liveTxKeys.has(k) || pendingTxKeys.has(k)) continue;
-    pendingTxKeys.add(k);
-    if (tx.simplefinId) pendingTxSimplefinIds.add(tx.simplefinId);
-    pendingTx.push(tx);
-    added++;
-  }
+  // Staged trades are DERIVED state, not an append-only log (sep/2026
+  // bugfix): mergeStagedTrades drops every staged row this sync could have
+  // re-derived (its id was seen among this sync's trade-description rows, or
+  // it is one of the always-recomputed sfbond-buy:/sfstock-delta: synthetic
+  // kinds) and replaces it with whatever `mapped.transactions` produced for
+  // it this time -- otherwise a stale multi-row snapshot-delta split (see
+  // reconcileTrades) never gets corrected once one of its sibling rows is
+  // recognized as already-live, and the sync reports "+0 trades" forever
+  // even though the staged rows are wrong. See lib/simplefin-map.js
+  // mergeStagedTrades for the full rationale.
+  const { transactions: pendingTx, added } = mergeStagedTrades(pending.transactions, mapped.transactions, {
+    liveTx,
+    seenTradeSourceIds: mapped.seenTradeSourceIds,
+  });
 
   const pendingBond = [...pending.bondIncome];
   const pendingBondKeys = new Set(pendingBond.map(bondKey));
