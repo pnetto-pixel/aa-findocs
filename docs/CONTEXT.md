@@ -1559,3 +1559,13 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 > "Atualize `docs/CONTEXT.md` e/ou `docs/Features_Roadmap.md` refletindo o que foi feito nesta session. Commitar no mesmo PR ou abrir PR separado de docs."
 
 **Não criar `Handoff-v4`, `Handoff-v5`…** — GitHub já versiona.
+
+## Fidelity Sync — dedupe semântico de trades legados (set/2026, v1.19.5)
+
+**Sintoma:** o sync voltava a oferecer as compras de 21/08, junto das compras novas de 22/09. As linhas antigas tinham sido importadas por CSV/manual antes da integração SimpleFin e, por isso, não possuíam `simplefinId`. O guard de `reconcileTrades` só reconhecia IDs iguais. Ele agrupava a linha antiga e a nova, repartia entre ambas o delta atual do snapshot de holdings e o merge append-only de `:fidelity-pending` preservava candidatos antigos já staged.
+
+**Regra corrigida:** `pruneSemanticallyMatchedTrades` é um helper puro e compartilhado. `simplefinId` continua sendo a identidade forte e prioritária; o fallback semântico só pode comparar contra uma transação live legada sem ID. IDs presentes e diferentes provam que são eventos distintos, mesmo com dados econômicos idênticos. Para o live legado, o matcher usa `ticker + side + date + total econômico`, sempre positivo. O total aceita tanto `qty * price` quanto o fluxo canônico com fee (`buy = qty * price + fee`; `sell = qty * price - fee`), comparado em centavos com tolerância máxima de um centavo. O matching é um multiset consumível e escolhe primeiro a menor diferença: uma transação live só elimina uma ocorrência semanticamente equivalente, sem engolir uma segunda compra legítima do mesmo dia.
+
+**Pontos de aplicação:** `reconcileTrades` remove as linhas já live antes do caminho qty/feed, do agrupamento e do rateio do delta. Portanto elas não recebem qty, não distorcem o delta remanescente e não marcam `consumedTickers`; somente os trades realmente novos fazem isso. O endpoint `api/fidelity-pending.js`, em `handleSync`, aplica o mesmo helper à fila existente antes do merge, limpando retroativamente candidatos obsoletos do blob append-only e mantendo candidatos de data/valor diferentes.
+
+**Validação:** os 103 testes de `test/simplefin-map.test.mjs` cobrem a regressão real 21/08 + 22/09, prioridade por ID, valor diferente, multiset/menor diferença, arredondamento e fee, limpeza de staged e supressão do candidato bruto via `consumedTickers`. Todas as suites e o build também passaram. Nenhuma mudança foi feita em `SIMPLEFIN_WINDOW_DAYS`, `dupKey` ou no guard de snapshot lag.
