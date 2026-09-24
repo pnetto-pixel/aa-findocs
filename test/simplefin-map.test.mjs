@@ -9,6 +9,8 @@ import {
   isFidelityOrg,
   computeNetQty,
   pruneSemanticallyMatchedTrades,
+  mergeStagedTrades,
+  tradeDupKey,
 } from '../lib/simplefin-map.js';
 
 let passed = 0;
@@ -2245,6 +2247,240 @@ await test('retroactive staged prune removes the old equivalent and keeps a new 
   const fresh = { simplefinId: 'new-stage', date: '2026-09-22', side: 'buy', ticker: 'VT', qty: 10, price: 10 };
   const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
   assert.deepEqual(pruneSemanticallyMatchedTrades([old, fresh], live), [fresh]);
+});
+
+console.log('\n-- semantic matcher: settlement-date gap tolerance (sep/2026) --');
+
+await test('legacy live row dated 08-20 vs SimpleFin candidate posted 08-21, same total -> pruned (1-day gap)', () => {
+  const candidate = { date: '2026-08-21', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const live = [{ date: '2026-08-20', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), []);
+});
+
+await test('a 5-day gap is outside the tolerance -> not pruned', () => {
+  const candidate = { date: '2026-08-26', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), [candidate]);
+});
+
+await test('a 3-day gap is exactly at the tolerance boundary -> pruned', () => {
+  const candidate = { date: '2026-08-24', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const live = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 }];
+  assert.deepEqual(pruneSemanticallyMatchedTrades([candidate], live), []);
+});
+
+await test('same ticker, two distinct buys within the window with different totals -> only the matching one is pruned', () => {
+  const candidateA = { id: 'cA', date: '2026-08-22', side: 'buy', ticker: 'VT', economicAmount: 100 };
+  const candidateB = { id: 'cB', date: '2026-09-02', side: 'buy', ticker: 'VT', economicAmount: 250 };
+  const live = [
+    // Matches candidateA's total within the 3-day window.
+    { date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 10, price: 10 },
+    // A distinct, later recurring buy -- different total, more than 3 days
+    // from candidateA and exact-matching only candidateB.
+    { date: '2026-09-01', side: 'buy', ticker: 'VT', qty: 25, price: 10 },
+  ];
+  assert.deepEqual(
+    pruneSemanticallyMatchedTrades([candidateA, candidateB], live),
+    []
+  );
+});
+
+console.log('\n-- mergeStagedTrades (sep/2026) --');
+
+await test('stale multi-row split (08-21 + 09-22 same ticker) is replaced by a fresh single 09-22 row with full qty', () => {
+  // Staged from an earlier sync: the 09-22 delta was proportionally split
+  // across the still-pending 08-21 row and the 09-22 row (the real reported
+  // bug). This sync recognizes the 08-21 row as already live (legacy
+  // CSV/manual) and re-derives the 09-22 row with the FULL delta.
+  const staged = [
+    { id: 's1', simplefinId: 'old-feed-id', source: 'simplefin', date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 2.999, price: 321.66 },
+    { id: 's2', simplefinId: 'new-feed-id', source: 'simplefin', date: '2026-09-22', side: 'buy', ticker: 'VT', qty: 3.001, price: 321.66 },
+  ];
+  const fresh = [
+    { id: 'f1', simplefinId: 'new-feed-id', source: 'simplefin', date: '2026-09-22', side: 'buy', ticker: 'VT', qty: 6, price: 321.66 },
+  ];
+  const liveTx = [{ date: '2026-08-21', side: 'buy', ticker: 'VT', qty: 2.999, price: 321.66, simplefinId: 'old-feed-id' }];
+  const seenTradeSourceIds = new Set(['old-feed-id', 'new-feed-id']);
+  const { transactions, added } = mergeStagedTrades(staged, fresh, { liveTx, seenTradeSourceIds });
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].simplefinId, 'new-feed-id');
+  assert.equal(transactions[0].qty, 6);
+  // Both ids were already staged before this call -- nothing NEW to review.
+  assert.equal(added, 0);
+});
+
+await test('a staged row whose id is not in seenTradeSourceIds (outside this sync\'s window) is kept untouched', () => {
+  const staged = [
+    { id: 's1', simplefinId: 'old-outside-window', source: 'simplefin', date: '2026-05-01', side: 'buy', ticker: 'BND', qty: 5, price: 80 },
+  ];
+  const { transactions, added } = mergeStagedTrades(staged, [], { liveTx: [], seenTradeSourceIds: new Set() });
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].simplefinId, 'old-outside-window');
+  assert.equal(added, 0);
+});
+
+await test('added counts only genuinely new fresh rows, not corrections of already-staged ids', () => {
+  const staged = [
+    { id: 's1', simplefinId: 'existing-id', source: 'simplefin', date: '2026-08-01', side: 'buy', ticker: 'AAPL', qty: 1, price: 100 },
+  ];
+  const fresh = [
+    // Correction of the already-staged row (qty changed) -- not "new".
+    { id: 'f1', simplefinId: 'existing-id', source: 'simplefin', date: '2026-08-01', side: 'buy', ticker: 'AAPL', qty: 2, price: 100 },
+    // A genuinely new trade.
+    { id: 'f2', simplefinId: 'brand-new-id', source: 'simplefin', date: '2026-08-05', side: 'buy', ticker: 'MSFT', qty: 1, price: 300 },
+  ];
+  const seenTradeSourceIds = new Set(['existing-id', 'brand-new-id']);
+  const { transactions, added } = mergeStagedTrades(staged, fresh, { liveTx: [], seenTradeSourceIds });
+  assert.equal(transactions.length, 2);
+  assert.equal(added, 1);
+});
+
+await test('live-by-simplefinId dedupe still applies to fresh rows', () => {
+  const liveTx = [{ ticker: 'MSFT', side: 'buy', qty: 1, date: '2026-08-05', simplefinId: 'already-live' }];
+  const fresh = [{ id: 'f1', simplefinId: 'already-live', source: 'simplefin', date: '2026-08-05', side: 'buy', ticker: 'MSFT', qty: 1, price: 300 }];
+  const { transactions, added } = mergeStagedTrades([], fresh, { liveTx, seenTradeSourceIds: new Set(['already-live']) });
+  assert.equal(transactions.length, 0);
+  assert.equal(added, 0);
+});
+
+await test('live-by-dupKey dedupe still applies to fresh rows with no simplefinId match', () => {
+  const liveTx = [{ ticker: 'MSFT', side: 'buy', qty: 1, date: '2026-08-05' }];
+  const fresh = [{ id: 'f1', source: 'simplefin', date: '2026-08-05', side: 'buy', ticker: 'MSFT', qty: 1, price: 300 }];
+  assert.equal(tradeDupKey(fresh[0]), tradeDupKey(liveTx[0]));
+  const { transactions, added } = mergeStagedTrades([], fresh, { liveTx, seenTradeSourceIds: new Set() });
+  assert.equal(transactions.length, 0);
+  assert.equal(added, 0);
+});
+
+await test('synthetic sfbond-buy:/sfstock-delta: staged ids are always dropped and replaced, even if absent from seenTradeSourceIds', () => {
+  const staged = [
+    { id: 's1', simplefinId: 'sfbond-buy:SOME BOND|4.85|2032-09-24', source: 'simplefin', date: '2026-09-01', side: 'buy', ticker: '20320924485', qty: 0.5, price: 1000 },
+  ];
+  const fresh = [
+    { id: 'f1', simplefinId: 'sfbond-buy:SOME BOND|4.85|2032-09-24', source: 'simplefin', date: '2026-09-22', side: 'buy', ticker: '20320924485', qty: 1, price: 1000 },
+  ];
+  const { transactions, added } = mergeStagedTrades(staged, fresh, { liveTx: [], seenTradeSourceIds: new Set() });
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].qty, 1);
+  assert.equal(added, 0);
+});
+
+console.log('\n-- bond/CD trade rows link to the synthesized bond buy (sep/2026) --');
+
+const VERSABANK_HOLDING_DESC = 'VERSABANK USA NATL ASSN HOLDIG CD 4.85000% 09/24/2032';
+const VERSABANK_TRADE_DESC =
+  'YOU BOUGHT FACT SHEET TO FOLLOW VERSABANK USA NATL ASSN HOLDIG CD 4.85000% 09/24/2032 (Cash)';
+
+await test('bond/CD trade with a matching holding: no unmapped row, one bond buy with the synthetic ticker/date/qty/price', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        'balance-date': 1790208000, // account snapshot date (09-24) -- must NOT be used for the buy's date
+        holdings: [
+          {
+            id: 'H-versabank',
+            symbol: '',
+            description: VERSABANK_HOLDING_DESC,
+            purchase_price: '1000.00',
+            shares: '1',
+          },
+        ],
+        transactions: [
+          {
+            id: 'TX-versabank-buy',
+            posted: 1790035200, // 2026-09-22
+            amount: '-1000.00',
+            description: VERSABANK_TRADE_DESC,
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {}, liveTransactions: [] });
+  const unmappedForThis = out.unmapped.filter((u) => u.simplefinId === 'TX-versabank-buy');
+  assert.equal(unmappedForThis.length, 0, 'no unmapped row should be raised for this bond purchase');
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 1);
+  const b = buys[0];
+  assert.equal(b.ticker, '20320924485');
+  assert.equal(b.date, '2026-09-22');
+  assert.equal(b.qty, 1);
+  assert.equal(b.price, 1000);
+});
+
+await test('bond/CD trade with NO matching holding: unmapped with the new bond/CD reason', () => {
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [], // no matching holding in this account's snapshot
+        transactions: [
+          {
+            id: 'TX-versabank-buy-2',
+            posted: 1790035200,
+            amount: '-1000.00',
+            description: VERSABANK_TRADE_DESC,
+          },
+        ],
+      }),
+    ],
+  };
+  const out = mapSimplefinPayload(payload, { netQtyByTicker: {}, liveTransactions: [] });
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 0);
+  const unmappedForThis = out.unmapped.filter((u) => u.simplefinId === 'TX-versabank-buy-2');
+  assert.equal(unmappedForThis.length, 1);
+  assert.match(unmappedForThis[0].reason, /bond\/CD purchase recognized/);
+  assert.match(unmappedForThis[0].reason, /4\.85/);
+  assert.match(unmappedForThis[0].reason, /2032-09-24/);
+});
+
+await test('bond/CD trade already known in live transactions: no unmapped, no bond buy (snapshot suppressed the synthesized row)', () => {
+  const knownDescKey = `${'VERSABANK USA NATL ASSN HOLDIG CD'}|4.85|2032-09-24`;
+  const payload = {
+    accounts: [
+      fidelityAccount({
+        holdings: [
+          {
+            id: 'H-versabank',
+            symbol: '',
+            description: VERSABANK_HOLDING_DESC,
+            purchase_price: '1000.00',
+            shares: '1',
+          },
+        ],
+        transactions: [
+          {
+            id: 'TX-versabank-buy-3',
+            posted: 1790035200,
+            amount: '-1000.00',
+            description: VERSABANK_TRADE_DESC,
+          },
+        ],
+      }),
+    ],
+  };
+  const liveTransactions = [
+    {
+      ticker: 'CUSIP-ALREADY-KNOWN',
+      side: 'buy',
+      assetClass: 'Bank Bonds',
+      qty: 1,
+      price: 1000,
+      date: '2025-01-01',
+      couponRate: 4.85,
+      maturityDate: '2032-09-24',
+    },
+  ];
+  const knownBondsByDescKey = new Map([[knownDescKey, 'CUSIP-ALREADY-KNOWN']]);
+  const out = mapSimplefinPayload(payload, {
+    netQtyByTicker: {},
+    liveTransactions,
+    knownBondsByDescKey,
+  });
+  const buys = out.transactions.filter((t) => t.assetClass === 'Bank Bonds' && t.side === 'buy');
+  assert.equal(buys.length, 0, 'the bond is already known -- bondBuyTransactions must not re-synthesize it');
+  const unmappedForThis = out.unmapped.filter((u) => u.simplefinId === 'TX-versabank-buy-3');
+  assert.equal(unmappedForThis.length, 0, 'a known bond must not be surfaced as unresolved either');
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
