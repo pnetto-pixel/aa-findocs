@@ -1108,7 +1108,11 @@ function AllocationCSVImportModal({ auth, holdings, transactions, onClose, onApp
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: 16,
+        paddingTop: "max(16px, calc(env(safe-area-inset-top, 0px) + 16px))",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+        paddingLeft: "max(16px, env(safe-area-inset-left, 0px))",
+        paddingRight: "max(16px, env(safe-area-inset-right, 0px))",
+        boxSizing: "border-box",
       }}
     >
       <div
@@ -1120,8 +1124,9 @@ function AllocationCSVImportModal({ auth, holdings, transactions, onClose, onApp
           padding: 24,
           maxWidth: 680,
           width: "90%",
-          maxHeight: "80vh",
+          maxHeight: "calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 32px)",
           overflowY: "auto",
+          boxSizing: "border-box",
           fontFamily: FM_BODY,
         }}
       >
@@ -3243,8 +3248,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 alignItems: "center",
                 justifyContent: "center",
                 zIndex: 2000,
-                padding: 20,
+                paddingTop: "max(20px, calc(env(safe-area-inset-top, 0px) + 16px))",
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)",
+                paddingLeft: "max(20px, env(safe-area-inset-left, 0px))",
+                paddingRight: "max(20px, env(safe-area-inset-right, 0px))",
                 backdropFilter: "blur(2px)",
+                overflowY: "auto",
               }}
               onClick={() => setAlertModal(null)}
             >
@@ -3259,6 +3268,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   padding: 20,
                   maxWidth: 360,
                   width: "100%",
+                  boxSizing: "border-box",
                   boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
                 }}
               >
@@ -3334,9 +3344,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 alignItems: "flex-start",
                 justifyContent: "center",
                 paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)",
-                paddingBottom: "24px",
-                paddingLeft: "16px",
-                paddingRight: "16px",
+                paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)",
+                paddingLeft: "max(16px, env(safe-area-inset-left, 0px))",
+                paddingRight: "max(16px, env(safe-area-inset-right, 0px))",
                 overflowY: "auto",
               }}
               onClick={() => setAlertPanelOpen(false)}

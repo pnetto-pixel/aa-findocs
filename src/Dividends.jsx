@@ -411,27 +411,50 @@ function BarTooltip({ active, payload, label, hidden }) {
 // Avoids native <select multiple>, whose iOS picker sheet can't be customized.
 function FilterMultiSelect({ label, options, selected, onChange }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [rect, setRect] = useState(null);
+  const wrapRef = useRef(null);
+  const btnRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
     function handle(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
     }
+    function reposition() {
+      if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
+    }
+    reposition();
     document.addEventListener("mousedown", handle);
     document.addEventListener("touchstart", handle);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
     return () => {
       document.removeEventListener("mousedown", handle);
       document.removeEventListener("touchstart", handle);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
     };
   }, [open]);
 
   const active = selected.size > 0;
   const triggerText = active ? [...selected].sort().join(", ") : label;
 
+  const POPOVER_W = "min(200px, calc(100vw - 16px))";
+  const POPOVER_W_PX = Math.min(200, (typeof window !== "undefined" ? window.innerWidth : 320) - 16);
+  const posStyle = rect
+    ? {
+        position: "fixed",
+        top: rect.bottom + 4,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W_PX - 8)),
+        zIndex: 50,
+        width: POPOVER_W,
+      }
+    : { display: "none" };
+
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <button
+        ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         style={{
           background: T.cardElev,
@@ -454,11 +477,7 @@ function FilterMultiSelect({ label, options, selected, onChange }) {
       {open && (
         <div
           style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            zIndex: 50,
-            width: 200,
+            ...posStyle,
             maxHeight: 280,
             overflowY: "auto",
             background: T.cardElev,
