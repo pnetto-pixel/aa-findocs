@@ -2,7 +2,8 @@
 // Chunk 1B: add form, chronological list, inline edit, direct delete, filters.
 // Bulk paste + CSV upload land in 1C.
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import DateMonthPicker from "./DateMonthPicker.jsx";
 import {
@@ -868,19 +869,30 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
 
 // --- Filter dropdown popover ----------------------------------------------
 
+// Sentinel value used to represent an explicit "select none" filter state
+// without breaking the "empty Set = all selected" invariant used everywhere
+// else (isFiltered, visible filtering, etc). Never collides with real data
+// since it's not a valid side/ticker/assetClass value.
+const FILTER_NONE_SENTINEL = "\u0000__none__\u0000";
+
 // HeaderPopover: unified sort + filter popover anchored to a header cell.
 // - Always shows sort buttons (asc/desc).
 // - Filter section appears only when `filterable` is true.
 // - Date column gets a year/month picker derived from actual transaction data.
+// Rendered via a portal into document.body so it can't be clipped by the
+// ScrollHintTable's `overflow-x: auto` ancestor (iOS Safari clips
+// `position: fixed` descendants of scrollable containers).
 function HeaderPopover({
   anchor,
+  anchorCol,
   onClose,
   // sort
   sortDir, // "asc" | "desc"
   onSort,
   // filter
   filterable,
-  options,
+  options, // cascaded options (subset filtered by all OTHER columns) — what's rendered
+  fullOptions, // complete, uncascaded list for this column — used to build "next"
   selected,
   onChange,
   optionLabel,
@@ -896,7 +908,19 @@ function HeaderPopover({
 
   useEffect(() => {
     function handle(e) {
-      if (ref.current && !ref.current.contains(e.target)) onClose();
+      if (ref.current && !ref.current.contains(e.target)) {
+        // Don't close here if the mousedown/touchstart landed on a header
+        // toggle button (including the one that's currently open): that
+        // button's own onClick already handles opening/closing it, and
+        // fires right after this listener on the same gesture. If we close
+        // here too, the button's onClick then sees openCol already null and
+        // reopens the popover — same click that should close it instead
+        // re-opens it. Let the button's toggle logic be the sole decider
+        // for clicks on header cells; this listener only handles clicks
+        // truly outside the header/popover.
+        if (e.target.closest && e.target.closest("[data-col-header]")) return;
+        onClose();
+      }
     }
     document.addEventListener("mousedown", handle);
     document.addEventListener("touchstart", handle);
@@ -906,17 +930,28 @@ function HeaderPopover({
     };
   }, [onClose]);
 
-  const rect = anchor?.getBoundingClientRect();
-  const POPOVER_W = 240;
-  const style = rect
-    ? {
-        position: "fixed",
-        top: rect.bottom + 4,
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8)),
-        zIndex: 50,
-        width: POPOVER_W,
-      }
-    : { display: "none" };
+  // Resolve the anchor node defensively: if the stored node got detached from
+  // the DOM (e.g. a stale reference from before a remount), fall back to
+  // looking it up by its stable data attribute.
+  let resolvedAnchor = anchor && anchor.isConnected ? anchor : null;
+  if (!resolvedAnchor && anchorCol && typeof document !== "undefined") {
+    resolvedAnchor = document.querySelector('[data-col-header="' + anchorCol + '"]');
+  }
+
+  if (!resolvedAnchor || typeof document === "undefined") return null;
+
+  const rect = resolvedAnchor.getBoundingClientRect();
+  const POPOVER_W = Math.min(240, window.innerWidth - 16);
+  const top = rect.bottom + 4;
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_W - 8));
+  const maxHeight = Math.max(120, window.innerHeight - top - 8);
+  const style = {
+    position: "fixed",
+    top,
+    left,
+    zIndex: 50,
+    width: POPOVER_W,
+  };
 
   const sectionLabel = {
     fontFamily: FONT_MONO,
@@ -927,10 +962,11 @@ function HeaderPopover({
     marginBottom: 8,
   };
 
-  function SortBtn({ dir, label }) {
+  function renderSortBtn({ dir, label }) {
     const active = sortDir === dir;
     return (
       <button
+        key={dir}
         onClick={() => onSort(dir)}
         style={{
           flex: 1,
@@ -950,7 +986,32 @@ function HeaderPopover({
     );
   }
 
-  return (
+  // Build the "next" selected Set from the COMPLETE (uncascaded) option list,
+  // not the cascaded `options` currently on screen. Otherwise unchecking an
+  // item while another column's filter is narrowing this list would silently
+  // and permanently exclude values that aren't visible right now.
+  function toggleOption(opt) {
+    const full = fullOptions && fullOptions.length ? fullOptions : options;
+    const isAllImplicit = selected.size === 0;
+    const isChecked = isAllImplicit ? true : selected.has(opt);
+    let base;
+    if (isAllImplicit) {
+      base = new Set(full);
+    } else {
+      base = new Set(selected);
+      base.delete(FILTER_NONE_SENTINEL);
+    }
+    if (isChecked) base.delete(opt);
+    else base.add(opt);
+    if (base.size === 0) {
+      base = new Set([FILTER_NONE_SENTINEL]);
+    } else if (base.size === full.length && full.every((v) => base.has(v))) {
+      base = new Set();
+    }
+    onChange(base);
+  }
+
+  const popoverContent = (
     <div
       ref={ref}
       style={{
@@ -959,15 +1020,15 @@ function HeaderPopover({
         border: `1px solid ${T.border}`,
         boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
         padding: 12,
-        maxHeight: 380,
+        maxHeight: Math.min(380, maxHeight),
         overflowY: "auto",
       }}
     >
       {/* Sort section */}
       <div style={sectionLabel}>Sort</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        <SortBtn dir="asc" label="↑ Asc" />
-        <SortBtn dir="desc" label="↓ Desc" />
+        {renderSortBtn({ dir: "asc", label: "↑ Asc" })}
+        {renderSortBtn({ dir: "desc", label: "↓ Desc" })}
       </div>
 
       {/* Filter section — multi-select year/month picker */}
@@ -1003,7 +1064,7 @@ function HeaderPopover({
           <div style={sectionLabel}>Filter</div>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
             <button
-              onClick={() => onChange(new Set(options))}
+              onClick={() => onChange(new Set())}
               style={{
                 background: "transparent",
                 border: "none",
@@ -1019,7 +1080,7 @@ function HeaderPopover({
               All
             </button>
             <button
-              onClick={() => onChange(new Set())}
+              onClick={() => onChange(new Set([FILTER_NONE_SENTINEL]))}
               style={{
                 background: "transparent",
                 border: "none",
@@ -1048,7 +1109,8 @@ function HeaderPopover({
             </div>
           )}
           {options.map((opt) => {
-            const checked = selected.has(opt);
+            // Empty selected Set means "all selected" (no filter applied yet).
+            const checked = selected.size === 0 ? true : selected.has(opt);
             return (
               <label
                 key={opt}
@@ -1066,12 +1128,7 @@ function HeaderPopover({
                 <input
                   type="checkbox"
                   checked={checked}
-                  onChange={() => {
-                    const next = new Set(selected);
-                    if (checked) next.delete(opt);
-                    else next.add(opt);
-                    onChange(next);
-                  }}
+                  onChange={() => toggleOption(opt)}
                   style={{ accentColor: T.gold }}
                 />
                 <span
@@ -1090,6 +1147,8 @@ function HeaderPopover({
       )}
     </div>
   );
+
+  return createPortal(popoverContent, document.body);
 }
 
 // --- ScrollHintTable ---------------------------------------------------
@@ -1263,6 +1322,13 @@ function TransactionTable({
 }) {
   const [openCol, setOpenCol] = useState(null); // column key for popover
   const [anchor, setAnchor] = useState(null);
+  // Stable across re-renders (setOpenCol/setAnchor are stable setState refs)
+  // so HeaderPopover's click-outside effect doesn't tear down/re-register
+  // its document listeners on every parent render.
+  const closePopover = useCallback(() => {
+    setOpenCol(null);
+    setAnchor(null);
+  }, []);
   const [selected, setSelected] = useState(() => new Set()); // tx ids
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null); // edit buffer
@@ -1310,6 +1376,50 @@ function TransactionTable({
   });
 
   const [sort, setSort] = useState({ col: "date", dir: "desc" });
+
+  // Cascading filter options for whichever column's popover is currently
+  // open: computed from transactions filtered by every OTHER column's
+  // active filter (excluding the open column's own filter). This is what
+  // gets rendered as checkboxes in the popover — `allValues` (full list,
+  // uncascaded) stays the denominator for `isFiltered()` and the base list
+  // used to build the next filter Set on toggle (see HeaderPopover).
+  const cascadeOptions = useMemo(() => {
+    if (!openCol) return null;
+    const excludeCol = openCol;
+    const s = new Set();
+    const t = new Set();
+    const a = new Set();
+    const dateMap = new Map();
+    for (const tx of transactions) {
+      if (excludeCol !== "side" && filters.side.size > 0 && !filters.side.has(tx.side)) continue;
+      if (excludeCol !== "ticker" && filters.ticker.size > 0 && !filters.ticker.has(tx.ticker)) continue;
+      if (excludeCol !== "assetClass" && filters.assetClass.size > 0 && !filters.assetClass.has(tx.assetClass)) continue;
+      if (
+        excludeCol !== "date" &&
+        filters.dateMonths.size > 0 &&
+        !filters.dateMonths.has(String(tx.date || "").slice(0, 7))
+      )
+        continue;
+      s.add(tx.side);
+      t.add(tx.ticker);
+      if (tx.assetClass) a.add(tx.assetClass);
+      if (tx.date) {
+        const m = tx.date.match(/^(\d{4})-(\d{2})/);
+        if (m) {
+          const year = parseInt(m[1], 10);
+          const month = parseInt(m[2], 10);
+          if (!dateMap.has(year)) dateMap.set(year, new Set());
+          dateMap.get(year).add(month);
+        }
+      }
+    }
+    return {
+      side: Array.from(s).sort(),
+      ticker: Array.from(t).sort(),
+      assetClass: Array.from(a).sort(),
+      dateOptions: dateMap,
+    };
+  }, [openCol, filters, transactions]);
 
   function isFiltered(col) {
     if (col === "date") return filters.dateMonths.size > 0;
@@ -1450,12 +1560,22 @@ function TransactionTable({
     clearSelection();
   }
 
-  function HeaderCell({ col, label, align = "left", width }) {
+  // Rendered as a plain function call (`{renderHeaderCell({...})}`), NOT as a
+  // JSX component tag (`<HeaderCell />`). A nested function component
+  // recreated on every render of TransactionTable would be a *new component
+  // type* each time from React's perspective, forcing React to unmount and
+  // remount the underlying <th>/<button> DOM nodes on every re-render (e.g.
+  // every setFilters call) — which detaches any previously-saved
+  // `e.currentTarget` anchor from the DOM, breaking the popover position.
+  // Calling this as a normal function keeps the DOM node identity (type
+  // "th"/"button") stable across re-renders.
+  function renderHeaderCell({ col, label, align = "left", width }) {
     const filtered = isFiltered(col);
     const sorted = sort.col === col;
     const active = sorted || filtered;
     return (
       <th
+        key={col}
         style={{
           padding: 0,
           textAlign: align,
@@ -1468,10 +1588,10 @@ function TransactionTable({
         }}
       >
         <button
+          data-col-header={col}
           onClick={(e) => {
             if (openCol === col) {
-              setOpenCol(null);
-              setAnchor(null);
+              closePopover();
             } else {
               setOpenCol(col);
               setAnchor(e.currentTarget);
@@ -1751,14 +1871,14 @@ function TransactionTable({
                 title="Select all visible"
               />
             </th>
-            <HeaderCell col="date" label="Date" />
-            <HeaderCell col="side" label="B/S" />
-            <HeaderCell col="assetClass" label="Class" />
-            <HeaderCell col="ticker" label="Ticker" />
-            <HeaderCell col="qty" label="Qty" align="right" />
-            <HeaderCell col="price" label="Price" align="right" />
-            <HeaderCell col="fee" label="Fee" align="right" />
-            <HeaderCell col="notes" label="Notes" />
+            {renderHeaderCell({ col: "date", label: "Date" })}
+            {renderHeaderCell({ col: "side", label: "B/S" })}
+            {renderHeaderCell({ col: "assetClass", label: "Class" })}
+            {renderHeaderCell({ col: "ticker", label: "Ticker" })}
+            {renderHeaderCell({ col: "qty", label: "Qty", align: "right" })}
+            {renderHeaderCell({ col: "price", label: "Price", align: "right" })}
+            {renderHeaderCell({ col: "fee", label: "Fee", align: "right" })}
+            {renderHeaderCell({ col: "notes", label: "Notes" })}
             <th
               style={{
                 padding: "10px 4px",
@@ -2181,18 +2301,20 @@ function TransactionTable({
         const filterableCols = ["date", "side", "ticker", "assetClass"];
         const isFilterable = filterableCols.includes(openCol);
         const isDateCol = openCol === "date";
-        const close = () => {
-          setOpenCol(null);
-          setAnchor(null);
-        };
         return (
           <HeaderPopover
             anchor={anchor}
-            onClose={close}
+            anchorCol={openCol}
+            onClose={closePopover}
             sortDir={sortDirFor(openCol)}
             onSort={(dir) => setSortFor(openCol, dir)}
             filterable={isFilterable}
-            options={isFilterable && !isDateCol ? allValues[openCol] || [] : []}
+            options={
+              isFilterable && !isDateCol
+                ? (cascadeOptions && cascadeOptions[openCol]) || []
+                : []
+            }
+            fullOptions={isFilterable && !isDateCol ? allValues[openCol] || [] : []}
             selected={isFilterable && !isDateCol ? filters[openCol] : new Set()}
             onChange={(next) => setColFilter(openCol, next)}
             optionLabel={
@@ -2206,7 +2328,7 @@ function TransactionTable({
                 ? (next) => setFilters((cur) => ({ ...cur, dateMonths: next }))
                 : undefined
             }
-            dateOptions={isDateCol ? dateOptions : undefined}
+            dateOptions={isDateCol ? (cascadeOptions && cascadeOptions.dateOptions) || dateOptions : undefined}
           />
         );
       })()}

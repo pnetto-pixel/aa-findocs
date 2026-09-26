@@ -3228,7 +3228,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           color: T.text,
           fontFamily: FONT_BODY,
           padding:
-            "max(50px, calc(20px + env(safe-area-inset-top, 0px))) calc(16px + env(safe-area-inset-right, 0px)) calc(60px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))",
+            "max(72px, calc(36px + env(safe-area-inset-top, 0px))) calc(16px + env(safe-area-inset-right, 0px)) calc(60px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))",
         }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
