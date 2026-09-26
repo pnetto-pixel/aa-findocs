@@ -908,7 +908,19 @@ function HeaderPopover({
 
   useEffect(() => {
     function handle(e) {
-      if (ref.current && !ref.current.contains(e.target)) onClose();
+      if (ref.current && !ref.current.contains(e.target)) {
+        // Don't close here if the mousedown/touchstart landed on a header
+        // toggle button (including the one that's currently open): that
+        // button's own onClick already handles opening/closing it, and
+        // fires right after this listener on the same gesture. If we close
+        // here too, the button's onClick then sees openCol already null and
+        // reopens the popover — same click that should close it instead
+        // re-opens it. Let the button's toggle logic be the sole decider
+        // for clicks on header cells; this listener only handles clicks
+        // truly outside the header/popover.
+        if (e.target.closest && e.target.closest("[data-col-header]")) return;
+        onClose();
+      }
     }
     document.addEventListener("mousedown", handle);
     document.addEventListener("touchstart", handle);
