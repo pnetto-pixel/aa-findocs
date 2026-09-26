@@ -1755,7 +1755,11 @@ function TransactionTable({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: 20,
+            paddingTop: "max(20px, calc(env(safe-area-inset-top, 0px) + 16px))",
+            paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)",
+            paddingLeft: "max(20px, env(safe-area-inset-left, 0px))",
+            paddingRight: "max(20px, env(safe-area-inset-right, 0px))",
+            overflowY: "auto",
           }}
           onClick={() => setConfirmBulkDelete(false)}
         >
@@ -1767,6 +1771,7 @@ function TransactionTable({
               padding: 20,
               maxWidth: 360,
               width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <div
@@ -2533,7 +2538,10 @@ function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }
         display: "flex",
         alignItems: "flex-start",
         justifyContent: "center",
-        padding: "24px 16px",
+        paddingTop: "max(24px, calc(env(safe-area-inset-top, 0px) + 16px))",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)",
+        paddingLeft: "max(16px, env(safe-area-inset-left, 0px))",
+        paddingRight: "max(16px, env(safe-area-inset-right, 0px))",
         overflowY: "auto",
       }}
       onClick={handleClose}
@@ -2546,6 +2554,7 @@ function SplitModal({ open, onClose, onApply, transactions, knownTickers, busy }
           padding: 20,
           maxWidth: 500,
           width: "100%",
+          boxSizing: "border-box",
           borderRadius: 4,
         }}
       >
@@ -3264,7 +3273,10 @@ function ImportModal({
         display: "flex",
         alignItems: "flex-start",
         justifyContent: "center",
-        padding: 20,
+        paddingTop: "max(20px, calc(env(safe-area-inset-top, 0px) + 16px))",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 40px)",
+        paddingLeft: "max(20px, env(safe-area-inset-left, 0px))",
+        paddingRight: "max(20px, env(safe-area-inset-right, 0px))",
         overflowY: "auto",
       }}
       onClick={onClose}
@@ -3276,8 +3288,7 @@ function ImportModal({
           border: `1px solid ${T.border}`,
           maxWidth: 720,
           width: "100%",
-          marginTop: 20,
-          marginBottom: 40,
+          boxSizing: "border-box",
         }}
       >
         {/* Header */}
