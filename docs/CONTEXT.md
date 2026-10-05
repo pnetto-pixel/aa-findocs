@@ -454,13 +454,19 @@ Tab para planejamento e acompanhamento de aportes quinzenais. Arquivo `src/Aport
 
 - Chave Redis: `portfolio:<auth.storageKey com :holdings substituido por :contributions-history>:contributions-history` — objeto JSON mapeando `"YYYY-MM"` para snapshot.
 - Formato do snapshot: `{ monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt }`.
-- **Sem versionamento `vN`:** e um store de upsert proprio, nao um cache de calculo. Snapshots sao permanentes; o mes corrente e sobrescrito a cada load (idempotente).
-- Endpoint: `api/contributions-history.js` (GET + PUT). `authenticate(req)` de `lib/auth.js`. `getRedis()` de `lib/redis.js`. PUT e read-modify-write: le o objeto existente, faz merge do mes corrente, grava de volta — preserva meses passados.
+- **Sem versionamento `vN`:** e um store de upsert proprio, nao um cache de calculo. O planejamento salvo em cada snapshot e permanente; o mes corrente e sobrescrito a cada load (idempotente), enquanto o campo realizado `invested` de snapshots anteriores pode ser reconciliado a partir das transacoes atuais.
+- Endpoint: `api/contributions-history.js` (GET + PUT). `authenticate(req)` de `lib/auth.js`. `getRedis()` de `lib/redis.js`. O mesmo PUT aceita `{ month, snapshot, reconcileInvested? }` e faz uma unica operacao read-modify-write: atualiza o snapshot do mes corrente e, quando o mapa opcional e enviado, altera **somente `invested`** nos meses que ja existem. Nunca cria um mes historico ausente por causa da reconciliacao e preserva `monthlyFixed`, `dividends`, `dellSale`, `extras`, `planTotal` e o `savedAt` historico.
 - **Arquivo tambem serve uma segunda rota nao relacionada a Contributions (PR #128, jul/2026):** `?resource=alerts-read` (funcao `handleAlertsRead`) sincroniza o estado "lido" do painel de Alerts (Bell) — consolidado aqui em vez de um arquivo `api/alerts-read.js` novo por causa do limite de 12 Serverless Functions do Vercel Hobby plan. Ver "Painel de Alerts" e Decisoes Tecnicas.
 
-#### Auto-snapshot
+#### Auto-snapshot e reconciliacao retroativa do realizado (out/2026, v1.20.4)
 
-A cada load do componente, o mes corrente e enviado via PUT com os valores atuais. Meses passados nunca sao sobrescritos.
+A cada load do componente, o mes corrente e enviado via PUT com os valores atuais. No mesmo request atomico, `reconcileInvested` recalcula o realizado de **todos e somente** os meses que ja possuem snapshot, usando o log de transacoes atual. Isso corrige retroativamente compras adicionadas depois do fechamento do mes (caso real: bond de $995 comprado no fim de set/2026, lancado manualmente apenas em outubro, elevou `invested` de $16,132.24 para $17,127.24).
+
+A reconciliacao nao reconstroi nem altera o planejamento historico: `monthlyFixed`, `dividends`, `dellSale`, `extras` e `planTotal` permanecem como foram salvos; meses sem snapshot continuam ausentes. `Balance` nao e persistido separadamente — a tabela sempre o deriva de `planned - invested`, portanto acompanha automaticamente o realizado corrigido.
+
+O calculo retroativo usa a mesma semantica da contribuicao corrente: DELL e excluido; compras comuns entram pelo custo; Bank Bonds usam `max(0, buys - redemptions)` **por quinzena** antes da soma mensal (mantem o clamp e impede que um resgate de outra quinzena apague aporte novo); transacoes BRL sao convertidas para USD pela cotacao USD/BRL atual. Como a cotacao nao e congelada no snapshot, o `invested` historico em BRL pode variar quando o FX atual mudar — trade-off consciente desta correcao.
+
+Edicoes rapidas da configuracao podem disparar autosaves consecutivos. O cliente serializa os PUTs numa fila baseada em `Promise`, evitando que uma resposta antiga termine depois e sobrescreva uma gravacao mais nova. O endpoint valida `reconcileInvested`, ignora meses/chaves/valores invalidos e aplica a reconciliacao junto do snapshot corrente na mesma escrita Redis.
 
 #### Tabela "Contribution Capacity History"
 
@@ -1393,7 +1399,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 | `POST /api/events` | Recebe `{ tickers }`, retorna eventos corporativos (ex_dividend, payout, earnings, split) janela -30d/+90d; cache Redis GLOBAL por hash de tickers, TTL ate proximo fechamento de mercado |
 | `POST /api/split-detect` | Recebe `{ tickers }`, retorna TODOS os splits historicos (Yahoo `chart?events=split` range=10y, fallback Polygon) para deteccao de splits nao refletidos no historico; cache Redis GLOBAL `splitdetect:v1:{hash}`, TTL ate proximo fechamento de mercado |
 | `GET /api/contributions-history` | Retorna snapshot do mes corrente + historico de meses anteriores (`{ history: { "YYYY-MM": { monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt } } }`) |
-| `PUT /api/contributions-history` | Upsert idempotente do mes corrente; preserva meses passados (read-modify-write). Body: `{ month, monthlyFixed, dividends, dellSale, extras, planTotal, invested }` |
+| `PUT /api/contributions-history` | Upsert idempotente do snapshot corrente + reconciliacao opcional somente de `invested` nos snapshots historicos existentes (read-modify-write unico; nao cria meses). Body: `{ month, snapshot, reconcileInvested? }` |
 | `GET /api/contributions-history?resource=alerts-read` | Rota secundaria (PR #128) dentro do mesmo arquivo — retorna `{ exists, readIds, savedAt }` do log de leitura dos Alerts (Bell), pra sincronizacao cross-device do estado "lido" |
 | `PUT /api/contributions-history?resource=alerts-read` | Body `{ add: string[] }`; read-modify-write com uniao dos ids, capado em 200 |
 | `GET /api/contributions-history?resource=networth-history` | Terceira rota do mesmo arquivo (jul/2026) — `{ exists, history: { "YYYY-MM": { value, savedAt } } }`: snapshots mensais do net worth TOTAL (incluindo Cash/Unallocated/BRA Fixed Income) |

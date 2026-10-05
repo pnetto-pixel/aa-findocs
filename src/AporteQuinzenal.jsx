@@ -17,6 +17,11 @@ import {
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
 import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
+import {
+  computeMonthlyInvested,
+  contributionTxToUSD,
+  reconcileContributionCapacityHistory,
+} from "./lib/contributionCapacity.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
@@ -103,7 +108,7 @@ function computeDellSale(transactions, usdBrlRate, year, month) {
     if (tx.side !== "sell") continue;
     if ((tx.ticker || "").toUpperCase() !== "DELL") continue;
     if (!tx.date || !tx.date.startsWith(prefix)) continue;
-    total += txToUSD(tx, usdBrlRate);
+    total += contributionTxToUSD(tx, usdBrlRate);
   }
   return total;
 }
@@ -129,7 +134,7 @@ function computeHalfInvested(transactions, usdBrlRate, year, month) {
     if ((tx.ticker || "").toUpperCase() === "DELL") continue;
 
     const isFirst = day <= 15;
-    const amount = txToUSD(tx, usdBrlRate);
+    const amount = contributionTxToUSD(tx, usdBrlRate);
 
     if (tx.assetClass === "Bank Bonds") {
       if (tx.side === "buy") {
@@ -205,11 +210,11 @@ async function fetchContributionsHistory(auth) {
   return data.history && typeof data.history === "object" ? data.history : {};
 }
 
-async function putContributionsSnapshot(auth, month, snapshot) {
+async function putContributionsSnapshot(auth, month, snapshot, reconcileInvested) {
   const res = await fetch("/api/contributions-history", {
     method: "PUT",
     headers: { "Content-Type": "application/json", ...authHeaders(auth) },
-    body: JSON.stringify({ month, snapshot }),
+    body: JSON.stringify({ month, snapshot, reconcileInvested }),
   });
   if (!res.ok) throw new Error(`Error ${res.status}`);
   return res.json();
@@ -225,17 +230,6 @@ function monthKeyLabel(key) {
   const [y, m] = key.split("-");
   const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-}
-
-function txToUSD(tx, usdBrlRate) {
-  const qty = parseFloat(tx.qty) || 0;
-  const price = parseFloat(tx.price) || 0;
-  const fee = parseFloat(tx.fee) || 0;
-  const total = qty * price + fee;
-  if (tx.currency === "BRL" && usdBrlRate > 0) {
-    return total / usdBrlRate;
-  }
-  return total;
 }
 
 // Full history from first transaction, grouped by the chosen granularity.
@@ -273,7 +267,7 @@ function buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate) {
       key = yStr;
     }
 
-    const amount = txToUSD(tx, usdBrlRate);
+    const amount = contributionTxToUSD(tx, usdBrlRate);
     if (tx.assetClass === "Bank Bonds") {
       if (tx.side === "buy") bbBuy[key] = (bbBuy[key] || 0) + amount;
       else bbSell[key] = (bbSell[key] || 0) + amount;
@@ -711,6 +705,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   const [capacityHistory, setCapacityHistory] = useState({}); // { "YYYY-MM": snapshot }
   const [capacityLoaded, setCapacityLoaded] = useState(false);
+  const capacitySaveQueue = useRef(Promise.resolve());
 
   const [newExtraLabel, setNewExtraLabel] = useState("");
   const [newExtraValue, setNewExtraValue] = useState("");
@@ -913,9 +908,10 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   // ── Chunk B: auto-snapshot the CURRENT month (idempotent overwrite) ──
   // Runs once history + dividends + transactions are loaded. Always overwrites
-  // the current month with the freshest plan values; never touches past months
-  // (the endpoint does a read-modify-write of the map). Also keeps the in-memory
-  // capacityHistory in sync so the table reflects the latest plan immediately.
+  // the current month with the freshest plan values and reconciles `invested`
+  // for existing past snapshots from the latest transactions. Historical plan
+  // fields stay untouched and no missing month is invented. The same single
+  // read-modify-write also keeps capacityHistory in sync for immediate display.
   useEffect(() => {
     if (!capacityLoaded || txLoading || divLastMonth === null) return;
     const month = currentMonthKey();
@@ -928,13 +924,28 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         amount: parseFloat(e.value) || 0,
       })),
       planTotal,
-      invested: half1Auto + half2Auto,
+      invested: computeMonthlyInvested(transactions, usdBrlRate, month),
     };
-    setCapacityHistory((prev) => ({
-      ...prev,
+    const reconciled = reconcileContributionCapacityHistory(
+      capacityHistory,
+      transactions,
+      usdBrlRate
+    );
+    const reconcileInvested = Object.fromEntries(
+      Object.entries(reconciled)
+        .filter(([key]) => /^\d{4}-\d{2}$/.test(key))
+        .map(([key, value]) => [key, value.invested])
+    );
+    setCapacityHistory({
+      ...reconciled,
       [month]: { ...snapshot, savedAt: new Date().toISOString() },
-    }));
-    putContributionsSnapshot(auth, month, snapshot).catch(() => {});
+    });
+    // Config edits can retrigger this effect quickly. Serialize the complete
+    // reconciliation + current snapshot write so an older response can never
+    // overwrite a newer one in Redis.
+    capacitySaveQueue.current = capacitySaveQueue.current
+      .then(() => putContributionsSnapshot(auth, month, snapshot, reconcileInvested))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     capacityLoaded,

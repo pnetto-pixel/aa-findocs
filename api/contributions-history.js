@@ -1,10 +1,12 @@
 // api/contributions-history.js
 // GET: { exists, history, savedAt, method, email, admin }
-// PUT { month: "YYYY-MM", snapshot: {...} }: { ok, savedAt }
+// PUT { month: "YYYY-MM", snapshot: {...}, reconcileInvested?: {...} }:
+//   { ok, savedAt }
 //   - Upserts a single month snapshot into the history map.
 //   - Idempotent: always overwrites the given month with the freshest values.
-//   - Only the CURRENT month should be PUT by the client on mount; past months
-//     already stored are preserved untouched (read-modify-write of the map).
+//   - The client PUTs the current month and may refresh only the `invested`
+//     field of existing past snapshots from the latest transactions. Planning
+//     fields are preserved and months without snapshots are never created.
 // Auth required (x-google-token or x-app-password).
 //
 // Storage: derives from auth.storageKey by swapping ":holdings" suffix for
@@ -202,11 +204,16 @@ async function handleContributionsHistory(req, res, auth) {
       const body = req.body || {};
       const month = body.month;
       const snapshot = body.snapshot;
+      const reconcileInvested = body.reconcileInvested;
       if (typeof month !== 'string' || !MONTH_RE.test(month)) {
         return res.status(400).json({ error: 'month "YYYY-MM" required' });
       }
       if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
         return res.status(400).json({ error: 'snapshot object required' });
+      }
+      if (reconcileInvested != null &&
+          (!reconcileInvested || typeof reconcileInvested !== 'object' || Array.isArray(reconcileInvested))) {
+        return res.status(400).json({ error: 'reconcileInvested object required' });
       }
 
       // Read-modify-write the map so past months are preserved.
@@ -222,6 +229,14 @@ async function handleContributionsHistory(req, res, auth) {
           }
         }
       } catch {}
+
+      // Refresh only realized values on snapshots which already exist. This
+      // deliberately cannot create historical planning rows.
+      for (const [key, invested] of Object.entries(reconcileInvested || {})) {
+        if (!MONTH_RE.test(key) || !history[key]) continue;
+        if (typeof invested !== 'number' || !isFinite(invested) || invested < 0) continue;
+        history[key] = { ...history[key], invested };
+      }
 
       const savedAt = new Date().toISOString();
       history[month] = { ...snapshot, savedAt };
