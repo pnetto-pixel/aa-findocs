@@ -5037,70 +5037,72 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
   return (
     <div style={{ marginTop: 24 }}>
       <button
+        type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
-          background: "transparent",
+          flexWrap: "wrap",
+          gap: "8px 12px",
+          background: T.card,
           border: `1px solid ${T.border}`,
-          borderRadius: 4,
-          padding: "8px 14px",
-          color: T.textDim,
+          borderRadius: open ? "4px 4px 0 0" : 4,
+          padding: "12px 14px",
+          color: T.gold,
           fontFamily: FONT_MONO,
-          fontSize: 11,
+          fontSize: 10,
           letterSpacing: "0.12em",
           textTransform: "uppercase",
+          textAlign: "left",
           cursor: "pointer",
           width: "100%",
+          boxSizing: "border-box",
           justifyContent: "space-between",
         }}
       >
-        <span>
-          Import History — Bond Income
-          <span style={{ marginLeft: 10, color: T.textFaint }}>
-            {sorted.length} entries · {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.tax + totalByKind.other)}
+        <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, flex: "1 1 150px", minWidth: 0 }}>
+          <span>Income History</span>
+          <span style={{ background: T.border, color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 0, padding: "2px 6px", borderRadius: 8, whiteSpace: "nowrap" }}>
+            {sorted.length} entries
           </span>
         </span>
-        <ChevronDown
-          size={14}
-          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
-        />
+        <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginLeft: "auto", minWidth: 0, maxWidth: "100%" }}>
+          <span style={{ color: T.text, fontSize: 12, letterSpacing: 0, overflowWrap: "anywhere" }}>
+            {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.tax + totalByKind.other)}
+          </span>
+          <ChevronDown
+            size={14}
+            style={{ flexShrink: 0, transform: open ? "none" : "rotate(-90deg)", transition: "transform 0.2s" }}
+          />
+        </span>
       </button>
 
       {open && (
         <div
           style={{
-            marginTop: 4,
             border: `1px solid ${T.border}`,
-            borderRadius: 4,
+            borderTop: "none",
+            borderRadius: "0 0 4px 4px",
             overflow: "hidden",
           }}
         >
-          <div style={{ padding: "8px 12px", background: T.cardElev, display: "flex", gap: 20 }}>
-            {totalByKind.interest > 0 && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
-                Interest <span style={{ color: T.text }}>{fmt(totalByKind.interest)}</span>
-              </span>
-            )}
-            {totalByKind.dividend > 0 && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
-                Dividend <span style={{ color: T.text }}>{fmt(totalByKind.dividend)}</span>
-              </span>
-            )}
-            {totalByKind.tax > 0 && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
-                Foreign Tax <span style={{ color: T.red }}>-{fmt(totalByKind.tax)}</span>
-              </span>
-            )}
-            {totalByKind.other > 0 && (
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textDim }}>
-                Other <span style={{ color: T.text }}>{fmt(totalByKind.other)}</span>
-              </span>
-            )}
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.textFaint, marginLeft: "auto" }}>
-              Click trash to delete individual entries
-            </span>
+          <div style={{ padding: "12px 14px", background: T.cardElev, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 100px), 1fr))", gap: "12px 16px", borderBottom: `1px solid ${T.borderSoft}` }}>
+            {[
+              { kind: "interest", label: "Interest" },
+              { kind: "dividend", label: "Dividend" },
+              { kind: "tax", label: "Foreign Tax" },
+              { kind: "other", label: "Other" },
+            ].filter(({ kind }) => totalByKind[kind] > 0).map(({ kind, label }) => (
+              <div key={kind} style={{ minWidth: 0, fontFamily: FONT_MONO }}>
+                <div style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textDim, marginBottom: 5 }}>
+                  {label}
+                </div>
+                <div style={{ fontSize: 13, color: kind === "tax" ? T.red : T.text, lineHeight: 1.4, overflowWrap: "anywhere" }}>
+                  {kind === "tax" ? "-" : ""}{fmt(totalByKind[kind])}
+                </div>
+              </div>
+            ))}
           </div>
           <ScrollHintTable fadeBg={T.bg}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -5169,6 +5171,7 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
                           <button
                             onClick={() => setConfirmId(key)}
                             title="Delete entry"
+                            aria-label={`Delete income entry for ${e.ticker || "unknown ticker"} on ${e.date || "unknown date"}`}
                             style={{
                               background: "transparent",
                               border: "none",
