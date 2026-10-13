@@ -5043,38 +5043,41 @@ function BondIncomeAudit({ bondIncome, onDelete, saving }) {
         style={{
           display: "flex",
           alignItems: "center",
-          flexWrap: "wrap",
-          gap: "8px 12px",
+          gap: 8,
+          width: "100%",
           background: T.card,
           border: `1px solid ${T.border}`,
           borderRadius: open ? "4px 4px 0 0" : 4,
-          padding: "12px 14px",
-          color: T.gold,
+          padding: "10px 14px",
+          cursor: "pointer",
+          color: T.textDim,
           fontFamily: FONT_MONO,
           fontSize: 10,
-          letterSpacing: "0.12em",
+          letterSpacing: "0.15em",
           textTransform: "uppercase",
-          textAlign: "left",
-          cursor: "pointer",
-          width: "100%",
-          boxSizing: "border-box",
-          justifyContent: "space-between",
         }}
       >
-        <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, flex: "1 1 150px", minWidth: 0 }}>
-          <span>Income History</span>
-          <span style={{ background: T.border, color: T.textDim, fontSize: 9, fontWeight: 700, letterSpacing: 0, padding: "2px 6px", borderRadius: 8, whiteSpace: "nowrap" }}>
-            {sorted.length} entries
-          </span>
-        </span>
-        <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginLeft: "auto", minWidth: 0, maxWidth: "100%" }}>
-          <span style={{ color: T.text, fontSize: 12, letterSpacing: 0, overflowWrap: "anywhere" }}>
-            {fmt(totalByKind.interest + totalByKind.dividend + totalByKind.tax + totalByKind.other)}
-          </span>
-          <ChevronDown
-            size={14}
-            style={{ flexShrink: 0, transform: open ? "none" : "rotate(-90deg)", transition: "transform 0.2s" }}
-          />
+        <ChevronDown
+          size={12}
+          style={{
+            transform: open ? "none" : "rotate(-90deg)",
+            transition: "transform 0.2s",
+          }}
+        />
+        Income History
+        <span
+          style={{
+            marginLeft: 8,
+            background: T.border,
+            color: T.textDim,
+            fontFamily: FONT_MONO,
+            fontSize: 9,
+            fontWeight: 700,
+            padding: "1px 6px",
+            borderRadius: 8,
+          }}
+        >
+          {sorted.length}
         </span>
       </button>
 
@@ -5210,10 +5213,9 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
   const [importOpen, setImportOpen] = useState(false);
-  // Transaction history table — open by default (it's the main content of
-  // this tab), collapsible so it can be skipped to reach BondIncomeAudit/
-  // the rest of the screen without scrolling past hundreds of rows.
-  const [historyOpen, setHistoryOpen] = useState(true);
+  // Transaction history starts collapsed, matching Income History, so the
+  // tab opens without scrolling past hundreds of rows.
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [splitCardOpen, setSplitCardOpen] = useState(false);
   const [splitHistoryOpen, setSplitHistoryOpen] = useState(false);
   // Fidelity automation (item 38): trades staged by the scraper, awaiting approval.
