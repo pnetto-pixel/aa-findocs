@@ -252,9 +252,9 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 
 ### Exclusao global de DELL (out/2026, v1.21.5; publicacao pendente)
 
-- Versao ajustada para 1.21.5 com base na versao 1.21.4 informada pelo usuario. Checkout local ainda parte de 1.20.6; integrar o main remoto atualizado antes de publicar, quando a conexao ao GitHub voltar.
+- Versao 1.21.5; main remoto v1.21.4 integrado antes da entrega. Acesso ao GitHub restabelecido ao habilitar rede na execucao do comando; falhas anteriores nao eram causadas pela versao.
 
-- Implementacao local auditada no commit `717c602`, branch `feature/performance-dell-toggle`; ainda sem merge em `main` ou deploy confirmado. `git fetch origin main` falhou por conexao ao proxy na porta 8080.
+- Implementacao local auditada no commit `717c602`, branch `feature/performance-dell-toggle`; main remoto atualizado integrado; entrega em main e deploy ainda pendentes de validacao final.
 - Toggle `DELL: On/Off` no filtro de "Portfolio Performance & Net Worth", ligado por padrao. Desligar ou manter um filtro Ticker explicito sem DELL exclui DELL de toda a aba: TWR/USD/Total Return e dividendos, posicoes/totais/KPIs, Composition Evolution por classe/ticker, risco, retornos mensais e capital investido. Os demais filtros locais continuam independentes.
 - Religar reinsere DELL na selecao explicita de tickers; `Clear filters` restaura a inclusao. Series de uma requisicao anterior nao aparecem associadas ao novo escopo durante o recalculo.
 - Total Net Worth History guarda snapshots agregados sem detalhamento por ticker. Com DELL excluida, o card informa indisponibilidade e oculta os totais originais; nunca subtrai o valor atual de DELL de meses passados.
@@ -451,6 +451,22 @@ Card no `useMemo` de rebalance de `src/App.jsx`, alvo de duas mudancas pedidas p
 ## 💵 Feature: Contributions (Tab Aporte Quinzenal — PR #112 — jun/2026)
 
 Tab para planejamento e acompanhamento de aportes quinzenais. Arquivo `src/AporteQuinzenal.jsx`.
+
+### Accumulated Investment (out/2026, v1.21.0)
+
+Card colapsavel abaixo de Contribution History, implementado em `src/AccumulatedInvestmentCard.jsx`. Mostra a soma acumulada dos aportes, sem valorizacao de mercado, conforme definicao do usuario. `src/lib/accumulatedInvestment.js` constroi uma serie mensal canonica: DELL excluido, BRL convertido pelo FX atual e Bank Bonds netados com piso zero por MES, igual as barras mensais de Contribution History (diferente do clamp por quinzena de Contribution Capacity). Meses sem aportes carregam o saldo anterior; Month/Quarter/Half/Year selecionam o saldo acumulado final do periodo, mantendo o mesmo total ao trocar agrupamento.
+
+Cada barra informa Y/Y e M/M, Q/Q ou H/H; Year mostra somente Y/Y. Comparacoes usam o periodo calendario correspondente e sao calculadas antes dos filtros; base ausente ou zero exibe `--`. Filtros independentes selecionam periodos inteiros e nao reiniciam o acumulado. Na v1.21.1, o grafico usa a mesma largura e altura de 240px de Contribution History, sem scroll horizontal ou labels sobrepostos nas barras. Tooltip por toque mostra legenda, saldo, Y/Y e M/M, Q/Q ou H/H (Year apenas Y/Y); o periodo corrente mostra MTD/QTD/HTD/YTD, sem "As of". Valores monetarios respeitam `valuesHidden` e percentuais permanecem visiveis. Os seletores dos dois cards usam M/Q/H/Y, como Income History.
+
+Validacao: 11 testes novos, parse, build e auditoria aprovados; 100 portfolios aleatorios em quatro agrupamentos conferidos contra as barras mensais existentes. QA Chromium com fixtures em 390/1024px aprovou filtros, seletores, tooltip e mascara, sem overflow da pagina ou erros de runtime. Feature commit `0adf49e`, merge em `main` `b20e62e` e build pos-merge verde. Apos autorizacao explicita do usuario, push de codigo e docs para `pnetto-pixel/aa-findocs` concluido em out/2026; deploy automatico esperado, sem producao verificada. Nenhum endpoint ou contrato de cache foi alterado.
+
+### Comparativos to-date nos historicos (out/2026, v1.21.4)
+
+Nos dois historicos, YTD/HTD/QTD correntes comparam com o mesmo trecho calendario: Y/Y ate o mesmo mes/dia do ano anterior; Q/Q ou H/H ate o mesmo mes relativo/dia do periodo anterior. Exemplo em 30/10: QTD compara com 1-30/10 do ano anterior e 1-30/07. No acumulado, a base e o saldo historico ate cada corte, recalculando o net mensal de Bank Bonds sem transacoes posteriores ao corte. Fim de mes e 29/02 sao limitados ao ultimo dia valido do mes de referencia. Periodos encerrados e MTD mantem a regra anterior; transacoes futuras nao entram no Contribution History. Testes em `test/to-date-history.test.mjs` cobrem ambos os graficos, filtros, bonds e limites de calendario.
+
+### Contribution History - popup de comparativos (out/2026, v1.21.2)
+
+Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: legenda, valor, Y/Y, M/M-Q/Q-H/H (Year apenas Y/Y) e MTD/QTD/HTD/YTD no periodo corrente, sem "As of". `src/lib/contributionHistory.js` preserva os valores e filtros existentes e calcula bases no historico completo por periodo calendario exato; base ausente/zero mostra `--`. Mascara monetaria preservada. Na v1.21.3, taxas positivas usam verde, negativas vermelho e zero branco nos popups de ambos os historicos; bases indisponiveis continuam em cinza. Teste puro cobre comparativos, filtros, Bank Bonds e FX.
 
 ### Logica de rollover de quinzena (Chunk A — frontend puro)
 
@@ -1165,6 +1181,8 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 |Decisão|Razão|
 |---|---|
 |Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.5, publicacao pendente)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
+|**Accumulated Investment usa serie mensal de Contribution History (out/2026, v1.21.0)**|Acumular os aportes mensais antes de agrupar e filtrar preserva o capital anterior e os comparativos, evitando somar saldos ou mudar o total ao trocar periodo. Bank Bonds seguem o net mensal do historico, nao o clamp quinzenal da capacidade.|
+|**SimpleFin restrito a Fidelity, inclusive avisos (out/2026, v1.20.7)**|Descartar contas de outras instituicoes antes do mapper e ocultar somente avisos de autenticacao com formato reconhecido e alvo nao Fidelity; erros globais, desconhecidos e da Fidelity permanecem visiveis para nao mascarar falhas relevantes.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|
 |`ioredis` em vez de `@upstash/redis`|Integração Vercel Marketplace só dá `REDIS_URL` TCP, não REST|
 |Profile cache 30 dias (server + client)|Reduz drasticamente chamadas Finnhub (free tier 60 req/min)|
@@ -1698,3 +1716,12 @@ Ver também: `padding-top` do container raiz (`App.jsx`) ajustado na mesma sess�
 - Menu "Change class ▾" (`src/Transactions.jsx` ~linha 1675, `position: absolute; right: 0`) não alterado — candidato a clamp se houver corte.
 - `AllocationCSVImportModal` usa `100vh` no `maxHeight`; considerar `100dvh`.
 - `ImportModal` perdeu um pouco de folga vertical em telas sem notch (20px vs ~40px antes) — cosmético.
+
+
+## SimpleFin - dados e avisos restritos a Fidelity (out/2026, v1.20.7, merge `bfc457f`)
+
+**Problema:** o Sync exibia avisos de autenticacao de Advancial Federal Credit Union e Apple Card, embora essas contas nao fossem usadas pelo aa-findocs. Os dados ja eram filtrados no mapper, mas todos os `payload.errors` viravam `lastError`.
+
+**Mudanca:** `lib/simplefin-filter.js` descarta contas nao Fidelity antes do mapper, mantendo a defesa `isFidelityOrg` interna. Remove somente o formato reconhecido `Connection to <instituicao> may need attention. Auth required` quando a instituicao nao e Fidelity; preserva mensagens Fidelity, globais e desconhecidas. `api/fidelity-pending.js` aplica a politica no sync e na normalizacao de `lastError` legado, cobrindo GET do staging, status e sync sob throttle sem novo fetch ou espera de seis horas. Nenhuma mudanca no historico live, janela de datas, throttle, endpoints ou env vars.
+
+**Validacao e entrega:** 112 testes do mapper e 7 novos testes de filtro/endpoint aprovados, alem de parse esbuild e build antes/depois do merge. Novos testes: `node --experimental-test-module-mocks test/simplefin-filter.test.mjs` (Node 24). Auditoria aprovada; merge e push em `main` concluidos em 30/out/2026 (`bfc457f`, implementacao `0655afc`). Deploy automatico da Vercel esperado, sem verificacao de producao nesta sessao. Nenhuma pendencia nova.

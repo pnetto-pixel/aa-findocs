@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import { buildContributionHistory } from '../src/lib/contributionHistory.js';
+const buy = (date, price, extra = {}) => ({date, price, qty:1, side:'buy', ticker:'VTI', currency:'USD', ...extra});
+const tx = [buy('2025-01-01',100),buy('2025-10-01',200),buy('2026-07-01',300),buy('2026-09-01',100),buy('2026-10-01',400)];
+const rows = (period,from='',to='') => buildContributionHistory(tx,5,period,from,to,'2026-10-30');
+const oct=rows('Month','2026-10-01','2026-10-30')[0];
+assert.equal(oct.value,400);
+assert.equal(oct.yoy,100);
+assert.equal(oct.previous,300);
+assert.equal(oct.partial,true);
+assert.equal(rows('Month')[1].partial,false);
+assert.equal(rows('Month')[2].previous,null); // June absent, not previous available bar
+const quarter=rows('Quarter').at(-1);
+assert.equal(quarter.yoy,100);
+assert.ok(Math.abs(quarter.previous - (400 / 300 - 1) * 100) < 1e-10); // QTD vs July 1-30
+assert.equal(rows('Half').at(-1).yoy,300);
+const year=rows('Year').at(-1);
+assert.equal(year.previous,null);
+assert.ok(Math.abs(year.yoy-(800/300-1)*100)<1e-10);
+const bonds=buildContributionHistory([buy('2026-10-01',1000,{assetClass:'Bank Bonds'}),buy('2026-10-02',900,{assetClass:'Bank Bonds',side:'sell'}),buy('2026-10-03',100,{currency:'BRL'}),buy('2026-10-04',9999,{ticker:'DELL'})],5,'Month','','','2026-10-30');
+assert.equal(bonds[0].value,120);
+assert.deepEqual(buildContributionHistory([],5,'Month','','','2026-10-30'),[]);
+console.log('Contribution history: calendar comparisons, filters, partial periods, bonds, FX and exclusions passed');
