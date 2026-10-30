@@ -15,7 +15,7 @@ function percent(value) {
   }).format(value)}%`;
 }
 
-function GrowthTooltip({ active, payload, valuesHidden, groupBy, theme, font }) {
+export function GrowthTooltip({ active, payload, valuesHidden, groupBy, theme, font }) {
   const row = payload?.[0]?.payload;
   if (!active || !row) return null;
   return (

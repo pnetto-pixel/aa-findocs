@@ -450,6 +450,10 @@ Cada barra informa Y/Y e M/M, Q/Q ou H/H; Year mostra somente Y/Y. Comparacoes u
 
 Validacao: 11 testes novos, parse, build e auditoria aprovados; 100 portfolios aleatorios em quatro agrupamentos conferidos contra as barras mensais existentes. QA Chromium com fixtures em 390/1024px aprovou filtros, seletores, tooltip e mascara, sem overflow da pagina ou erros de runtime. Feature commit `0adf49e`, merge em `main` `b20e62e` e build pos-merge verde. Apos autorizacao explicita do usuario, push de codigo e docs para `pnetto-pixel/aa-findocs` concluido em out/2026; deploy automatico esperado, sem producao verificada. Nenhum endpoint ou contrato de cache foi alterado.
 
+### Contribution History - popup de comparativos (out/2026, v1.21.2)
+
+Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: legenda, valor, Y/Y, M/M-Q/Q-H/H (Year apenas Y/Y) e MTD/QTD/HTD/YTD no periodo corrente, sem "As of". `src/lib/contributionHistory.js` preserva os valores e filtros existentes e calcula bases no historico completo por periodo calendario exato; base ausente/zero mostra `--`. Mascara monetaria preservada. Teste puro cobre comparativos, filtros, Bank Bonds e FX.
+
 ### Logica de rollover de quinzena (Chunk A — frontend puro)
 
 - `planTotal` = total do mes fixo (entrada manual: Fixed + Dividends + DELL + Extras).

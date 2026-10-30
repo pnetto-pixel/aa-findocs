@@ -17,7 +17,8 @@ import {
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
 import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
-import AccumulatedInvestmentCard from "./AccumulatedInvestmentCard.jsx";
+import AccumulatedInvestmentCard, { GrowthTooltip } from "./AccumulatedInvestmentCard.jsx";
+import { buildContributionHistory } from "./lib/contributionHistory.js";
 import {
   computeMonthlyInvested,
   contributionTxToUSD,
@@ -233,77 +234,6 @@ function monthKeyLabel(key) {
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 }
 
-// Full history from first transaction, grouped by the chosen granularity.
-// DELL buys are excluded (stock vesting, not real contributions).
-// Bank Bonds: only net positive (buys − sells) per bucket counts — rollovers
-// (redeem + recompra) do not inflate the contribution history.
-// Optional fromDate/toDate ("YYYY-MM-DD") filter the date range shown.
-// groupBy: "Month" | "Quarter" | "Half" | "Year"
-function buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate) {
-  const relevant = transactions.filter((tx) => {
-    if (tx.side !== "buy" && !(tx.assetClass === "Bank Bonds" && tx.side === "sell")) return false;
-    if ((tx.ticker || "").toUpperCase() === "DELL") return false;
-    if (!tx.date) return false;
-    if (fromDate && tx.date < fromDate) return false;
-    if (toDate && tx.date > toDate) return false;
-    return true;
-  });
-  if (!relevant.length) return [];
-
-  const byKey = {};
-  const bbBuy = {}, bbSell = {};
-
-  for (const tx of relevant) {
-    const [yStr, mStr] = tx.date.slice(0, 7).split("-");
-    const y = parseInt(yStr, 10);
-    const m = parseInt(mStr, 10);
-    let key;
-    if (groupBy === "Month") {
-      key = `${yStr}-${mStr}`;
-    } else if (groupBy === "Quarter") {
-      key = `${y}-Q${Math.ceil(m / 3)}`;
-    } else if (groupBy === "Half") {
-      key = `${y}-H${m <= 6 ? 1 : 2}`;
-    } else {
-      key = yStr;
-    }
-
-    const amount = contributionTxToUSD(tx, usdBrlRate);
-    if (tx.assetClass === "Bank Bonds") {
-      if (tx.side === "buy") bbBuy[key] = (bbBuy[key] || 0) + amount;
-      else bbSell[key] = (bbSell[key] || 0) + amount;
-    } else if (tx.side === "buy") {
-      byKey[key] = (byKey[key] || 0) + amount;
-    }
-  }
-
-  // Merge net Bank Bond contributions per bucket
-  const allKeys = new Set([...Object.keys(byKey), ...Object.keys(bbBuy)]);
-  for (const key of allKeys) {
-    const net = Math.max(0, (bbBuy[key] || 0) - (bbSell[key] || 0));
-    if (net > 0) byKey[key] = (byKey[key] || 0) + net;
-  }
-
-  return Object.keys(byKey)
-    .sort()
-    .map((key) => {
-      let label;
-      if (groupBy === "Month") {
-        const [y, mStr] = key.split("-");
-        const d = new Date(parseInt(y, 10), parseInt(mStr, 10) - 1, 1);
-        label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-      } else if (groupBy === "Quarter") {
-        const [y, q] = key.split("-");
-        label = `${q} '${y.slice(2)}`;
-      } else if (groupBy === "Half") {
-        const [y, h] = key.split("-");
-        label = `${h} '${y.slice(2)}`;
-      } else {
-        label = key;
-      }
-      return { label, value: byKey[key] };
-    });
-}
 
 function fmtUSD(n, hidden) {
   if (hidden) return "$ ••••";
@@ -332,25 +262,6 @@ function daysInCurrentMonth() {
 
 // ── Sub-components (defined outside to prevent React remounting on re-render) ─
 
-function BarTooltip({ active, payload, label, hidden }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div
-      style={{
-        background: "#191d24",
-        border: "1px solid #222831",
-        borderRadius: 4,
-        padding: "8px 12px",
-        fontFamily: FONT_MONO,
-        fontSize: 12,
-        color: "#ece8e0",
-      }}
-    >
-      <div style={{ color: "#8a8f99", marginBottom: 4 }}>{label}</div>
-      <div style={{ color: "#c9a961" }}>{fmtUSD(payload[0].value, hidden)}</div>
-    </div>
-  );
-}
 
 function CardToggle({ label, sub, open, onToggle }) {
   return (
@@ -970,7 +881,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   }, [capacityHistory]);
 
   const chartData = useMemo(
-    () => buildChartData(transactions, usdBrlRate, groupBy, fromDate, toDate),
+    () => buildContributionHistory(transactions, usdBrlRate, groupBy, fromDate, toDate, localTodayISO()),
     [transactions, usdBrlRate, groupBy, fromDate, toDate]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
@@ -1476,8 +1387,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                     width={44}
                   />
                   <Tooltip
+                    trigger="click"
                     content={(props) => (
-                      <BarTooltip {...props} hidden={valuesHidden} />
+                      <GrowthTooltip {...props} valuesHidden={valuesHidden} groupBy={groupBy} theme={T} font={FONT_MONO} />
                     )}
                   />
                   <Bar dataKey="value" fill={T.gold} radius={[2, 2, 0, 0]} />
