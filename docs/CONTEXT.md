@@ -452,7 +452,7 @@ Validacao: 11 testes novos, parse, build e auditoria aprovados; 100 portfolios a
 
 ### Contribution History - popup de comparativos (out/2026, v1.21.2)
 
-Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: legenda, valor, Y/Y, M/M-Q/Q-H/H (Year apenas Y/Y) e MTD/QTD/HTD/YTD no periodo corrente, sem "As of". `src/lib/contributionHistory.js` preserva os valores e filtros existentes e calcula bases no historico completo por periodo calendario exato; base ausente/zero mostra `--`. Mascara monetaria preservada. Teste puro cobre comparativos, filtros, Bank Bonds e FX.
+Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: legenda, valor, Y/Y, M/M-Q/Q-H/H (Year apenas Y/Y) e MTD/QTD/HTD/YTD no periodo corrente, sem "As of". `src/lib/contributionHistory.js` preserva os valores e filtros existentes e calcula bases no historico completo por periodo calendario exato; base ausente/zero mostra `--`. Mascara monetaria preservada. Na v1.21.3, taxas positivas usam verde, negativas vermelho e zero branco nos popups de ambos os historicos; bases indisponiveis continuam em cinza. Teste puro cobre comparativos, filtros, Bank Bonds e FX.
 
 ### Logica de rollover de quinzena (Chunk A — frontend puro)
 
