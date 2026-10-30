@@ -250,11 +250,9 @@ Painel colapsavel "Income History" no rodape da Tab Transactions (`src/Transacti
 
 Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge gold.
 
-### Exclusao global de DELL (out/2026, v1.21.5; publicacao pendente)
+### Exclusao global de DELL (out/2026, v1.21.5)
 
-- Versao 1.21.5; main remoto v1.21.4 integrado antes da entrega. Acesso ao GitHub restabelecido ao habilitar rede na execucao do comando; falhas anteriores nao eram causadas pela versao.
-
-- Implementacao local auditada no commit `717c602`, branch `feature/performance-dell-toggle`; main remoto atualizado integrado; entrega em main e deploy ainda pendentes de validacao final.
+- Versao 1.21.5; main remoto v1.21.4 integrado antes da entrega. Feature auditada e mergeada em main pelo workflow; ativacao do deployment Vercel em producao nao verificada nesta sessao.
 - Toggle `DELL: On/Off` no filtro de "Portfolio Performance & Net Worth", ligado por padrao. Desligar ou manter um filtro Ticker explicito sem DELL exclui DELL de toda a aba: TWR/USD/Total Return e dividendos, posicoes/totais/KPIs, Composition Evolution por classe/ticker, risco, retornos mensais e capital investido. Os demais filtros locais continuam independentes.
 - Religar reinsere DELL na selecao explicita de tickers; `Clear filters` restaura a inclusao. Series de uma requisicao anterior nao aparecem associadas ao novo escopo durante o recalculo.
 - Total Net Worth History guarda snapshots agregados sem detalhamento por ticker. Com DELL excluida, o card informa indisponibilidade e oculta os totais originais; nunca subtrai o valor atual de DELL de meses passados.
@@ -1180,7 +1178,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
-|Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.5, publicacao pendente)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
+|Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.5)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
 |**Accumulated Investment usa serie mensal de Contribution History (out/2026, v1.21.0)**|Acumular os aportes mensais antes de agrupar e filtrar preserva o capital anterior e os comparativos, evitando somar saldos ou mudar o total ao trocar periodo. Bank Bonds seguem o net mensal do historico, nao o clamp quinzenal da capacidade.|
 |**SimpleFin restrito a Fidelity, inclusive avisos (out/2026, v1.20.7)**|Descartar contas de outras instituicoes antes do mapper e ocultar somente avisos de autenticacao com formato reconhecido e alvo nao Fidelity; erros globais, desconhecidos e da Fidelity permanecem visiveis para nao mascarar falhas relevantes.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|

@@ -2,11 +2,8 @@
 
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
-## Implementado localmente - publicacao pendente
-
-- **Performance: toggle DELL e exclusao em todos os cards (out/2026, v1.21.5, commit `717c602`):** toggle ligado por padrao no filtro de "Portfolio Performance & Net Worth"; desligar ou excluir DELL no filtro Ticker propaga a exclusao aos calculos, dividendos, posicoes, composicao e analytics, preservando os demais filtros locais. Total Net Worth History informa indisponibilidade com DELL excluida porque seus snapshots sao agregados; parse/build, regressao DELL, perf-history e analytics aprovados. **Pendente:** merge/publicacao da branch `feature/performance-dell-toggle` quando o acesso ao GitHub voltar; fetch falhou por conexao ao proxy na porta 8080, sem atualizacao de producao confirmada.
-
 ## ✅ Concluídos
+- **Performance: toggle DELL e exclusao em todos os cards (out/2026, v1.21.5):** toggle ligado por padrao no filtro de "Portfolio Performance & Net Worth"; desligar ou excluir DELL no filtro Ticker propaga a exclusao aos calculos, dividendos, posicoes, composicao e analytics, preservando os demais filtros locais. Total Net Worth History informa indisponibilidade com DELL excluida porque seus snapshots sao agregados; parse/build, regressao DELL, perf-history e analytics aprovados. Feature auditada e mergeada em main; ativacao do deployment Vercel em producao nao verificada nesta sessao.
 - **Taxas proporcionais to-date (out/2026, v1.21.4):** YTD/HTD/QTD dos dois historicos comparam com o mesmo trecho calendario dos periodos de referencia, incluindo saldos acumulados ate cada corte e net de bonds recalculado. Periodos encerrados e MTD preservados; cobertura de calendario, filtros e bonds em testes.
 - **Cores das taxas nos popups dos historicos (out/2026, v1.21.3):** Contribution History e Accumulated Investment usam verde para taxas positivas, vermelho para negativas e branco para zero; comparativos indisponiveis continuam em cinza.
 - **Contribution History - popup com comparativos (out/2026, v1.21.2):** mesmo popup por toque do acumulado com legenda, valor, Y/Y e M/M, Q/Q ou H/H (Year somente Y/Y), marcador MTD/QTD/HTD/YTD no periodo aberto. Bases calendarias calculadas antes dos filtros; valores existentes e mascara preservados.
