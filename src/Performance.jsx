@@ -3127,9 +3127,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                             </div>
                             <div style={{ color: T.blue }}>Value: {fmtUSD(payload[0].payload.usd)}</div>
                             <div style={{ color: T.gold }}>Invested: {fmtUSD(payload[0].payload.invested)}</div>
-                            <div style={{ color: T.green }}>Portfolio Value with Dividends: {fmtUSD(payload[0].payload.usdWithDividends)}</div>
+                            <div style={{ color: T.green }}>Value + Income: {fmtUSD(payload[0].payload.usdWithDividends)}</div>
                             <div style={{ color: kpiColor((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0)) }}>
                               Gain: {fmtUSD((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0))}
+                            </div>
+                            <div style={{ color: kpiColor(payload[0].payload.usdWithDividends == null ? null : payload[0].payload.usdWithDividends - payload[0].payload.invested) }}>
+                              Total Gain: {fmtUSD(payload[0].payload.usdWithDividends == null ? null : payload[0].payload.usdWithDividends - payload[0].payload.invested)}
                             </div>
                           </div>
                         ) : null
@@ -3138,14 +3141,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     <Legend wrapperStyle={{ fontFamily: FONT_MONO, fontSize: 11, paddingTop: 8, color: T.textDim }} />
                     <Area type="monotone" dataKey="usd" name="Portfolio Value" stroke={T.blue} strokeWidth={2} fill={T.blue + "22"} dot={false} />
                     <Line type="monotone" dataKey="invested" name="Capital Invested" stroke={T.gold} strokeWidth={2} strokeDasharray="6 3" dot={false} />
-                    <Line type="monotone" dataKey="usdWithDividends" name="Portfolio Value with Dividends" stroke={T.green} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="usdWithDividends" name="Value + Income" stroke={T.green} strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
                 Portfolio Value minus Capital Invested is market gain (net of sells).
                 Invested and received income are cumulative since inception even in shorter windows.
-                Portfolio Value with Dividends includes available USD dividends and received bond
+                Value + Income includes available USD dividends and received bond
                 interest, net of withholding tax, as nominal income without reinvestment.
                 {analyticsBase.incomeSkippedCurrency > 0 &&
                   ` ${analyticsBase.incomeSkippedCurrency} income event${analyticsBase.incomeSkippedCurrency !== 1 ? "s" : ""} skipped (currency is not USD).`}
