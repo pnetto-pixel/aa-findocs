@@ -39,6 +39,7 @@ import {
   listBankBondsTickers,
 } from "./lib/bankBonds.js";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
+import { isDellExcluded, includesPerformanceTicker } from "./lib/performanceScope.js";
 
 // Must match App.jsx's BANK_BONDS_ID - the id of the single aggregated "US
 // Bank Bonds" manual holding. Duplicated (not imported) because App.jsx is
@@ -1704,6 +1705,14 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   const [nwHistory, setNwHistory] = useState([]); // [{ month: "YYYY-MM", value }]
   const [assetClassFilter, setAssetClassFilter] = useState(() => new Set()); // include-filter, empty = all
   const [tickerFilter, setTickerFilter] = useState(() => new Set()); // include-filter, empty = all
+  const [includeDell, setIncludeDell] = useState(true);
+  const [resolvedPerfTransactions, setResolvedPerfTransactions] = useState(null);
+  const dellExcluded = isDellExcluded(includeDell, tickerFilter);
+  // Only the Dell exclusion is shared with cards that own independent filters.
+  const scopedTransactions = useMemo(
+    () => transactions.filter((tx) => includesPerformanceTicker(tx.ticker, dellExcluded)),
+    [transactions, dellExcluded]
+  );
   // Composition Evolution's own Asset Class/Ticker filter — independent of
   // assetClassFilter/tickerFilter above (that pair drives the TWR chart).
   const [compAssetClassFilter, setCompAssetClassFilter] = useState(() => new Set());
@@ -1717,8 +1726,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   // ── Effect A: raw, unfiltered load on auth change ──────────────────────────
   // Loads transactions + bond income + dividend events. These also feed the
-  // Position Performance table below, which is out of scope for the new
-  // asset-class/ticker filters and must never be filtered.
+  // Position Performance keeps its own filters, plus the shared Dell scope.
   useEffect(() => {
     let cancelled = false;
     setState("loading");
@@ -1731,6 +1739,8 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     setDivByTicker({});
     setAssetClassFilter(new Set());
     setTickerFilter(new Set());
+    setIncludeDell(true);
+    setResolvedPerfTransactions(null);
     setCompAssetClassFilter(new Set());
     setCompTickerFilter(new Set());
     setCompositionRaw({ dates: [], tickerValues: {}, tickerClass: {} });
@@ -1815,24 +1825,28 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   // Include-filter semantics: empty set = everything included.
   const filteredTransactions = useMemo(
-    () => transactions.filter(
+    () => scopedTransactions.filter(
       (tx) =>
         (assetClassFilter.size === 0 || assetClassFilter.has(tx.assetClass)) &&
         (tickerFilter.size === 0 || tickerFilter.has(tx.ticker?.toUpperCase()))
     ),
-    [transactions, assetClassFilter, tickerFilter]
+    [scopedTransactions, assetClassFilter, tickerFilter]
   );
 
   const filteredDivEvents = useMemo(
     () => divEvents.filter(
       (e) =>
+        includesPerformanceTicker(e.ticker, dellExcluded) &&
         (assetClassFilter.size === 0 || assetClassFilter.has(e.assetClass)) &&
         (tickerFilter.size === 0 || tickerFilter.has(e.ticker?.toUpperCase?.() ?? e.ticker))
     ),
-    [divEvents, assetClassFilter, tickerFilter]
+    [divEvents, assetClassFilter, tickerFilter, dellExcluded]
   );
 
-  const filtersActive = assetClassFilter.size > 0 || tickerFilter.size > 0;
+  const filtersActive = assetClassFilter.size > 0 || tickerFilter.size > 0 || dellExcluded;
+  // Never render a previous request's series alongside the new scope's cashflows.
+  const perfReady = state === "done" && resolvedPerfTransactions === filteredTransactions;
+  const perfLoading = state === "loading" || (state === "done" && !perfReady);
 
   // Committing a new Asset Class filter can orphan the current Ticker filter
   // (e.g. switch from "BRA Stocks" + ticker "BBSE3" to "Stocks" without
@@ -1857,6 +1871,16 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   function clearFilters() {
     setAssetClassFilter(new Set());
     setTickerFilter(new Set());
+    setIncludeDell(true);
+  }
+
+  function toggleDell() {
+    const nextIncluded = dellExcluded;
+    setIncludeDell(nextIncluded);
+    // Relighting the toggle also restores Dell in an explicit ticker selection.
+    if (nextIncluded && tickerFilter.size > 0 && !tickerFilter.has("DELL")) {
+      setTickerFilter(new Set([...tickerFilter, "DELL"]));
+    }
   }
 
   // Composition Evolution's own Asset Class/Ticker filter options — scoped to
@@ -1876,12 +1900,12 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   }, [transactions, compAssetClassFilter]);
 
   const compFilteredTransactions = useMemo(
-    () => transactions.filter(
+    () => scopedTransactions.filter(
       (tx) =>
         (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tx.assetClass)) &&
         (compTickerFilter.size === 0 || compTickerFilter.has(tx.ticker?.toUpperCase()))
     ),
-    [transactions, compAssetClassFilter, compTickerFilter]
+    [scopedTransactions, compAssetClassFilter, compTickerFilter]
   );
 
   const compFiltersActive = compAssetClassFilter.size > 0 || compTickerFilter.size > 0;
@@ -1924,6 +1948,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     let cancelled = false;
 
     const applyPerfResponse = ({ dates, portfolio, portfolioUSD, spy, meta: respMeta }) => {
+      setResolvedPerfTransactions(filteredTransactions);
       setMeta(respMeta || null);
       if (!dates?.length) {
         setState("done");
@@ -2171,6 +2196,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
   );
 
   const positionRows = useMemo(() => {
+    const transactions = scopedTransactions;
     if (!transactions.length) return [];
     // Position Performance's Bank Bonds Current Value matches SimpleFin
     // INDIVIDUALLY per bond (jul/2026): computeBankBondsMarketValue reads the
@@ -2275,7 +2301,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     }
 
     return rows;
-  }, [transactions, priceMap, divByTicker, holdings]);
+  }, [scopedTransactions, priceMap, divByTicker, holdings]);
 
   const xAxis = useMemo(() => computeXAxis(chartData, period), [chartData, period]);
 
@@ -2288,6 +2314,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     if (!dates?.length) return { dates: [], classValues: {} };
     const includedTickers = Object.keys(tickerClass).filter(
       (t) =>
+        includesPerformanceTicker(t, dellExcluded) &&
         (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tickerClass[t])) &&
         (compTickerFilter.size === 0 || compTickerFilter.has(t))
     );
@@ -2299,7 +2326,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       classValues[cls] = classValues[cls].map((v, i) => v + (vals[i] || 0));
     }
     return { dates, classValues };
-  }, [compositionRaw, compAssetClassFilter, compTickerFilter]);
+  }, [compositionRaw, compAssetClassFilter, compTickerFilter, dellExcluded]);
 
   // Overlays a client-computed Bank Bonds value series (accrued-interest
   // projection, same helper used by Position Performance above) onto
@@ -2323,6 +2350,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     if (!dates?.length) return { dates: [], tickerValues: {}, tickerClass: {} };
     const includedTickers = Object.keys(tickerClass).filter(
       (t) =>
+        includesPerformanceTicker(t, dellExcluded) &&
         (compAssetClassFilter.size === 0 || compAssetClassFilter.has(tickerClass[t])) &&
         (compTickerFilter.size === 0 || compTickerFilter.has(t))
     );
@@ -2333,7 +2361,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       outClass[t] = tickerClass[t];
     }
     return { dates, tickerValues: outValues, tickerClass: outClass };
-  }, [compositionRaw, compAssetClassFilter, compTickerFilter]);
+  }, [compositionRaw, compAssetClassFilter, compTickerFilter, dellExcluded]);
 
   // Overlays client-computed Bank Bonds values per CUSIP (via
   // computeBankBondsValueAt's `byTicker` breakdown) onto the per-ticker
@@ -2376,7 +2404,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
   // When the asset-class or ticker filter is active, the Net Worth KPI should
   // reflect only the filtered positions (positionRows already carry ticker +
-  // assetClass). PositionPerformanceTable itself stays unfiltered (out of scope).
+  // assetClass). PositionPerformanceTable shares only the Dell exclusion.
   const filteredNetWorth = useMemo(() => {
     if (!filtersActive) return null;
     return positionRows
@@ -2437,7 +2465,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
             Portfolio Performance &amp; Net Worth
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {state === "loading" && (
+            {perfLoading && (
               <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, letterSpacing: "0.06em" }}>
                 Loading…
               </span>
@@ -2455,7 +2483,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
 
         {perfCardOpen && (
           <div style={cardBodyStyle}>
-            {state === "loading" && (
+            {perfLoading && (
               <div
                 style={{
                   fontFamily: FONT_MONO,
@@ -2491,7 +2519,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                 to produce zero results, so a "Clear filters" affordance is
                 always reachable and the user is never stuck staring at the
                 empty state with no way to recover without switching tabs. */}
-            {state === "done" && assetClassOptions.length > 0 && (
+            {transactionsLoaded && assetClassOptions.length > 0 && (
               <div
                 style={{
                   display: "flex",
@@ -2513,6 +2541,30 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   committed={tickerFilter}
                   onCommit={setTickerFilter}
                 />
+                <button
+                  type="button"
+                  aria-label="Include DELL in all Performance cards"
+                  aria-pressed={!dellExcluded}
+                  onClick={toggleDell}
+                  title="Include or exclude DELL across all Performance cards"
+                  style={{
+                    background: !dellExcluded ? T.gold : T.cardElev,
+                    border: `1px solid ${!dellExcluded ? T.gold : T.border}`,
+                    borderRadius: 4,
+                    color: !dellExcluded ? T.bg : T.textDim,
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    padding: "5px 10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {dellExcluded ? "DELL: Off" : "DELL: On"}
+                </button>
+                {dellExcluded && (
+                  <span role="status" style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textDim }}>
+                    DELL excluded from all cards
+                  </span>
+                )}
                 {filtersActive && (
                   <button
                     onClick={clearFilters}
@@ -2534,7 +2586,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               </div>
             )}
 
-            {state === "done" && rawData.length === 0 && (
+            {perfReady && rawData.length === 0 && (
               <div
                 style={{
                   background: T.cardElev,
@@ -2555,7 +2607,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
               </div>
             )}
 
-            {state === "done" && rawData.length > 0 && (
+            {perfReady && rawData.length > 0 && (
               <>
                 {/* Period selector + toggles */}
                 <div
@@ -2808,7 +2860,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       </section>
 
       {/* Position Performance card */}
-      {state === "done" && positionRows.length > 0 && (
+      {perfReady && positionRows.length > 0 && (
         <PositionPerformanceTable
           rows={positionRows}
           valuesHidden={valuesHidden}
@@ -2818,7 +2870,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       )}
 
       {/* Composition Evolution card */}
-      {state === "done" && transactionsLoaded && (
+      {perfReady && transactionsLoaded && (
         <CompositionCard
           mergedComposition={mergedComposition}
           mergedTickerComposition={mergedTickerComposition}
@@ -2835,7 +2887,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       )}
 
       {/* Risk & Drawdown card — Asset Class/Ticker scope from the global chips; time window per-card */}
-      {state === "done" && analyticsBase && (
+      {perfReady && analyticsBase && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setRiskOpen((o) => !o)} style={cardHeaderStyle(riskOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -2945,7 +2997,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       )}
 
       {/* Monthly Returns heatmap card */}
-      {state === "done" && rawData.length > 1 && (
+      {perfReady && rawData.length > 1 && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setMonthlyOpen((o) => !o)} style={cardHeaderStyle(monthlyOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -3020,7 +3072,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       )}
 
       {/* Invested vs Growth card */}
-      {state === "done" && analyticsBase && analyticsBase.hasUsdSeries && (
+      {perfReady && analyticsBase && analyticsBase.hasUsdSeries && (
         <section style={{ marginTop: 28 }}>
           <button onClick={() => setInvestedOpen((o) => !o)} style={cardHeaderStyle(investedOpen)}>
             <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: T.gold }}>
@@ -3104,8 +3156,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
         </button>
         {nwHistOpen && (
           <div style={cardBodyStyle}>
-            {nwHistory.length > 0 && <PeriodPills value={nwPeriod} onChange={setNwPeriod} />}
-            {nwHistory.length === 0 ? (
+            {!dellExcluded && nwHistory.length > 0 && <PeriodPills value={nwPeriod} onChange={setNwPeriod} />}
+            {dellExcluded ? (
+              <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
+                History without DELL is unavailable: monthly snapshots store total net worth
+                without a ticker breakdown. Turn DELL on to view the original totals.
+              </div>
+            ) : nwHistory.length === 0 ? (
               <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
                 No snapshots yet. Your TOTAL net worth (including Cash, Unallocated and BRA
                 Fixed Income) is recorded automatically once per month when you open the app —
