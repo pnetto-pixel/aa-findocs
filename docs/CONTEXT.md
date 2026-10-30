@@ -250,7 +250,9 @@ Painel colapsavel "Income History" no rodape da Tab Transactions (`src/Transacti
 
 Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge gold.
 
-### Exclusao global de DELL (out/2026, v1.21.0; publicacao pendente)
+### Exclusao global de DELL (out/2026, v1.21.5; publicacao pendente)
+
+- Versao ajustada para 1.21.5 com base na versao 1.21.4 informada pelo usuario. Checkout local ainda parte de 1.20.6; integrar o main remoto atualizado antes de publicar, quando a conexao ao GitHub voltar.
 
 - Implementacao local auditada no commit `717c602`, branch `feature/performance-dell-toggle`; ainda sem merge em `main` ou deploy confirmado. `git fetch origin main` falhou por conexao ao proxy na porta 8080.
 - Toggle `DELL: On/Off` no filtro de "Portfolio Performance & Net Worth", ligado por padrao. Desligar ou manter um filtro Ticker explicito sem DELL exclui DELL de toda a aba: TWR/USD/Total Return e dividendos, posicoes/totais/KPIs, Composition Evolution por classe/ticker, risco, retornos mensais e capital investido. Os demais filtros locais continuam independentes.
@@ -1162,7 +1164,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
-|Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.0, publicacao pendente)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
+|Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.5, publicacao pendente)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|
 |`ioredis` em vez de `@upstash/redis`|Integração Vercel Marketplace só dá `REDIS_URL` TCP, não REST|
 |Profile cache 30 dias (server + client)|Reduz drasticamente chamadas Finnhub (free tier 60 req/min)|
