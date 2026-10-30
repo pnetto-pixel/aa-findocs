@@ -30,6 +30,7 @@ import {
   maxDrawdown,
   monthlyReturns,
   investedSeries,
+  portfolioWithIncomeSeries,
   xirrFromTransactions,
 } from "./lib/analytics.js";
 import {
@@ -2121,11 +2122,15 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
       return fxRate ? 1 / fxRate : null;
     };
     const invested = investedSeries(dates, eligibleTxs, resolveFx);
+    const withIncome = portfolioWithIncomeSeries(
+      dates, rawData.map((d) => d.usd), filteredDivEvents, eligibleTxs, localTodayISO()
+    );
     const investedChart = rawData.map((d, i) => ({
       date: d.date,
       dateTs: Date.parse(d.date),
       usd: d.usd,
       invested: invested.series[i],
+      usdWithDividends: withIncome.series[i],
     }));
     const lastUsd = [...rawData].reverse().find((d) => d.usd != null)?.usd ?? null;
     const xirrPct =
@@ -2136,10 +2141,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
     return {
       investedChart,
       investedSkipped: invested.skipped,
+      incomeSkippedCurrency: withIncome.skippedCurrency,
       xirrPct,
       hasUsdSeries: lastUsd != null,
     };
-  }, [rawData, filteredTransactions, priceMap]);
+  }, [rawData, filteredTransactions, filteredDivEvents, priceMap]);
 
   const riskStats = useMemo(() => {
     const rows = sliceByPeriod(rawData, riskPeriod);
@@ -3115,12 +3121,13 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     <Tooltip
                       content={({ active, payload }) =>
                         active && payload?.length && !valuesHidden ? (
-                          <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.text }}>
+                          <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 11, color: T.text, maxWidth: "min(260px, calc(100vw - 48px))", overflowWrap: "anywhere" }}>
                             <div style={{ color: T.textDim, marginBottom: 4 }}>
                               {fmtDateLabel(new Date(payload[0].payload.dateTs).toISOString().slice(0, 10))}
                             </div>
                             <div style={{ color: T.blue }}>Value: {fmtUSD(payload[0].payload.usd)}</div>
                             <div style={{ color: T.gold }}>Invested: {fmtUSD(payload[0].payload.invested)}</div>
+                            <div style={{ color: T.green }}>Portfolio Value with Dividends: {fmtUSD(payload[0].payload.usdWithDividends)}</div>
                             <div style={{ color: kpiColor((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0)) }}>
                               Gain: {fmtUSD((payload[0].payload.usd ?? 0) - (payload[0].payload.invested ?? 0))}
                             </div>
@@ -3131,12 +3138,17 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     <Legend wrapperStyle={{ fontFamily: FONT_MONO, fontSize: 11, paddingTop: 8, color: T.textDim }} />
                     <Area type="monotone" dataKey="usd" name="Portfolio Value" stroke={T.blue} strokeWidth={2} fill={T.blue + "22"} dot={false} />
                     <Line type="monotone" dataKey="invested" name="Capital Invested" stroke={T.gold} strokeWidth={2} strokeDasharray="6 3" dot={false} />
+                    <Line type="monotone" dataKey="usdWithDividends" name="Portfolio Value with Dividends" stroke={T.green} strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
-                The gap between the lines is market gain on top of what you put in (net of sells).
-                Invested is cumulative since inception even in shorter windows.
+                Portfolio Value minus Capital Invested is market gain (net of sells).
+                Invested and received income are cumulative since inception even in shorter windows.
+                Portfolio Value with Dividends includes available USD dividends and received bond
+                interest, net of withholding tax, as nominal income without reinvestment.
+                {analyticsBase.incomeSkippedCurrency > 0 &&
+                  ` ${analyticsBase.incomeSkippedCurrency} income event${analyticsBase.incomeSkippedCurrency !== 1 ? "s" : ""} skipped (currency is not USD).`}
                 {analyticsBase.investedSkipped > 0 &&
                   ` ${analyticsBase.investedSkipped} BRL transaction${analyticsBase.investedSkipped !== 1 ? "s" : ""} skipped (no live FX rate for the ticker).`}
               </div>

@@ -14,6 +14,7 @@ import {
   maxDrawdown,
   monthlyReturns,
   investedSeries,
+  portfolioWithIncomeSeries,
   xirr,
   xirrFromTransactions,
 } from '../src/lib/analytics.js';
@@ -196,6 +197,98 @@ await test('xirrFromTransactions: buy + final value, investor signs handled', ()
   const txs = [{ date: '2025-01-01', side: 'buy', qty: 10, price: 100, fee: 0 }];
   const r = xirrFromTransactions(txs, resolveAllUSD, 1100, '2026-01-01');
   approx(r, 10, 0.1);
+});
+
+console.log('\n-- portfolio value with income --');
+
+const incomeTxs = [
+  { ticker: 'AAPL', assetClass: 'Stocks', date: '2026-01-01', side: 'buy' },
+  { ticker: 'AAPL', assetClass: 'Stocks', date: '2026-01-02', side: 'sell' },
+  { ticker: 'CD123', assetClass: 'Bank Bonds', date: '2026-01-01', side: 'buy' },
+];
+const incomeEvent = (date, totalReceived, extra = {}) => ({
+  date, totalReceived, ticker: 'AAPL', assetClass: 'Stocks',
+  incomeType: 'dividend', currency: 'USD', ...extra,
+});
+
+await test('portfolioWithIncomeSeries: sorts receipts, nets tax, includes real interest and sold positions', () => {
+  const dates = ['2026-01-02', '2026-01-05', '2026-01-06'];
+  const events = [
+    incomeEvent('2026-01-05', -2, { incomeType: 'tax' }),
+    incomeEvent('2026-01-03', 10), // Saturday carries into Monday.
+    incomeEvent('2026-01-01', 5, { ticker: 'CD123', assetClass: 'Bank Bonds', incomeType: 'interest' }),
+    incomeEvent('2026-01-05', 3), // Same-day events must all accumulate.
+  ];
+  const saved = JSON.stringify(events);
+  const result = portfolioWithIncomeSeries(dates, [100, 110, 120], events, incomeTxs, '2026-01-06');
+  assert.deepEqual(result.series, [105, 126, 136]);
+  assert.equal(result.skippedCurrency, 0);
+  assert.equal(JSON.stringify(events), saved);
+  // The shorter display window preserves income before its opening date.
+  assert.deepEqual(result.series.slice(1), [126, 136]);
+});
+
+await test('portfolioWithIncomeSeries: future, estimated, uncertain, principal and invalid amounts never add income', () => {
+  const events = [
+    incomeEvent('2026-01-02', 1),
+    incomeEvent('2026-01-06', 100),
+    incomeEvent('2026-01-02', 100, { estimated: true }),
+    incomeEvent('2026-01-02', 100, { isEstimated: true }),
+    incomeEvent('2026-01-02', 100, { source: 'estimated' }),
+    incomeEvent('2026-01-02', 100, { payDateUncertain: true }),
+    incomeEvent('2026-01-02', 100, { incomeType: 'redemption' }),
+    incomeEvent('2026-01-02', 100, { incomeType: 'principal' }),
+    incomeEvent('2026-01-02', 100, { incomeType: undefined }),
+    incomeEvent('invalid', 100),
+    incomeEvent('2026-01-02', Infinity),
+    incomeEvent('2026-01-02', 'bad'),
+    incomeEvent('2026-01-02', null),
+  ];
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02', '2026-01-06'], [100, 100], events, incomeTxs, '2026-01-05'
+  ).series, [101, 101]);
+});
+
+await test('portfolioWithIncomeSeries: foreign currencies are skipped and counted, USD legacy events preserved', () => {
+  const events = [
+    incomeEvent('2026-01-02', 100, { currency: 'BRL' }),
+    incomeEvent('2026-01-02', 100, { currency: 'EUR' }),
+    incomeEvent('2026-01-02', 100, { currency: '' }),
+    incomeEvent('2026-01-02', 2, { currency: undefined }),
+    incomeEvent('2026-01-02', 3, { currency: 'usd' }),
+  ];
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02'], [100], events, incomeTxs, '2026-01-05'
+  ), { series: [105], skippedCurrency: 3 });
+});
+
+await test('portfolioWithIncomeSeries: no income overlaps value, missing USD remains null', () => {
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02', '2026-01-05', '2026-01-06'], [100, null, 0], [], incomeTxs, '2026-01-06'
+  ).series, [100, null, 0]);
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02', '2026-01-05'], [null, 100], [incomeEvent('2026-01-02', 5)], incomeTxs, '2026-01-06'
+  ).series, [null, 105]);
+  assert.deepEqual(portfolioWithIncomeSeries([], [], [], [], '2026-01-06').series, []);
+});
+
+await test('portfolioWithIncomeSeries: ticker and class scopes match historical transactions', () => {
+  const events = [
+    incomeEvent('2026-01-02', 5, { ticker: 'aapl' }),
+    incomeEvent('2026-01-02', 100, { ticker: 'DELL' }),
+    incomeEvent('2026-01-02', 100, { assetClass: 'Alternative' }),
+    incomeEvent('2026-01-02', 100, { ticker: undefined }),
+    incomeEvent('2026-01-02', 3, { ticker: 'CD123', assetClass: 'Bank Bonds', incomeType: 'interest' }),
+  ];
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02'], [100], events, incomeTxs, '2026-01-06'
+  ).series, [108]);
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02'], [100], events, incomeTxs.filter((t) => t.assetClass === 'Stocks'), '2026-01-06'
+  ).series, [105]);
+  assert.deepEqual(portfolioWithIncomeSeries(
+    ['2026-01-02'], [100], events, [], '2026-01-06'
+  ).series, [100]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { isDellExcluded, includesPerformanceTicker } from "../src/lib/performanceScope.js";
 import { computePerformance } from "../api/perf-history.js";
-import { investedSeries } from "../src/lib/analytics.js";
+import { investedSeries, portfolioWithIncomeSeries } from "../src/lib/analytics.js";
 
 const txs = [
   { ticker: "DELL", date: "2026-01-01", side: "buy", qty: 10, price: 100, assetClass: "Stocks" },
@@ -65,4 +65,18 @@ const income = [
 assert.equal(income.filter((e) => includesPerformanceTicker(e.ticker, true))
   .reduce((sum, e) => sum + e.totalReceived, 0), 2);
 assert.deepEqual(txs.map((tx) => tx.ticker), ["DELL", "AAPL"]);
+// The new value-with-income line uses exactly the same filtered universe as
+// portfolioUSD: neither Dell dividends nor Dell withholding can leak back in.
+const received = income.map((e) => ({
+  ...e, date: dates[1], assetClass: "Stocks", currency: "USD",
+  incomeType: e.totalReceived < 0 ? "tax" : "dividend",
+}));
+const receivedScoped = received.filter((e) => includesPerformanceTicker(e.ticker, excluded));
+assert.deepEqual(portfolioWithIncomeSeries(
+  dates, withoutDell.portfolioUSD, receivedScoped, scoped, dates[2]
+).series, [100, 112, 123]);
+// Even a stale unfiltered income list cannot reintroduce an excluded ticker.
+assert.deepEqual(portfolioWithIncomeSeries(
+  dates, withoutDell.portfolioUSD, received, scoped, dates[2]
+).series, [100, 112, 123]);
 console.log("Performance Dell scope: all checks passed");
