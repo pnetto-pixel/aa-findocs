@@ -18,6 +18,8 @@ function percent(value) {
 export function GrowthTooltip({ active, payload, valuesHidden, groupBy, theme, font }) {
   const row = payload?.[0]?.payload;
   if (!active || !row) return null;
+  const rateColor = (value) => value == null || !Number.isFinite(value) ? theme.textDim
+    : value > 0 ? theme.green : value < 0 ? theme.red : "#ffffff";
   return (
     <div style={{ background: theme.cardElev, border: `1px solid ${theme.border}`, borderRadius: 4,
       padding: "8px 12px", fontFamily: font, fontSize: 11, color: theme.text }}>
@@ -25,8 +27,8 @@ export function GrowthTooltip({ active, payload, valuesHidden, groupBy, theme, f
       <div style={{ color: theme.gold }}>{valuesHidden ? "$ ****" : new Intl.NumberFormat("en-US", {
         style: "currency", currency: "USD",
       }).format(row.value)}</div>
-      <div>Y/Y {percent(row.yoy)}</div>
-      {groupBy !== "Year" && <div>{PREVIOUS_LABEL[groupBy]} {percent(row.previous)}</div>}
+      <div style={{ color: rateColor(row.yoy) }}>Y/Y {percent(row.yoy)}</div>
+      {groupBy !== "Year" && <div style={{ color: rateColor(row.previous) }}>{PREVIOUS_LABEL[groupBy]} {percent(row.previous)}</div>}
       {row.partial && <div style={{ color: theme.textDim, marginTop: 4 }}>{TO_DATE_LABEL[groupBy]}</div>}
     </div>
   );
