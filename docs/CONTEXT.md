@@ -250,6 +250,14 @@ Painel colapsavel "Income History" no rodape da Tab Transactions (`src/Transacti
 
 Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge gold.
 
+### Exclusao global de DELL (out/2026, v1.21.0; publicacao pendente)
+
+- Implementacao local auditada no commit `717c602`, branch `feature/performance-dell-toggle`; ainda sem merge em `main` ou deploy confirmado. `git fetch origin main` falhou por conexao ao proxy na porta 8080.
+- Toggle `DELL: On/Off` no filtro de "Portfolio Performance & Net Worth", ligado por padrao. Desligar ou manter um filtro Ticker explicito sem DELL exclui DELL de toda a aba: TWR/USD/Total Return e dividendos, posicoes/totais/KPIs, Composition Evolution por classe/ticker, risco, retornos mensais e capital investido. Os demais filtros locais continuam independentes.
+- Religar reinsere DELL na selecao explicita de tickers; `Clear filters` restaura a inclusao. Series de uma requisicao anterior nao aparecem associadas ao novo escopo durante o recalculo.
+- Total Net Worth History guarda snapshots agregados sem detalhamento por ticker. Com DELL excluida, o card informa indisponibilidade e oculta os totais originais; nunca subtrai o valor atual de DELL de meses passados.
+- Sem mudanca de endpoint, schema, cache ou variaveis de ambiente. Parse esbuild, build Vite, regressao `test/performance-scope.test.mjs`, perf-history (11/11), analytics (18/18) e diff check aprovados; integracao Redis real nao executada e variaveis Vite locais ausentes geraram avisos.
+
 ### Storage
 
 - Endpoint: `api/perf-history.js` (POST)
@@ -1154,6 +1162,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
+|Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.0, publicacao pendente)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|
 |`ioredis` em vez de `@upstash/redis`|Integração Vercel Marketplace só dá `REDIS_URL` TCP, não REST|
 |Profile cache 30 dias (server + client)|Reduz drasticamente chamadas Finnhub (free tier 60 req/min)|
