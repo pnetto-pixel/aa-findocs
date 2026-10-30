@@ -450,6 +450,10 @@ Cada barra informa Y/Y e M/M, Q/Q ou H/H; Year mostra somente Y/Y. Comparacoes u
 
 Validacao: 11 testes novos, parse, build e auditoria aprovados; 100 portfolios aleatorios em quatro agrupamentos conferidos contra as barras mensais existentes. QA Chromium com fixtures em 390/1024px aprovou filtros, seletores, tooltip e mascara, sem overflow da pagina ou erros de runtime. Feature commit `0adf49e`, merge em `main` `b20e62e` e build pos-merge verde. Apos autorizacao explicita do usuario, push de codigo e docs para `pnetto-pixel/aa-findocs` concluido em out/2026; deploy automatico esperado, sem producao verificada. Nenhum endpoint ou contrato de cache foi alterado.
 
+### Comparativos to-date nos historicos (out/2026, v1.21.4)
+
+Nos dois historicos, YTD/HTD/QTD correntes comparam com o mesmo trecho calendario: Y/Y ate o mesmo mes/dia do ano anterior; Q/Q ou H/H ate o mesmo mes relativo/dia do periodo anterior. Exemplo em 30/10: QTD compara com 1-30/10 do ano anterior e 1-30/07. No acumulado, a base e o saldo historico ate cada corte, recalculando o net mensal de Bank Bonds sem transacoes posteriores ao corte. Fim de mes e 29/02 sao limitados ao ultimo dia valido do mes de referencia. Periodos encerrados e MTD mantem a regra anterior; transacoes futuras nao entram no Contribution History. Testes em `test/to-date-history.test.mjs` cobrem ambos os graficos, filtros, bonds e limites de calendario.
+
 ### Contribution History - popup de comparativos (out/2026, v1.21.2)
 
 Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: legenda, valor, Y/Y, M/M-Q/Q-H/H (Year apenas Y/Y) e MTD/QTD/HTD/YTD no periodo corrente, sem "As of". `src/lib/contributionHistory.js` preserva os valores e filtros existentes e calcula bases no historico completo por periodo calendario exato; base ausente/zero mostra `--`. Mascara monetaria preservada. Na v1.21.3, taxas positivas usam verde, negativas vermelho e zero branco nos popups de ambos os historicos; bases indisponiveis continuam em cinza. Teste puro cobre comparativos, filtros, Bank Bonds e FX.

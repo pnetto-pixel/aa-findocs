@@ -12,7 +12,7 @@ assert.equal(rows('Month')[1].partial,false);
 assert.equal(rows('Month')[2].previous,null); // June absent, not previous available bar
 const quarter=rows('Quarter').at(-1);
 assert.equal(quarter.yoy,100);
-assert.equal(quarter.previous,0);
+assert.ok(Math.abs(quarter.previous - (400 / 300 - 1) * 100) < 1e-10); // QTD vs July 1-30
 assert.equal(rows('Half').at(-1).yoy,300);
 const year=rows('Year').at(-1);
 assert.equal(year.previous,null);
