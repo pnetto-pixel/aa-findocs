@@ -190,6 +190,48 @@ export function investedSeries(dates, transactions, resolveFxToUSD) {
   return { series, skipped };
 }
 
+// Adds received net income to historical portfolio value, without reinvestment.
+// Call on the full date axis BEFORE slicing a display window. Events already
+// come from the shared dividend/real-interest/tax loader; never add bondIncome
+// separately. Transactions define the historical universe, including sold assets.
+export function portfolioWithIncomeSeries(dates, portfolioUSD, events, transactions, todayISO) {
+  const key = (ticker, assetClass) => JSON.stringify([
+    String(ticker || "").trim().toUpperCase(), assetClass,
+  ]);
+  const universe = new Set((transactions || [])
+    .filter((tx) => tx?.ticker && tx.assetClass)
+    .map((tx) => key(tx.ticker, tx.assetClass)));
+  const incomeTypes = new Set(["dividend", "interest", "tax"]);
+  const received = [];
+  let skippedCurrency = 0;
+  for (const e of events || []) {
+    if (!e || !universe.has(key(e.ticker, e.assetClass)) || !incomeTypes.has(e.incomeType)) continue;
+    if (e.estimated || e.isEstimated || e.source === "estimated" || e.payDateUncertain) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.date || "") || !Number.isFinite(Date.parse(e.date))) continue;
+    if (e.date > todayISO || (dates?.length && e.date > dates[dates.length - 1])) continue;
+    // Existing sources normalize totalReceived to USD. Never add an explicitly
+    // foreign amount directly to a USD portfolio or invent a historical FX rate.
+    if (e.currency != null && String(e.currency).trim().toUpperCase() !== "USD") {
+      skippedCurrency++;
+      continue;
+    }
+    const amount = Number(e.totalReceived);
+    if (e.totalReceived == null || !Number.isFinite(amount)) continue;
+    received.push({ date: e.date, amount });
+  }
+  received.sort((a, b) => a.date.localeCompare(b.date));
+  let cumulative = 0;
+  let next = 0;
+  const series = (dates || []).map((date, i) => {
+    while (next < received.length && received[next].date <= date) {
+      cumulative += received[next++].amount;
+    }
+    const value = portfolioUSD?.[i];
+    return value != null && Number.isFinite(value) ? value + cumulative : null;
+  });
+  return { series, skippedCurrency };
+}
+
 // XIRR: money-weighted annual return (%) via bracketing + bisection on the
 // NPV. cashflows: [{ date: ISO, amount }] with the investor's sign convention
 // (buys negative, sells/final value positive). Returns null when no root is
