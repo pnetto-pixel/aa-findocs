@@ -45,10 +45,9 @@
 //
 // A SimpleFin connection returns EVERY linked institution, not just Fidelity
 // (confirmed jul/2026: 22 accounts, only 1 Fidelity — 21 personal Chase/
-// Capital One accounts). The sync mapper (lib/simplefin-map.js) filters to
-// Fidelity internally and never touches other accounts' holdings/transactions.
-// This filter is load-bearing, not cosmetic — it's the only thing standing
-// between this endpoint and leaking unrelated personal banking data.
+// Capital One accounts). The response is scoped to Fidelity before mapping;
+// the sync mapper also keeps its own institution filter as a second guard.
+// Unrelated connection auth warnings are excluded from fresh and saved errors.
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
@@ -59,6 +58,7 @@ import {
   tradeDupKey,
 } from '../lib/simplefin-map.js';
 import { buildKnownBondsByDescKey } from '../lib/bond-meta.js';
+import { fidelityOnlyPayload, simplefinLastError } from '../lib/simplefin-filter.js';
 
 function pendingKeyFromAuth(auth) {
   if (!auth?.storageKey) return null;
@@ -141,7 +141,7 @@ function normalizePending(pending) {
       : [],
     updatedAt: pending.updatedAt || null,
     lastSync: pending.lastSync || null,
-    lastError: pending.lastError || null,
+    lastError: simplefinLastError(pending.lastError),
     lastSyncAttempt: pending.lastSyncAttempt || null,
   };
 }
@@ -299,7 +299,8 @@ async function handleSync(req, res, auth) {
     return res.status(502).json({ error: fetchError });
   }
 
-  const simplefinErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  // Drop unrelated account data immediately; the mapper retains its own guard.
+  payload = fidelityOnlyPayload(payload);
 
   // Live transactions/bondIncome are read ONLY to skip rows already imported
   // (or already approved from a previous sync) — and, for `liveTx`, to also
@@ -432,7 +433,7 @@ async function handleSync(req, res, auth) {
     dismissedUnmapped: pending.dismissedUnmapped,
     updatedAt,
     lastSync: updatedAt,
-    lastError: simplefinErrors.length ? simplefinErrors.join('; ') : null,
+    lastError: simplefinLastError(payload.errors),
     lastSyncAttempt: attemptAt,
   };
   await redis.set(pendingKey, JSON.stringify(next));
