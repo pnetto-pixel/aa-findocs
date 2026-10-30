@@ -258,6 +258,13 @@ Tab nova, separada. Lê do log de transações. Marcada **(TEST ONLY)** em badge
 - Total Net Worth History guarda snapshots agregados sem detalhamento por ticker. Com DELL excluida, o card informa indisponibilidade e oculta os totais originais; nunca subtrai o valor atual de DELL de meses passados.
 - Sem mudanca de endpoint, schema, cache ou variaveis de ambiente. Parse esbuild, build Vite, regressao `test/performance-scope.test.mjs`, perf-history (11/11), analytics (18/18) e diff check aprovados; integracao Redis real nao executada e variaveis Vite locais ausentes geraram avisos.
 
+### Invested vs Growth: Portfolio Value with Dividends (out/2026, v1.22.0)
+
+- Terceira linha verde soma `portfolioUSD` historico a renda liquida nominal acumulada: dividendos e juros reais recebidos menos impostos. Acumula desde inception antes de recortar a janela; inclui posicoes ja vendidas do universo ticker/classe das transacoes elegiveis e respeita filtros e exclusao DELL. Nao simula reinvestimento.
+- Helper puro `portfolioWithIncomeSeries` em `src/lib/analytics.js` reaproveita `filteredDivEvents`, ja deduplicado entre API/Fidelity, juros reais de bonds e impostos negativos; nao soma `bondIncome` novamente. Exclui estimativas, datas incertas/futuras, principal/redemptions e valores explicitamente nao USD (com aviso). Ausencia de valor USD permanece `null`.
+- Legenda, tooltip responsivo com mascara e rodape explicam a nova serie. Portfolio Value, Invested, XIRR, TWR e Total Return percentual preservados. Sem endpoints, schema, cache, env vars ou novas buscas de renda B3.
+- Workflow concluido com planejamento, implementacao, auditoria e merge/push direto em `main`: feature `a84d944`, merge `e038e40f3c639b4dce6c573d67115de68cb3631a`. Parse/build, diff check, analytics (23/23), performance-scope (DELL + renda) e perf-history (11/11) aprovados; Redis real pulado e avisos Vite locais de env vars ausentes. QA em browser nao realizado; rebuild automatico esperado, ativacao em producao nao verificada.
+
 ### Storage
 
 - Endpoint: `api/perf-history.js` (POST)
@@ -1178,6 +1185,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
+|Renda recebida acumulada antes da janela no Invested vs Growth (out/2026, v1.22.0)|Preserva renda anterior ao periodo e de posicoes vendidas; reaproveitar eventos deduplicados evita contagem dupla e nao inventa reinvestimento nem cambio historico.|
 |Exclusao DELL compartilhada; demais filtros locais preservados (v1.21.5)|Uma regra comum evita divergencia entre os cards sem alterar seus escopos existentes; snapshots mensais agregados ficam indisponiveis nesse filtro por nao conterem valores por ticker.|
 |**Accumulated Investment usa serie mensal de Contribution History (out/2026, v1.21.0)**|Acumular os aportes mensais antes de agrupar e filtrar preserva o capital anterior e os comparativos, evitando somar saldos ou mudar o total ao trocar periodo. Bank Bonds seguem o net mensal do historico, nao o clamp quinzenal da capacidade.|
 |**SimpleFin restrito a Fidelity, inclusive avisos (out/2026, v1.20.7)**|Descartar contas de outras instituicoes antes do mapper e ocultar somente avisos de autenticacao com formato reconhecido e alvo nao Fidelity; erros globais, desconhecidos e da Fidelity permanecem visiveis para nao mascarar falhas relevantes.|
@@ -1504,6 +1512,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 ## 🎓 Lições Aprendidas (não repetir)
 
+- **Falha de git ao conectar ao proxy pode ser permissao de rede do comando (out/2026).** Habilitar a rede via `sandbox_permissions: "with_additional_permissions"` e `additional_permissions: { network: { enabled: true } }`, mantendo proxy e TLS herdados. Nao atribuir a falha a versao do app nem contornar o proxy; confirmar fetch/push pela saida real do comando.
 - **Sempre chamar helpers de "garantia" (`ensureCashAccount`) em TODOS os caminhos de load.**
 - **Mudar contrato de função compartilhada quebra callers antigos.**
 - **Headers customizados em Node chegam lowercase.**
