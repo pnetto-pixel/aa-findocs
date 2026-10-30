@@ -1371,6 +1371,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                 return (
                   <button
                     key={p}
+                    title={p}
+                    aria-label={p}
+                    aria-pressed={groupBy === p}
                     onClick={() => setGroupBy(p)}
                     style={{
                       background: active ? T.gold : T.cardElev,
@@ -1384,7 +1387,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                       cursor: "pointer",
                     }}
                   >
-                    {p}
+                    {p[0]}
                   </button>
                 );
               })}
@@ -1487,8 +1490,8 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
       <AccumulatedInvestmentCard transactions={transactions} usdBrlRate={usdBrlRate}
         valuesHidden={valuesHidden} loading={txLoading} error={txError} today={localTodayISO()}
-        theme={T} fontMono={FONT_MONO} fontBody={FONT_BODY} cardStyle={cardStyle}
-        goldAccent={goldAccent} CardToggle={CardToggle} ScrollHintTable={ScrollHintTable}
+        theme={T} fontMono={FONT_MONO} cardStyle={cardStyle}
+        goldAccent={goldAccent} CardToggle={CardToggle}
         dateInputStyle={DATE_INPUT_STYLE} />
 
       {/* ── Contribution Capacity History (Chunk B) ── */}
