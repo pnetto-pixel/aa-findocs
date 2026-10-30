@@ -442,6 +442,14 @@ Card no `useMemo` de rebalance de `src/App.jsx`, alvo de duas mudancas pedidas p
 
 Tab para planejamento e acompanhamento de aportes quinzenais. Arquivo `src/AporteQuinzenal.jsx`.
 
+### Accumulated Investment (out/2026, v1.21.0)
+
+Card colapsavel abaixo de Contribution History, implementado em `src/AccumulatedInvestmentCard.jsx`. Mostra a soma acumulada dos aportes, sem valorizacao de mercado, conforme definicao do usuario. `src/lib/accumulatedInvestment.js` constroi uma serie mensal canonica: DELL excluido, BRL convertido pelo FX atual e Bank Bonds netados com piso zero por MES, igual as barras mensais de Contribution History (diferente do clamp por quinzena de Contribution Capacity). Meses sem aportes carregam o saldo anterior; Month/Quarter/Half/Year selecionam o saldo acumulado final do periodo, mantendo o mesmo total ao trocar agrupamento.
+
+Cada barra informa Y/Y e M/M, Q/Q ou H/H; Year mostra somente Y/Y. Comparacoes usam o periodo calendario correspondente e sao calculadas antes dos filtros; base ausente ou zero exibe `--`. Filtros independentes selecionam periodos inteiros e nao reiniciam o acumulado. Periodo corrente marcado `*`; tooltip por toque mostra saldo, taxas e data. Valores monetarios respeitam `valuesHidden`, percentuais permanecem visiveis e o grafico tem scroll horizontal interno para preservar a leitura no iPhone.
+
+Validacao: 11 testes novos, parse, build e auditoria aprovados; 100 portfolios aleatorios em quatro agrupamentos conferidos contra as barras mensais existentes. QA Chromium com fixtures em 390/1024px aprovou filtros, seletores, tooltip e mascara, sem overflow da pagina ou erros de runtime. Feature commit `0adf49e`, merge LOCAL em `main` `b20e62e` e build pos-merge verde. Push rejeitado pela revisao automatica por falta de autorizacao explicita para publicar o codigo no remoto; push/deploy pendentes dessa autorizacao, sem producao verificada. Nenhum endpoint ou contrato de cache foi alterado.
+
 ### Logica de rollover de quinzena (Chunk A — frontend puro)
 
 - `planTotal` = total do mes fixo (entrada manual: Fixed + Dividends + DELL + Extras).
@@ -1154,6 +1162,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
+|**Accumulated Investment usa serie mensal de Contribution History (out/2026, v1.21.0)**|Acumular os aportes mensais antes de agrupar e filtrar preserva o capital anterior e os comparativos, evitando somar saldos ou mudar o total ao trocar periodo. Bank Bonds seguem o net mensal do historico, nao o clamp quinzenal da capacidade.|
 |**SimpleFin restrito a Fidelity, inclusive avisos (out/2026, v1.20.7)**|Descartar contas de outras instituicoes antes do mapper e ocultar somente avisos de autenticacao com formato reconhecido e alvo nao Fidelity; erros globais, desconhecidos e da Fidelity permanecem visiveis para nao mascarar falhas relevantes.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|
 |`ioredis` em vez de `@upstash/redis`|Integração Vercel Marketplace só dá `REDIS_URL` TCP, não REST|
