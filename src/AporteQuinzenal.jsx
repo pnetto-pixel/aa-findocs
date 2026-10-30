@@ -17,6 +17,7 @@ import {
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
 import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
+import AccumulatedInvestmentCard from "./AccumulatedInvestmentCard.jsx";
 import {
   computeMonthlyInvested,
   contributionTxToUSD,
@@ -1483,6 +1484,12 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
           </div>
         )}
       </section>
+
+      <AccumulatedInvestmentCard transactions={transactions} usdBrlRate={usdBrlRate}
+        valuesHidden={valuesHidden} loading={txLoading} error={txError} today={localTodayISO()}
+        theme={T} fontMono={FONT_MONO} fontBody={FONT_BODY} cardStyle={cardStyle}
+        goldAccent={goldAccent} CardToggle={CardToggle} ScrollHintTable={ScrollHintTable}
+        dateInputStyle={DATE_INPUT_STYLE} />
 
       {/* ── Contribution Capacity History (Chunk B) ── */}
       {/* Monthly snapshots of planned capacity vs realized, persisted in Redis.
