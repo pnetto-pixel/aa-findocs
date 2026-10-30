@@ -3,6 +3,7 @@
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
 ## ✅ Concluídos
+- **Taxas proporcionais to-date (out/2026, v1.21.4):** YTD/HTD/QTD dos dois historicos comparam com o mesmo trecho calendario dos periodos de referencia, incluindo saldos acumulados ate cada corte e net de bonds recalculado. Periodos encerrados e MTD preservados; cobertura de calendario, filtros e bonds em testes.
 - **Cores das taxas nos popups dos historicos (out/2026, v1.21.3):** Contribution History e Accumulated Investment usam verde para taxas positivas, vermelho para negativas e branco para zero; comparativos indisponiveis continuam em cinza.
 - **Contribution History - popup com comparativos (out/2026, v1.21.2):** mesmo popup por toque do acumulado com legenda, valor, Y/Y e M/M, Q/Q ou H/H (Year somente Y/Y), marcador MTD/QTD/HTD/YTD no periodo aberto. Bases calendarias calculadas antes dos filtros; valores existentes e mascara preservados.
 - **Historicos de Contributions - grafico compacto e seletores padronizados (out/2026, v1.21.1):** Accumulated Investment com a mesma largura e altura de 240px de Contribution History; taxas movidas para o popup por toque com legenda, valor, Y/Y e M/M, Q/Q ou H/H, marcador MTD/QTD/HTD/YTD somente no periodo aberto e sem "As of". Ambos os seletores usam M/Q/H/Y como Income History; valores ocultos preservados.

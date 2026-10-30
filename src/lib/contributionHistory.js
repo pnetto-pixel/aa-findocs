@@ -1,3 +1,4 @@
+import { shiftCalendarMonths, periodStart } from "./periodComparison.js";
 import { contributionTxToUSD } from "./contributionCapacity.js";
 
 // Full history from first transaction, grouped by the chosen granularity.
@@ -76,6 +77,7 @@ function periodBars(transactions, usdBrlRate, groupBy, fromDate, toDate) {
 // Comparisons use exact calendar periods from the full history, even when
 // display filters hide the baseline. Preserve the chart's existing amounts.
 export function buildContributionHistory(transactions, usdBrlRate, groupBy, fromDate, toDate, today) {
+  transactions = transactions.filter(tx => tx.date <= today);
   const full = new Map(periodBars(transactions, usdBrlRate, groupBy).map(row => [row.key, row.value]));
   const size = { Month: 1, Quarter: 3, Half: 6, Year: 12 }[groupBy];
   const indexOf = key => {
@@ -88,8 +90,14 @@ export function buildContributionHistory(transactions, usdBrlRate, groupBy, from
   const growth = (value, baseline) => baseline > 0 ? (value / baseline - 1) * 100 : null;
   return periodBars(transactions, usdBrlRate, groupBy, fromDate, toDate).map(row => {
     const index = indexOf(row.key);
-    return { ...row, yoy: growth(row.value, balances.get(index - 12 / size)),
-      previous: groupBy === "Year" ? null : growth(row.value, balances.get(index - 1)),
+    const compareToDate = index === current && size > 1;
+    const referenceValue = (monthsBack) => {
+      const cutoff = shiftCalendarMonths(today, -monthsBack);
+      const bars = periodBars(transactions, usdBrlRate, groupBy, periodStart(cutoff, size), cutoff);
+      return bars[0]?.value;
+    };
+    return { ...row, yoy: growth(row.value, compareToDate ? referenceValue(12) : balances.get(index - 12 / size)),
+      previous: groupBy === "Year" ? null : growth(row.value, compareToDate ? referenceValue(size) : balances.get(index - 1)),
       partial: index === current };
   });
 }

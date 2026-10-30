@@ -1,3 +1,4 @@
+import { shiftCalendarMonths } from "./periodComparison.js";
 import { contributionTxToUSD } from "./contributionCapacity.js";
 
 const MONTHS_PER_PERIOD = { Month: 1, Quarter: 3, Half: 6, Year: 12 };
@@ -59,6 +60,21 @@ export function buildAccumulatedInvestment(transactions, usdBrlRate, {
     const bucket = Math.floor(month / size);
     buckets.set(bucket, { value: cumulative });
   }
+  // Reference balances stop at the equivalent date, with monthly bond
+  // netting recalculated only from transactions known by that cutoff.
+  const balanceAt = (cutoff) => {
+    const months = new Map();
+    for (const tx of eligible) {
+      if (tx.date > cutoff) continue;
+      const key = tx.date.slice(0, 7);
+      const monthly = months.get(key) || { ordinary: 0, bonds: 0 };
+      const amount = contributionTxToUSD(tx, usdBrlRate);
+      if (tx.assetClass === "Bank Bonds") monthly.bonds += tx.side === "buy" ? amount : -amount;
+      else monthly.ordinary += amount;
+      months.set(key, monthly);
+    }
+    return [...months.values()].reduce((total, monthly) => total + monthly.ordinary + Math.max(0, monthly.bonds), 0);
+  };
   const fromBucket = validDate(fromDate) ? Math.floor(monthIndex(fromDate) / size) : -Infinity;
   const toBucket = validDate(toDate) ? Math.floor(monthIndex(toDate) / size) : Infinity;
   if (fromDate && toDate && fromDate > toDate) return [];
@@ -78,8 +94,10 @@ export function buildAccumulatedInvestment(transactions, usdBrlRate, {
       return {
         key: `${groupBy}-${bucket}`, label, value, partial,
         asOf: partial ? today : new Date(Date.UTC(year, start % 12 + size, 0)).toISOString().slice(0, 10),
-        yoy: growth(value, buckets.get(bucket - 12 / size)?.value),
-        previous: groupBy === "Year" ? null : growth(value, buckets.get(bucket - 1)?.value),
+        yoy: growth(value, partial && size > 1
+          ? balanceAt(shiftCalendarMonths(today, -12)) : buckets.get(bucket - 12 / size)?.value),
+        previous: groupBy === "Year" ? null : growth(value, partial && size > 1
+          ? balanceAt(shiftCalendarMonths(today, -size)) : buckets.get(bucket - 1)?.value),
       };
     });
 }
