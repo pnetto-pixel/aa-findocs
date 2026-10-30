@@ -1154,6 +1154,7 @@ Resolucao de um trade em 3 camadas (`lib/simplefin-map.js`):
 
 |Decisão|Razão|
 |---|---|
+|**SimpleFin restrito a Fidelity, inclusive avisos (out/2026, v1.20.7)**|Descartar contas de outras instituicoes antes do mapper e ocultar somente avisos de autenticacao com formato reconhecido e alvo nao Fidelity; erros globais, desconhecidos e da Fidelity permanecem visiveis para nao mascarar falhas relevantes.|
 |Redis em vez de DB relacional|~5KB por usuário, suficiente|
 |`ioredis` em vez de `@upstash/redis`|Integração Vercel Marketplace só dá `REDIS_URL` TCP, não REST|
 |Profile cache 30 dias (server + client)|Reduz drasticamente chamadas Finnhub (free tier 60 req/min)|
@@ -1687,3 +1688,12 @@ Ver também: `padding-top` do container raiz (`App.jsx`) ajustado na mesma sess�
 - Menu "Change class ▾" (`src/Transactions.jsx` ~linha 1675, `position: absolute; right: 0`) não alterado — candidato a clamp se houver corte.
 - `AllocationCSVImportModal` usa `100vh` no `maxHeight`; considerar `100dvh`.
 - `ImportModal` perdeu um pouco de folga vertical em telas sem notch (20px vs ~40px antes) — cosmético.
+
+
+## SimpleFin - dados e avisos restritos a Fidelity (out/2026, v1.20.7, merge `bfc457f`)
+
+**Problema:** o Sync exibia avisos de autenticacao de Advancial Federal Credit Union e Apple Card, embora essas contas nao fossem usadas pelo aa-findocs. Os dados ja eram filtrados no mapper, mas todos os `payload.errors` viravam `lastError`.
+
+**Mudanca:** `lib/simplefin-filter.js` descarta contas nao Fidelity antes do mapper, mantendo a defesa `isFidelityOrg` interna. Remove somente o formato reconhecido `Connection to <instituicao> may need attention. Auth required` quando a instituicao nao e Fidelity; preserva mensagens Fidelity, globais e desconhecidas. `api/fidelity-pending.js` aplica a politica no sync e na normalizacao de `lastError` legado, cobrindo GET do staging, status e sync sob throttle sem novo fetch ou espera de seis horas. Nenhuma mudanca no historico live, janela de datas, throttle, endpoints ou env vars.
+
+**Validacao e entrega:** 112 testes do mapper e 7 novos testes de filtro/endpoint aprovados, alem de parse esbuild e build antes/depois do merge. Novos testes: `node --experimental-test-module-mocks test/simplefin-filter.test.mjs` (Node 24). Auditoria aprovada; merge e push em `main` concluidos em 30/out/2026 (`bfc457f`, implementacao `0655afc`). Deploy automatico da Vercel esperado, sem verificacao de producao nesta sessao. Nenhuma pendencia nova.
