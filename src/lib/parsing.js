@@ -312,6 +312,23 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts 
 
   const ambiguous = qty.ambiguous || price.ambiguous || fee.ambiguous;
 
+  // The app's own CSV exports carry stable transaction IDs and tax-lot links.
+  // Reject malformed metadata instead of silently importing broken links.
+  let harvestLots;
+  if (row.harvestLots != null && String(row.harvestLots).trim()) {
+    try {
+      const lots = JSON.parse(row.harvestLots);
+      if (!Array.isArray(lots) || lots.some(lot => !lot || typeof lot.buyId !== "string" || !lot.buyId.trim() || !Number.isFinite(Number(lot.qty)) || Number(lot.qty) <= 0)) throw new Error("invalid lots");
+      harvestLots = lots.map(lot => ({ buyId: lot.buyId.trim(), qty: Number(lot.qty) }));
+    } catch {
+      errors.push("harvestLots: invalid JSON or lot allocation");
+    }
+  }
+  const rawHarvestSale = String(row.harvestSale ?? "").trim().toLowerCase();
+  if (rawHarvestSale && !["true", "false", "1", "0"].includes(rawHarvestSale)) {
+    errors.push("harvestSale: expected true or false");
+  }
+
   if (errors.length > 0) {
     return { ok: false, tx: null, errors, ambiguous, needsAssetClass, classFromHistory, rawNumbers };
   }
@@ -324,7 +341,7 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts 
     classFromHistory,
     rawNumbers,
     tx: {
-      id: newId(),
+      id: String(row.id || "").trim() || newId(),
       date: d.value,
       side: sd.value,
       ticker,
@@ -334,6 +351,9 @@ function parseRow(row, defaultCurrency = "USD", knownClassByTicker = null, opts 
       currency,
       fee: fee.value || 0,
       notes: String(row.notes || "").trim(),
+      ...(["true", "1"].includes(rawHarvestSale) && { harvestSale: true }),
+      ...(harvestLots && { harvestLots }),
+      ...(String(row.harvestRebuySaleId || "").trim() && { harvestRebuySaleId: String(row.harvestRebuySaleId).trim() }),
       createdAt: new Date().toISOString(),
     },
   };
@@ -358,6 +378,10 @@ function reparseWithCommaDecimal(rows, defaultCurrency = "USD", knownClassByTick
 // Detect headers from a paste/CSV first row. Returns null if no recognizable
 // headers — caller should treat input as headerless and require column order.
 const HEADER_ALIASES = {
+  id: ["id"],
+  harvestSale: ["harvestsale"],
+  harvestLots: ["harvestlots"],
+  harvestRebuySaleId: ["harvestrebuysaleid"],
   date: ["date", "data", "dt"],
   side: ["side", "tipo", "operacao", "operation", "type"],
   ticker: ["ticker", "symbol", "ativo", "asset", "papel"],

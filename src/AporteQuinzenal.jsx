@@ -21,6 +21,7 @@ import AccumulatedInvestmentCard, { GrowthTooltip } from "./AccumulatedInvestmen
 import { buildContributionHistory } from "./lib/contributionHistory.js";
 import {
   computeMonthlyInvested,
+  computeHalfInvested,
   contributionTxToUSD,
   reconcileContributionCapacityHistory,
 } from "./lib/contributionCapacity.js";
@@ -113,46 +114,6 @@ function computeDellSale(transactions, usdBrlRate, year, month) {
     total += contributionTxToUSD(tx, usdBrlRate);
   }
   return total;
-}
-
-// Sums buy transactions for the given year+month, split by first and second
-// halves (days 1-15 vs 16-last). DELL vesting is excluded (same as chart).
-// Bank Bonds: only net positive (buys − sells) counts per half — a rollover
-// (redeem + recompra) does not inflate the contribution.
-// Returns { half1: number, half2: number } in USD.
-function computeHalfInvested(transactions, usdBrlRate, year, month) {
-  const yStr = String(year);
-  const mStr = String(month).padStart(2, "0");
-  const prefix = `${yStr}-${mStr}-`;
-  const lastDay = new Date(year, month, 0).getDate();
-
-  let half1 = 0, half2 = 0;
-  let bbBuy1 = 0, bbSell1 = 0, bbBuy2 = 0, bbSell2 = 0;
-
-  for (const tx of transactions) {
-    if (!tx.date || !tx.date.startsWith(prefix)) continue;
-    const day = parseInt(tx.date.slice(8, 10), 10);
-    if (day < 1 || day > lastDay) continue;
-    if ((tx.ticker || "").toUpperCase() === "DELL") continue;
-
-    const isFirst = day <= 15;
-    const amount = contributionTxToUSD(tx, usdBrlRate);
-
-    if (tx.assetClass === "Bank Bonds") {
-      if (tx.side === "buy") {
-        if (isFirst) bbBuy1 += amount; else bbBuy2 += amount;
-      } else if (tx.side === "sell") {
-        if (isFirst) bbSell1 += amount; else bbSell2 += amount;
-      }
-    } else if (tx.side === "buy") {
-      if (isFirst) half1 += amount; else half2 += amount;
-    }
-  }
-
-  half1 += Math.max(0, bbBuy1 - bbSell1);
-  half2 += Math.max(0, bbBuy2 - bbSell2);
-
-  return { half1, half2 };
 }
 
 function authHeaders(auth) {

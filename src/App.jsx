@@ -3,6 +3,7 @@ import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, 
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 import { inferAssetClass } from "./lib/parsing.js";
+import { buildHarvestLots, washSaleWarnings } from "./lib/taxHarvest.js";
 import { divCacheHash, setDivCacheEntry } from "./lib/dividendsCache.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
@@ -3023,6 +3024,22 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     return suggestions;
   }, [holdings, totalValue, newCash, usdBrlRate]);
 
+  const taxPrices = useMemo(() => {
+    const prices = {};
+    for (const h of holdings) {
+      if (!h.ticker || h.manualMode === "value") continue;
+      const isBRL = h.assetClass === "BRA Stocks" || h.originalCurrency === "BRL";
+      const price = isBRL ? (h.type === "manual" ? null : h.originalPrice) : (h.type === "manual" ? h.manualPrice : h.price);
+      const ticker = h.ticker.toUpperCase();
+      if (price != null && prices[ticker] === undefined) prices[ticker] = { price, currency: isBRL ? "BRL" : "USD" };
+    }
+    return prices;
+  }, [holdings]);
+  const now = new Date();
+  const taxToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const harvest = useMemo(() => buildHarvestLots(transactions, taxPrices, taxToday), [transactions, taxPrices, taxToday]);
+  const washWarnings = useMemo(() => washSaleWarnings(transactions, taxToday), [transactions, taxToday]);
+
   // Build asset class dropdown options from existing holdings
   const assetClassOptions = useMemo(() => {
     const set = new Set();
@@ -4838,6 +4855,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             )}
           </section>
 
+          <section style={{ marginTop: 18, padding: 16, background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4 }}>
+            <div style={{ color: T.gold, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase" }}>Tax harvesting candidates</div>
+            <p style={{ color: T.textDim, fontSize: 12, lineHeight: 1.5 }}>Estimated from recorded transactions and current prices, assuming all loss lots of each ticker are sold together. Selling only some shares can change the wash sale risk. Verify lots and tax basis with your broker. Other accounts, dividend reinvestments and substantially identical securities may not be included.</p>
+            {harvest.uncertainTickers.length > 0 && <p style={{ color: T.gold, fontSize: 12 }}>Unresolved sales or incomplete history: {harvest.uncertainTickers.join(", ")}. Link sold lots in Transactions before relying on these estimates.</p>}
+            {harvest.candidates.length === 0 ? <p style={{ color: T.textDim, fontSize: 12 }}>No eligible estimated loss lots with a current price.</p> : harvest.candidates.map(lot => <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontSize: 12, color: T.text, lineHeight: 1.5 }}>
+              <strong>{lot.ticker}</strong> · {lot.date} · {lot.qty} shares · estimated loss {valuesHidden ? "••••" : `${lot.currency === "BRL" ? "R$" : "$"}${lot.loss.toFixed(2)}`}
+              {lot.priorBuys.length > 0 && <div style={{ color: T.gold }}>Possible wash sale: recent same-ticker purchase. Window clears {lot.clearDate} if no further purchases occur.</div>}
+            </div>)}
+          </section>
+
           {/* Rebalance Suggestion — placed below Add Manual Asset */}
           {holdings.some((h) => h.target > 0) && (
             <section style={{ marginTop: 18 }}>
@@ -4956,7 +4983,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         }}
                       >
                         {rebalance.map((r) => (
-                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} />
+                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} warning={washWarnings[(r.holding.ticker || "").toUpperCase()]} />
                         ))}
                       </div>
 
@@ -5425,7 +5452,7 @@ function HoldingRow({
               <AlertCircle size={11} />
             </span>
           )}
-          {holding.name && (
+        {holding.name && (
             <span style={{ fontSize: 11, color: T.textDim, fontFamily: FONT_DISPLAY, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {holding.name}
             </span>
@@ -5700,7 +5727,7 @@ function IconButton({ children, onClick, disabled, danger, label }) {
   );
 }
 
-function RebalanceRow({ item, valuesHidden }) {
+function RebalanceRow({ item, valuesHidden, warning }) {
   const { holding, deltaShares, deltaDollars } = item;
 
   return (
@@ -5727,6 +5754,7 @@ function RebalanceRow({ item, valuesHidden }) {
         >
           {holding.ticker}
         </div>
+        {warning && <div style={{ color: T.gold, fontSize: 11, lineHeight: 1.4 }}>Possible wash sale · buy on or after {warning.safeDate}</div>}
         {holding.name && (
           <div
             style={{

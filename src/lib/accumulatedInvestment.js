@@ -1,5 +1,6 @@
 import { shiftCalendarMonths } from "./periodComparison.js";
 import { contributionTxToUSD } from "./contributionCapacity.js";
+import { harvestContributionAdjustments, adjustedContributionAmount } from "./harvestContributions.js";
 
 const MONTHS_PER_PERIOD = { Month: 1, Quarter: 3, Half: 6, Year: 12 };
 
@@ -36,6 +37,9 @@ export function buildAccumulatedInvestment(transactions, usdBrlRate, {
     && Number.isFinite(contributionTxToUSD(tx, usdBrlRate))
     && contributionTxToUSD(tx, usdBrlRate) >= 0
   );
+  const adjustments = harvestContributionAdjustments((transactions || []).filter(tx => tx?.date <= today), usdBrlRate);
+  const bucketKey = tx => tx.date.slice(0, 7);
+  const amountAt = (tx, cutoff) => adjustedContributionAmount(tx, contributionTxToUSD(tx, usdBrlRate), adjustments, bucketKey, buy => buy.date <= cutoff);
   const buys = eligible.filter((tx) => tx.side === "buy");
   if (!buys.length) return [];
   const first = Math.min(...buys.map((tx) => monthIndex(tx.date)));
@@ -45,7 +49,7 @@ export function buildAccumulatedInvestment(transactions, usdBrlRate, {
     const key = tx.date.slice(0, 7);
     if (!byMonth.has(key)) byMonth.set(key, { ordinary: 0, bonds: 0 });
     const monthly = byMonth.get(key);
-    const amount = contributionTxToUSD(tx, usdBrlRate);
+    const amount = amountAt(tx, today);
     if (tx.assetClass === "Bank Bonds") monthly.bonds += tx.side === "buy" ? amount : -amount;
     else monthly.ordinary += amount;
   }
@@ -68,7 +72,7 @@ export function buildAccumulatedInvestment(transactions, usdBrlRate, {
       if (tx.date > cutoff) continue;
       const key = tx.date.slice(0, 7);
       const monthly = months.get(key) || { ordinary: 0, bonds: 0 };
-      const amount = contributionTxToUSD(tx, usdBrlRate);
+      const amount = amountAt(tx, cutoff);
       if (tx.assetClass === "Bank Bonds") monthly.bonds += tx.side === "buy" ? amount : -amount;
       else monthly.ordinary += amount;
       months.set(key, monthly);
