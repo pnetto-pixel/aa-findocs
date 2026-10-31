@@ -20,6 +20,7 @@ import {
   parseFidelityCSV,
 } from "./lib/parsing.js";
 import { buildKnownBondsByDescKey, backfillBondMetadata, generateSyntheticBondTicker } from "../lib/bond-meta.js";
+import { hasTaxLinks, hasLinkedRebuys, hasBulkTaxClassConflict, hasExternalTaxReferences, validateImportedTaxLinks } from "./lib/taxLinkGuards.js";
 
 const FONT_DISPLAY = "'Fraunces', Georgia, serif";
 const FONT_MONO = "'JetBrains Mono', 'Geist Mono', monospace";
@@ -384,7 +385,7 @@ async function validateTickerViaAPI(ticker, auth) {
   }
 }
 
-function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth }) {
+function TransactionForm({ initial, knownTickers, transactions = [], onSubmit, onCancel, busy, auth }) {
   const isEdit = !!initial;
   const [date, setDate] = useState(initial?.date || todayISO());
   const [side, setSide] = useState(initial?.side || "buy");
@@ -394,6 +395,9 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
   const [assetClass, setAssetClass] = useState(initial?.assetClass || "");
   const [fee, setFee] = useState(initial?.fee ? String(initial.fee) : "");
   const [notes, setNotes] = useState(initial?.notes || "");
+  const [harvestSale, setHarvestSale] = useState(!!initial?.harvestSale);
+  const [harvestRebuySaleId, setHarvestRebuySaleId] = useState(initial?.harvestRebuySaleId || "");
+  const [lotQty, setLotQty] = useState(() => Object.fromEntries((initial?.harvestLots || []).map((l) => [l.buyId, String(l.qty)])));
   const [error, setError] = useState("");
   const [showTickerList, setShowTickerList] = useState(false);
   const [tickerValidating, setTickerValidating] = useState(false);
@@ -469,7 +473,24 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
     if (fee && (!isFinite(feeN) || feeN < 0)) return setError("Fee invalid");
     if (!date) return setError("Date required");
 
+    const eligibleLots = transactions.filter((t) => t.id !== initial?.id && t.side === "buy" && String(t.ticker || "").toUpperCase() === tkr && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency);
+    const lots = [];
+    if (side === "sell") {
+      for (const [buyId, value] of Object.entries(lotQty)) {
+        if (value === "") continue;
+        const amount = Number(value);
+        const buy = eligibleLots.find((t) => t.id === buyId);
+        if (!buy || !Number.isFinite(amount) || amount <= 0) return setError("Check the selected lot quantities and dates.");
+        const used = transactions.filter((t) => t.id !== initial?.id && t.side === "sell").reduce((sum, t) => sum + (t.harvestLots || []).filter((l) => l.buyId === buyId).reduce((s, l) => s + Number(l.qty || 0), 0), 0);
+        if (amount + used > Number(buy.qty) + 1e-8) return setError("Lot allocation exceeds the available quantity.");
+        lots.push({ buyId, qty: amount });
+      }
+      if (lots.reduce((sum, l) => sum + l.qty, 0) > qn + 1e-8) return setError("Lot allocations exceed the sale quantity.");
+    }
+    if (side === "buy" && harvestRebuySaleId && !transactions.some((t) => t.id === harvestRebuySaleId && t.side === "sell" && t.harvestSale && String(t.ticker || "").toUpperCase() === tkr && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency)) return setError("Select an earlier harvesting sale of the same ticker and currency.");
+
     const tx = {
+      ...initial,
       id: initial?.id || newId(),
       date,
       side,
@@ -480,6 +501,9 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
       currency,
       fee: feeN,
       notes: notes.trim(),
+      harvestSale: side === "sell" && harvestSale,
+      harvestLots: side === "sell" ? lots : [],
+      harvestRebuySaleId: side === "buy" ? harvestRebuySaleId : "",
       // Only populated when the ticker above came from the synthetic-id
       // generator (bondGenMeta) — a manually-typed CUSIP or any other asset
       // class never gets these fields, same as before this feature.
@@ -801,6 +825,31 @@ function TransactionForm({ initial, knownTickers, onSubmit, onCancel, busy, auth
           <Label>Notes (optional)</Label>
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
+      </div>
+
+      <div style={{ marginTop: 16, padding: 12, border: `1px solid ${T.border}`, color: T.textDim, fontFamily: FONT_MONO, fontSize: 11 }}>
+        <div style={{ color: T.gold, marginBottom: 8 }}>TAX HARVESTING</div>
+        {side === "sell" ? <>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+            <input type="checkbox" checked={harvestSale} onChange={(e) => setHarvestSale(e.target.checked)} />
+            Mark as tax harvesting sale
+          </label>
+          <div style={{ marginBottom: 8 }}>Link sold lots (optional). Unlinked quantities leave the remaining lots uncertain.</div>
+          {transactions.filter((t) => t.id !== initial?.id && t.side === "buy" && String(t.ticker || "").toUpperCase() === ticker.trim().toUpperCase() && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency).map((buy) => {
+            const used = transactions.filter((t) => t.id !== initial?.id && t.side === "sell").reduce((sum, t) => sum + (t.harvestLots || []).filter((l) => l.buyId === buy.id).reduce((s, l) => s + Number(l.qty || 0), 0), 0);
+            return <div key={buy.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ flex: 1 }}>{buy.date} · {buy.qty} @ {buy.price} · available {Number(Math.max(0, Number(buy.qty) - used).toFixed(6))}</span>
+              <input aria-label={`Quantity sold from lot ${buy.date}`} type="number" min="0" step="any" placeholder="Qty" value={lotQty[buy.id] || ""} onChange={(e) => setLotQty((prev) => ({ ...prev, [buy.id]: e.target.value }))} style={{ width: 85, background: T.bg, color: T.text, border: `1px solid ${T.border}`, padding: 7 }} />
+            </div>;
+          })}
+          {Object.values(lotQty).some(Boolean) && <button type="button" onClick={() => setLotQty({})} style={{ background: "transparent", color: T.textDim, border: `1px solid ${T.border}`, padding: 6 }}>Clear lot links</button>}
+        </> : <>
+          <Label>Rebuy funded by harvesting sale (same ticker)</Label>
+          <select value={harvestRebuySaleId} onChange={(e) => setHarvestRebuySaleId(e.target.value)} style={{ width: "100%", background: T.bg, color: T.text, border: `1px solid ${T.border}`, padding: 10 }}>
+            <option value="">None — normal contribution</option>
+            {transactions.filter((t) => t.side === "sell" && t.harvestSale && String(t.ticker || "").toUpperCase() === ticker.trim().toUpperCase() && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency).map((t) => <option key={t.id} value={t.id}>{t.date} · {t.ticker} · {t.qty} @ {t.price}</option>)}
+          </select>
+        </>}
       </div>
 
       {error && (
@@ -1333,6 +1382,7 @@ function TransactionTable({
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null); // edit buffer
   const [bulkClassMenu, setBulkClassMenu] = useState(false);
+  const [bulkError, setBulkError] = useState("");
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
 
   // Each filter: Set of allowed values; if empty, treat as "all" (no filter).
@@ -1554,8 +1604,14 @@ function TransactionTable({
   async function handleBulkAssetClass(cls) {
     if (selected.size === 0) return;
     if (typeof onBulkAssetClass === "function") {
-      await onBulkAssetClass(Array.from(selected), cls);
+      const success = await onBulkAssetClass(Array.from(selected), cls);
+      if (success === false) {
+        setBulkClassMenu(false);
+        setBulkError("Some selected transactions have tax links. Remove those links before changing their class.");
+        return;
+      }
     }
+    setBulkError("");
     setBulkClassMenu(false);
     clearSelection();
   }
@@ -1635,6 +1691,7 @@ function TransactionTable({
   return (
     <div>
       {/* Bulk toolbar */}
+      {bulkError && <div role="alert" style={{ color: T.red, fontFamily: FONT_MONO, fontSize: 11, marginBottom: 8 }}>{bulkError}</div>}
       {selected.size > 0 && (
         <div
           style={{
@@ -1850,7 +1907,7 @@ function TransactionTable({
           <col style={{ width: "80px" }} />
           <col style={{ width: "70px" }} />
           <col style={{ width: "auto" }} />
-          <col style={{ width: "56px" }} />
+          <col style={{ width: "88px" }} />
         </colgroup>
         <thead>
           <tr>
@@ -2215,6 +2272,7 @@ function TransactionTable({
                     {tx.notes || "—"}
                   </td>
                   <td style={{ padding: "6px 2px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => onEdit?.(tx)} disabled={busy} title="Tax harvesting and lot links" aria-label={`Tax details for ${tx.ticker} ${tx.date}`} style={{ background: "transparent", border: `1px solid ${T.border}`, color: tx.harvestSale || tx.harvestRebuySaleId || tx.harvestLots?.length ? T.gold : T.textDim, padding: "3px 4px", marginRight: 2, cursor: "pointer", fontSize: 9 }}>Tax</button>
                     <button
                       onClick={() => startEdit(tx)}
                       disabled={busy}
@@ -2346,13 +2404,13 @@ function TransactionTable({
 
 // CSV export
 function transactionsToCSV(transactions) {
-  const headers = ["date", "side", "ticker", "qty", "price", "assetClass", "fee", "notes"];
+  const headers = ["id", "date", "side", "ticker", "qty", "price", "assetClass", "fee", "notes", "harvestSale", "harvestRebuySaleId", "harvestLots"];
   const lines = [headers.join(",")];
   for (const t of transactions) {
     const row = headers.map((h) => {
       const v = t[h];
       if (v === null || v === undefined) return "";
-      const s = String(v);
+      const s = h === "harvestLots" ? JSON.stringify(v) : String(v);
       if (s.includes(",") || s.includes('"') || s.includes("\n")) {
         return `"${s.replace(/"/g, '""')}"`;
       }
@@ -2393,6 +2451,9 @@ export function applySplitToTransactions(transactions, { ticker, date, numerator
       ...tx,
       qty: parseFloat((origQty * (num / den)).toFixed(6)),
       price: parseFloat((origPrice * (den / num)).toFixed(6)),
+      ...(Array.isArray(tx.harvestLots) && {
+        harvestLots: tx.harvestLots.map((lot) => ({ ...lot, qty: parseFloat((Number(lot.qty) * (num / den)).toFixed(6)) })),
+      }),
       splitAdjusted: true,
       originalQty: origQty,
       originalPrice: origPrice,
@@ -3199,6 +3260,7 @@ function ImportModal({
     const existing = parsed.results[editingIdx];
     const cur = currencyForAssetClass(editDraft.assetClass) || "USD";
     const editedTx = {
+      ...existing?.tx,
       id: existing?.tx?.id || newId(),
       date: editDraft.date,
       side: editDraft.side,
@@ -5785,6 +5847,11 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   }
 
   async function handleUpdate(tx) {
+    const old = transactions.find((t) => t.id === tx.id);
+    if (old && ((hasTaxLinks(old, transactions) && ["ticker", "side", "date", "qty", "assetClass", "currency"].some((key) => (old[key] ?? false) !== (tx[key] ?? false))) || (old.harvestSale && !tx.harvestSale && hasLinkedRebuys(old, transactions)))) {
+      setError("This transaction is linked to tax records. Remove its links before changing its ticker, side, date, quantity, class or currency, or unmarking a sale with linked repurchases.");
+      return;
+    }
     const next = transactions.map((t) => (t.id === tx.id ? tx : t));
     await persist(next);
     setEditing(null);
@@ -5792,17 +5859,26 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   }
 
   async function handleDelete(tx) {
+    if (hasExternalTaxReferences(transactions, [tx.id])) {
+      setError("Remove tax links to this transaction before deleting it.");
+      return;
+    }
     const next = transactions.filter((t) => t.id !== tx.id);
     await persist(next);
   }
 
   async function handleBulkDelete(ids) {
     const idSet = new Set(ids);
+    if (hasExternalTaxReferences(transactions, ids)) {
+      setError("Remove tax links to the selected transactions before deleting them.");
+      return;
+    }
     const next = transactions.filter((t) => !idSet.has(t.id));
     await persist(next);
   }
 
   async function handleBulkAssetClass(ids, cls) {
+    if (hasBulkTaxClassConflict(transactions, ids, cls)) return false;
     const idSet = new Set(ids);
     const cur = currencyForAssetClass(cls) || "USD";
     const next = transactions.map((t) =>
@@ -5812,7 +5888,20 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   }
 
   async function handleImport(newTxs, mode, newIncome = [], distributions = []) {
+    const existingIds = new Set(mode === "replace" ? [] : transactions.map((t) => t.id));
+    for (const tx of newTxs) {
+      if (existingIds.has(tx.id)) {
+        setError("Import contains a transaction ID already present. Deselect duplicates or use Replace to restore a backup.");
+        return;
+      }
+      existingIds.add(tx.id);
+    }
     const next = mode === "replace" ? newTxs : [...transactions, ...newTxs];
+    const taxLinkError = validateImportedTaxLinks(next);
+    if (taxLinkError) {
+      setError(`Import blocked: ${taxLinkError} Include the linked transactions or remove their tax links first.`);
+      return;
+    }
     // Merge detected interest payments into the income store, deduping by
     // date+ticker+amount. On "replace" the income store is rebuilt from scratch.
     const base = mode === "replace" ? [] : bondIncome;
@@ -6380,6 +6469,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       {formOpen && !editing && (
         <TransactionForm
           knownTickers={knownTickers}
+          transactions={transactions}
           onSubmit={handleAdd}
           onCancel={() => setFormOpen(false)}
           busy={saving}
@@ -6389,8 +6479,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
 
       {editing && (
         <TransactionForm
+          key={editing.id}
           initial={editing}
           knownTickers={knownTickers}
+          transactions={transactions}
           onSubmit={handleUpdate}
           onCancel={() => setEditing(null)}
           busy={saving}
@@ -6444,6 +6536,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         {historyOpen && (
           <TransactionTable
             transactions={transactions}
+            onEdit={setEditing}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onBulkDelete={handleBulkDelete}

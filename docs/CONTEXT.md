@@ -1,5 +1,13 @@
 # CONTEXT.md — aa-findocs
 
+## Tax harvesting e possivel wash sale (v1.23.0, out/2026)
+
+O fluxo usa as transacoes reais para posicoes e performance. Cada compra representa um lote estimado; as vendas devem ser vinculadas aos lotes que consumiram, inclusive em baixas parciais. Uma venda anterior sem vinculacao deixa incertos os lotes remanescentes: o historico do app nao comprova o custo fiscal nem os lotes selecionados na corretora. O card identifica lotes abertos com prejuizo estimado e simula a venda integral de todos os lotes negativos de cada ticker. Alerta sobre compras conhecidas nos 30 dias anteriores cujas cotas continuariam na carteira; vender apenas parte pode mudar o risco. Precos e custos precisam estar na mesma moeda.
+
+Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticker recebe um aviso durante os 30 dias seguintes a venda e a primeira data fora da janela, no dia 31; o aviso nao altera as sugestoes nem a distribuicao do orcamento. A janela considerada tem 61 dias inclusivos: 30 antes, o dia da venda e 30 depois. Compras vinculadas a uma venda marcada podem reduzir Contributions ate o produto liquido da venda, mesmo em outro periodo; o excedente continua sendo aporte. O vinculo de recompra e restrito ao mesmo ticker.
+
+Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
+
 > **Repo público:** <https://github.com/pnetto-pixel/aa-findocs>
 > **App live:** <https://aa-findocs.vercel.app>
 > **Owner / Admin:** [pnetto@gmail.com](mailto:pnetto@gmail.com)

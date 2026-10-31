@@ -1,5 +1,6 @@
 import { shiftCalendarMonths, periodStart } from "./periodComparison.js";
 import { contributionTxToUSD } from "./contributionCapacity.js";
+import { harvestContributionAdjustments, adjustedContributionAmount } from "./harvestContributions.js";
 
 // Full history from first transaction, grouped by the chosen granularity.
 // DELL buys are excluded (stock vesting, not real contributions).
@@ -8,7 +9,9 @@ import { contributionTxToUSD } from "./contributionCapacity.js";
 // Optional fromDate/toDate ("YYYY-MM-DD") filter the date range shown.
 // groupBy: "Month" | "Quarter" | "Half" | "Year"
 function periodBars(transactions, usdBrlRate, groupBy, fromDate, toDate) {
-  const relevant = transactions.filter((tx) => {
+  const available = toDate ? transactions.filter(tx => tx.date <= toDate) : transactions;
+  const adjustments = harvestContributionAdjustments(available, usdBrlRate);
+  const relevant = available.filter((tx) => {
     if (tx.side !== "buy" && !(tx.assetClass === "Bank Bonds" && tx.side === "sell")) return false;
     if ((tx.ticker || "").toUpperCase() === "DELL") return false;
     if (!tx.date) return false;
@@ -21,7 +24,7 @@ function periodBars(transactions, usdBrlRate, groupBy, fromDate, toDate) {
   const byKey = {};
   const bbBuy = {}, bbSell = {};
 
-  for (const tx of relevant) {
+  const bucketKey = (tx) => {
     const [yStr, mStr] = tx.date.slice(0, 7).split("-");
     const y = parseInt(yStr, 10);
     const m = parseInt(mStr, 10);
@@ -36,7 +39,12 @@ function periodBars(transactions, usdBrlRate, groupBy, fromDate, toDate) {
       key = yStr;
     }
 
-    const amount = contributionTxToUSD(tx, usdBrlRate);
+    return key;
+  };
+  const included = new Set(relevant);
+  for (const tx of relevant) {
+    const key = bucketKey(tx);
+    const amount = adjustedContributionAmount(tx, contributionTxToUSD(tx, usdBrlRate), adjustments, bucketKey, buy => included.has(buy));
     if (tx.assetClass === "Bank Bonds") {
       if (tx.side === "buy") bbBuy[key] = (bbBuy[key] || 0) + amount;
       else bbSell[key] = (bbSell[key] || 0) + amount;
