@@ -1,5 +1,12 @@
 # CONTEXT.md — aa-findocs
 
+## Income History: comparacoes no pop-up (v1.25.0)
+
+Na tab Dividends, o grafico de Income History reutiliza `GrowthTooltip` dos cards Contribution History e Accumulated Investment: clique/toque na barra mostra periodo, renda liquida, Y/Y e M/M, Q/Q ou H/H; Year mostra apenas Y/Y. Cores, formato, mascara monetaria e marcadores MTD/QTD/HTD/YTD seguem o componente compartilhado.
+
+`src/lib/incomeHistory.js` calcula as referencias por periodo calendario exato no historico completo, respeitando ticker/classe e aplicando Years somente nas barras visiveis. Periodos correntes de Quarter/Half/Year comparam ate a data equivalente (inclui clamp de fim de mes/ano bissexto), Month segue a regra de meses calendario dos aportes. Eventos futuros/invalidos ficam fora; dividendos, juros e retencoes negativas usam o totalReceived canonico. Referencia ausente, zero ou negativa resulta em --. Testes verificam paridade com Contribution History nas quatro visoes, filtros, retencoes/juros, lacunas e corte bissexto. Build e QA Chromium em 390/1024px com cliques M/Q/H/Y aprovados; Safari real nao validado.
+
+
 ## Tax harvesting e possivel wash sale (v1.23.0, out/2026)
 
 O fluxo usa as transacoes reais para posicoes e performance. Cada compra representa um lote estimado; as vendas devem ser vinculadas aos lotes que consumiram, inclusive em baixas parciais. Uma venda anterior sem vinculacao deixa incertos os lotes remanescentes: o historico do app nao comprova o custo fiscal nem os lotes selecionados na corretora. O card identifica lotes abertos com prejuizo estimado e simula a venda integral de todos os lotes negativos de cada ticker. Alerta sobre compras conhecidas nos 30 dias anteriores cujas cotas continuariam na carteira; vender apenas parte pode mudar o risco. Precos e custos precisam estar na mesma moeda.
