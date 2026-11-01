@@ -78,20 +78,19 @@ function HarvestGroup({ group, valuesHidden }) {
       <span style={{ minWidth: 0, flex: 1 }}>
         <span style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
           <strong style={{ fontSize: 12, color: T.text, overflowWrap: "anywhere" }}>{group.ticker}</strong>
-          {group.restricted && <span style={{ ...badgeStyle, color: T.gold, background: "rgba(201,169,97,.08)" }}>REVIEW</span>}
         </span>
         <span style={{ color: T.textDim, fontSize: 10 }}>{group.lots.length} {group.lots.length === 1 ? "lot" : "lots"}</span>
       </span>
       <span style={{ fontSize: 12, color: T.red, textAlign: "right", overflowWrap: "anywhere" }}>{money(-group.totalLoss, group.currency, valuesHidden)} <span style={{ fontSize: 9, color: T.textDim }}>{group.currency}</span></span>
     </button>
     {open && <div id={id} style={{ padding: "0 0 8px" }}>
-      {group.restricted && <div style={{ color: T.gold, fontFamily: BODY, fontSize: 11, lineHeight: 1.5, padding: "0 0 4px" }}>Recent purchases may affect this loss. Review before {group.clearDate}.</div>}
+      {group.restricted && <div style={{ color: T.gold, fontFamily: BODY, fontSize: 11, lineHeight: 1.5, padding: "0 0 4px" }}>Recent shares would remain after selling. Their 30-day purchase window clears on {group.clearDate}.</div>}
       <TaxLotList lots={group.lots} valuesHidden={valuesHidden} />
     </div>}
   </div>;
 }
 
-export function TaxHarvestingCard({ harvest, valuesHidden = false }) {
+export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTransactions }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const summary = useMemo(() => groupHarvestCandidates(harvest?.candidates || []), [harvest?.candidates]);
@@ -100,7 +99,21 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false }) {
   const uncertain = harvest?.uncertainTickers || [];
   const incomplete = (harvest?.incompleteTickers || []).filter(ticker => !uncertain.includes(ticker));
   const unpriced = [...new Set((harvest?.openLots || []).filter(lot => lot.currentPrice == null).map(lot => lot.ticker))].filter(ticker => !uncertain.includes(ticker) && !incomplete.includes(ticker));
-  const reviewCount = review.length + uncertain.length + incomplete.length + unpriced.length;
+  const unavailableCount = uncertain.length + incomplete.length + unpriced.length;
+  const issues = {};
+  const addIssue = (reason, ticker) => (issues[reason] ||= new Set()).add(ticker);
+  for (const ticker of uncertain) for (const reason of harvest.uncertaintyReasons?.[ticker] || ["lot-links"]) addIssue(reason, ticker);
+  for (const ticker of incomplete) addIssue("cost", ticker);
+  for (const ticker of unpriced) addIssue("price", ticker);
+  const issueLabels = {
+    "unlinked-sale": ["Sold lots not linked", "In Transactions, open Tax on a sale and select the purchase lots it used."],
+    "lot-links": ["Lot quantities need review", "Check the purchase lots and quantities linked to sales in Transactions."],
+    "currency": ["Currency mismatch", "Check the currency and asset class of these transactions."],
+    "invalid-date": ["Transaction dates missing or invalid", "Correct the dates in Transactions."],
+    "invalid-transaction": ["Transaction details incomplete", "Check purchase quantities and duplicate entries in Transactions."],
+    "cost": ["Purchase cost unavailable", "Check purchase prices and fees in Transactions."],
+    "price": ["Current price unavailable", "Refresh prices in Holdings."],
+  };
   const lotsCount = available.reduce((sum, group) => sum + group.lots.length, 0);
   return <section style={{ marginTop: 18, background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, color: T.text }}>
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(v => !v)}
@@ -109,7 +122,7 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false }) {
         <span style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: MONO, fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: T.gold }}>
           {open ? <ChevronDown size={12} style={{ flexShrink: 0 }} /> : <ChevronRight size={12} style={{ flexShrink: 0 }} />} Tax Harvesting
         </span>
-        <span style={{ display: "block", marginTop: 5, fontFamily: BODY, fontSize: 10, color: T.textDim }}>{available.length} {available.length === 1 ? "asset" : "assets"} · {lotsCount} {lotsCount === 1 ? "lot" : "lots"}{reviewCount > 0 ? ` · ${reviewCount} to review` : ""}</span>
+        <span style={{ display: "block", marginTop: 5, fontFamily: BODY, fontSize: 10, color: T.textDim }}>{available.length} {available.length === 1 ? "asset" : "assets"} · {lotsCount} {lotsCount === 1 ? "lot" : "lots"}</span>
       </span>
       <span style={{ textAlign: "right", minWidth: 0 }}>
         <span style={{ display: "block", fontFamily: BODY, fontSize: 9, color: T.textDim, marginBottom: 4 }}>Potential loss</span>
@@ -119,13 +132,21 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false }) {
     {open && <div id={id} style={{ padding: "0 16px 12px" }}>
       {!available.length && <div style={{ padding: "12px 0", fontFamily: BODY, fontSize: 11, color: T.textDim }}>No unrestricted loss lots found.</div>}
       {available.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
-      {reviewCount > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
-        <summary style={{ cursor: "pointer", color: T.gold, padding: "4px 0" }}>Needs review · {reviewCount}</summary>
-        <div style={{ color: T.textDim, fontSize: 10, padding: "6px 0" }}>Excluded from the total above.</div>
+      {review.length > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
+        <summary style={{ cursor: "pointer", color: T.gold, padding: "4px 0" }}>Recent purchases · {review.length}</summary>
+        <p style={{ color: T.textDim, fontSize: 11, lineHeight: 1.5, margin: "8px 0" }}>These losses need a purchase-window check and are excluded from the total.</p>
         {review.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
-        {uncertain.map(ticker => <div key={ticker} style={{ padding: "9px 0", borderTop: `1px solid ${T.borderSoft}`, lineHeight: 1.5 }}><strong style={{ fontFamily: MONO, color: T.text }}>{ticker}</strong><span style={{ color: T.textDim }}> · Check lot links or currency in Transactions.</span></div>)}
-        {incomplete.map(ticker => <div key={ticker} style={{ padding: "9px 0", borderTop: `1px solid ${T.borderSoft}`, lineHeight: 1.5 }}><strong style={{ fontFamily: MONO, color: T.text }}>{ticker}</strong><span style={{ color: T.textDim }}> · Check purchase costs in Transactions.</span></div>)}
-        {unpriced.map(ticker => <div key={ticker} style={{ padding: "9px 0", borderTop: `1px solid ${T.borderSoft}`, lineHeight: 1.5 }}><strong style={{ fontFamily: MONO, color: T.text }}>{ticker}</strong><span style={{ color: T.textDim }}> · Current price unavailable.</span></div>)}
+      </details>}
+      {unavailableCount > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
+        <summary style={{ cursor: "pointer", color: T.textDim, padding: "4px 0" }}>Not calculated · {unavailableCount}</summary>
+        <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 8 }} tabIndex={0} aria-label="Reasons some assets were not calculated">
+          {Object.entries(issues).map(([reason, tickers]) => <div key={reason} style={{ padding: "8px 0" }}>
+            <div style={{ color: T.text }}>{issueLabels[reason]?.[0] || "Lot history incomplete"}</div>
+            <div style={{ color: T.textDim, fontFamily: MONO, fontSize: 10, lineHeight: 1.8, overflowWrap: "anywhere", margin: "4px 0" }}>{[...tickers].sort().join(" · ")}</div>
+            <div style={{ color: T.textDim, fontSize: 10, lineHeight: 1.5 }}>{issueLabels[reason]?.[1]}</div>
+          </div>)}
+        </div>
+        {onReviewTransactions && <button type="button" onClick={onReviewTransactions} style={{ ...emptyButton, fontSize: 11, color: T.gold, minHeight: 40, padding: "8px 0" }}>Open Transactions →</button>}
       </details>}
       <details style={{ borderTop: `1px solid ${T.borderSoft}`, paddingTop: 10, color: T.textDim, fontFamily: BODY, fontSize: 10, lineHeight: 1.6 }}>
         <summary style={{ cursor: "pointer", width: "fit-content" }}><Info size={10} style={{ verticalAlign: "middle", marginRight: 4 }} />About this estimate</summary>

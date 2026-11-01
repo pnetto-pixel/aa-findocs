@@ -8,6 +8,10 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Clareza dos avisos (v1.24.1)
+
+O card separa `Recent purchases` (perdas com compra recente que permaneceria na carteira) de `Not calculated` (dados insuficientes). Ambos iniciam recolhidos, fora do total principal. A etiqueta generica `REVIEW` foi removida; expandir um ativo com compra recente explica a janela e sua data final. Os dados nao calculados sao agrupados por motivo real — venda sem lotes, vinculos inconsistentes, moeda, data, transacao invalida, custo ou cotacao — com tickers compactos e instrucao uma vez por grupo, area de altura limitada e atalho para Transactions. O motor expõe `uncertaintyReasons` sem alterar quais lotes entram nos calculos. Testes direcionados cobrem a distincao entre motivos; QA Chromium usa dados simulados.
+
 ### Redesenho minimalista (v1.24.0, out/2026)
 
 A coluna **Tax** na tabela de Transactions substitui o antigo botao na coluna de acoes. Mostra `—`, `HARVEST` ou `REBUY`; o toque abre um editor fiscal dedicado para marcar a venda, vincular os lotes vendidos ou associar a recompra. O formulario geral deixa de carregar o bloco fiscal extenso. Os vinculos e as protecoes de quantidade, data, ticker e moeda continuam sendo usados.

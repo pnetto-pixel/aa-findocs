@@ -195,8 +195,17 @@ test('grouped loss estimates separate currencies and known purchase restrictions
 });
 
 test('empty and invalid-date histories keep the full result shape', () => {
-  const empty = { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [] };
+  const empty = { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [], uncertaintyReasons: {} };
   assert.deepEqual(buildHarvestLots([], {}, '2026-10-31'), empty);
   assert.deepEqual(buildHarvestLots([], {}, 'invalid'), empty);
   assert.deepEqual(groupHarvestCandidates(), { groups: [], totalsByCurrency: {}, restrictedTotalsByCurrency: {} });
+});
+
+ test('uncertainty reasons distinguish missing lot links, currency and dates', () => {
+  const missing = buildHarvestLots([buy('a', '2026-01-01'), { id: 's', ticker: 'ABC', side: 'sell', date: '2026-02-01', qty: 1, price: 80, currency: 'USD' }], {}, '2026-03-01');
+  assert.deepEqual(missing.uncertaintyReasons.ABC, ['unlinked-sale']);
+  const currency = buildHarvestLots([buy('a', '2026-01-01')], { ABC: { price: 80, currency: 'BRL' } }, '2026-03-01');
+  assert.deepEqual(currency.uncertaintyReasons.ABC, ['currency']);
+  const date = buildHarvestLots([{ ...buy('a', '2026-01-01'), date: 'invalid' }], {}, '2026-03-01');
+  assert.deepEqual(date.uncertaintyReasons.ABC, ['invalid-date']);
 });
