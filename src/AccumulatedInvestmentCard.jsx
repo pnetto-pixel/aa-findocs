@@ -53,7 +53,7 @@ export default function AccumulatedInvestmentCard({ transactions, usdBrlRate, va
   return (
     <section style={{ ...cardStyle, marginTop: 16, marginBottom: 0 }}>
       <div style={goldAccent} />
-      <CardToggle label="Accumulated Investment" sub="Cumulative contributions / DELL excluded"
+      <CardToggle label="Accumulated Investment" help="Cumulative contributions since inception. DELL stock vesting is excluded; filters select the visible periods without resetting the accumulated balance."
         open={open} onToggle={() => setOpen((value) => !value)} />
       {open && (
         <div style={{ padding: "0 20px 24px" }}>

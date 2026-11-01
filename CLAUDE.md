@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## UI explanations
 
-User preference: whenever an explanation or instruction is needed in the interface, use a small circled `i` (Lucide `Info`) next to the relevant label. Tapping opens a popup with the information. Avoid adding explanatory lines or paragraphs to the main screen. Keep the trigger accessible by keyboard, with an explicit accessible label; the popup must support closing and returning focus. Use `src/InfoDialog.jsx` for the existing pattern.
+User preference: whenever an explanation or instruction is needed in the interface, use a small circled `i` (Lucide `Info`) next to the relevant label. Tapping opens a popup with the information. Avoid adding explanatory lines or paragraphs to the main screen. Keep the trigger accessible by keyboard, with an explicit accessible label; the popup must support closing and returning focus. Use `src/InfoHelp.jsx` for the reusable circled-i trigger and `src/InfoDialog.jsx` for its accessible popup. Keep values, active filter scope, empty states and immediate validation/destructive-action warnings visible; move formulas, methodology, source details and general instructions into the popup. Do not nest the info button inside a card-toggle button.
 
 ## Deploy Pattern
 

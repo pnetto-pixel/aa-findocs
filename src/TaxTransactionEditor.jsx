@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -75,7 +76,7 @@ export default function TaxTransactionEditor({ transaction, transactions, onSave
             <span style={{ flex: 1, minWidth: 0, fontSize: 11 }}>{lot.date}<span style={{ display: "block", color: T.dim, fontSize: 10, marginTop: 3 }}>{Number(lot.available.toFixed(6))} available · {money(lot.price)}</span></span>
             <input aria-label={`Quantity sold from ${lot.date} lot ${lot.id}`} type="number" min="0" max={lot.available} step="any" inputMode="decimal" placeholder="0" value={lotQty[lot.id] || ""} disabled={busy} onChange={event => setLotQty(previous => ({ ...previous, [lot.id]: event.target.value }))} style={{ ...controlStyle, width: 90 }} />
           </label>)}
-          {allocated < Number(transaction.qty) && <div style={{ color: T.dim, fontSize: 10, marginTop: 8 }}>Unlinked shares leave remaining lots uncertain.</div>}
+          {allocated < Number(transaction.qty) && <div style={{ color: T.dim, fontSize: 10, marginTop: 8 }}>Unlinked shares <InfoHelp title="Unlinked shares">Link the sold quantity to its purchase lots to identify which shares remain. Unlinked shares leave remaining lots uncertain.</InfoHelp></div>}
         </> : <div style={{ marginTop: 18 }}>
           <label htmlFor="tax-rebuy-sale" style={{ display: "block", color: T.dim, fontSize: 11, marginBottom: 8 }}>Funded by harvesting sale</label>
           <select id="tax-rebuy-sale" value={saleId} disabled={busy} onChange={event => setSaleId(event.target.value)} style={{ ...controlStyle, width: "100%" }}>

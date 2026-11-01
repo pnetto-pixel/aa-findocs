@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 import { useId, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Scissors, Info } from "lucide-react";
 import InfoDialog from "./InfoDialog.jsx";
@@ -55,7 +56,7 @@ export function TaxLotList({ lots = [], valuesHidden = false, compact = false })
         </button>
         {open && <div style={{ padding: "0 0 10px", color: T.textDim, fontSize: 10, lineHeight: 1.7 }}>
           Cost {money(lot.costPerShare, lot.currency, valuesHidden)} · Price {money(lot.currentPrice, lot.currency, valuesHidden)} <span style={{ color: T.textFaint }}>({lot.currency})</span>
-          {lot.priorBuys?.length > 0 && <div style={{ color: T.gold }}>Recent shares would remain. Review a sale before {lot.clearDate}.</div>}
+          {lot.priorBuys?.length > 0 && <InfoHelp title="Purchase window">Recent shares would remain after selling. Their purchase window clears on {lot.clearDate}.</InfoHelp>}
         </div>}
       </div>;
     })}
@@ -144,9 +145,8 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
         <summary style={{ cursor: "pointer", color: T.textDim, padding: "4px 0" }}>Not calculated · {unavailableCount}</summary>
         <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 8 }} tabIndex={0} aria-label="Reasons some assets were not calculated">
           {Object.entries(issues).map(([reason, tickers]) => <div key={reason} style={{ padding: "8px 0" }}>
-            <div style={{ color: T.text }}>{issueLabels[reason]?.[0] || "Lot history incomplete"}</div>
+            <div style={{ color: T.text }}>{issueLabels[reason]?.[0] || "Lot history incomplete"}<InfoHelp title={issueLabels[reason]?.[0] || "Lot history incomplete"}>{issueLabels[reason]?.[1]}</InfoHelp></div>
             <div style={{ color: T.textDim, fontFamily: MONO, fontSize: 10, lineHeight: 1.8, overflowWrap: "anywhere", margin: "4px 0" }}>{[...tickers].sort().join(" · ")}</div>
-            <div style={{ color: T.textDim, fontSize: 10, lineHeight: 1.5 }}>{issueLabels[reason]?.[1]}</div>
           </div>)}
         </div>
         {onReviewTransactions && <button type="button" onClick={onReviewTransactions} style={{ ...emptyButton, fontSize: 11, color: T.gold, minHeight: 40, padding: "8px 0" }}>Open Transactions →</button>}

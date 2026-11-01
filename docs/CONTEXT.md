@@ -1,5 +1,14 @@
 # CONTEXT.md — aa-findocs
 
+## Revisao geral de explicacoes nos cards (v1.25.1)
+
+Componente `InfoHelp.jsx` padroniza icone Info (i circulado), label acessivel, dialogo por toque/clique, Escape, contencao e retorno de foco via InfoDialog. Gatilhos nao alternam accordions; sem botoes de ajuda aninhados em botoes de titulo. CLAUDE.md aponta o componente como padrao permanente.
+
+Inventario migrado: Holdings (manual assets, CSV de targets, usuario/admin, privacidade, origem de valores sincronizados e lotes incertos); Contributions (fontes de dividendos/DELL, rollover, exclusao DELL e metodologia do acumulado); Dividends (formulas YoC/Recovered/Y/Y e Monthly Map); Performance (universo de Total Return/Composition, metodologia de risco, retornos mensais, Invested vs Growth, snapshots e limitacao DELL); Transactions (formato CSV, import Fidelity, staging de trades/income e Unmapped); Tax Harvesting (instrucao por motivo de dados nao calculados e janela de compra nos detalhes); editor fiscal (motivo de cotas sem vinculo).
+
+Mantidos visiveis valores, periodos, nomes/legendas, filtros ativos, falta de dados, erros de importacao/validacao e avisos de operacoes destrutivas. Events e Treemap revisados: descricoes de valores estimados, datas e estados vazios sao dados/status, nao foram escondidos. Nenhum calculo ou persistencia alterado. A explicacao antiga do import Fidelity foi alinhada ao parser atual (dividendos/juros/retencoes sao income). Build e QA Chromium com mocks em mobile/desktop; Safari real nao validado.
+
+
 ## Income History: comparacoes no pop-up (v1.25.0)
 
 Na tab Dividends, o grafico de Income History reutiliza `GrowthTooltip` dos cards Contribution History e Accumulated Investment: clique/toque na barra mostra periodo, renda liquida, Y/Y e M/M, Q/Q ou H/H; Year mostra apenas Y/Y. Cores, formato, mascara monetaria e marcadores MTD/QTD/HTD/YTD seguem o componente compartilhado.
