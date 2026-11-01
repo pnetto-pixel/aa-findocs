@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 // src/Transactions.jsx
 // Chunk 1B: add form, chronological list, inline edit, direct delete, filters.
 // Bulk paste + CSV upload land in 1C.
@@ -3531,15 +3532,7 @@ function ImportModal({
                       fontSize: 12,
                     }}
                   />
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      color: T.textFaint,
-                      marginTop: 10,
-                      lineHeight: 1.7,
-                    }}
-                  >
+                  <InfoHelp title="CSV format">
                     <div style={{ color: T.textDim, marginBottom: 4 }}>
                       Required columns:
                     </div>
@@ -3557,7 +3550,7 @@ function ImportModal({
                       ativo, qtd, preco, classe, taxa, obs). Sides accepted:
                       buy/sell or compra/venda.
                     </div>
-                  </div>
+                  </InfoHelp>
                   {fileError && (
                     <div
                       style={{
@@ -3592,22 +3585,13 @@ function ImportModal({
                       fontSize: 12,
                     }}
                   />
-                  <div
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      color: T.textFaint,
-                      marginTop: 8,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    Imports YOU BOUGHT / YOU SOLD rows as transactions, bond
-                    INTEREST payments as income, and bond REDEMPTIONS
-                    (maturity) as sells. Dividends and contributions are
-                    skipped. CUSIP symbols are classified as Bank Bonds with
+                  <InfoHelp title="Fidelity import">
+                    Imports YOU BOUGHT / YOU SOLD rows as transactions, dividends,
+                    bond interest and withheld taxes as income, and bond redemptions
+                    (maturity) as sells. Contributions are skipped. CUSIP symbols are classified as Bank Bonds with
                     coupon and maturity extracted from the description. All
                     other transactions default to "Stocks".
-                  </div>
+                  </InfoHelp>
                   {fileError && (
                     <div
                       style={{
@@ -3743,18 +3727,10 @@ function ImportModal({
                               padding: 14,
                             }}
                           >
-                            <div
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 12,
-                                color: T.textDim,
-                                marginBottom: 12,
-                                lineHeight: 1.5,
-                              }}
-                            >
+                            <InfoHelp title="Staged transactions">
                               Staged by the automated import. Review and approve to add to your
                               transactions. Nothing is saved until you approve.
-                            </div>
+                            </InfoHelp>
 
                             <div style={{ marginBottom: 12 }}>
                             <ScrollHintTable>
@@ -3990,18 +3966,10 @@ function ImportModal({
                               padding: 14,
                             }}
                           >
-                            <div
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 12,
-                                color: T.textDim,
-                                marginBottom: 12,
-                                lineHeight: 1.5,
-                              }}
-                            >
+                            <InfoHelp title="Staged income">
                               Dividends, bond interest and withheld tax staged by the SimpleFin
                               sync. Review and approve to add to your income history.
-                            </div>
+                            </InfoHelp>
 
                             <div style={{ marginBottom: 12 }}>
                               <ScrollHintTable>
@@ -4208,22 +4176,14 @@ function ImportModal({
                               padding: 14,
                             }}
                           >
-                            <div
-                              style={{
-                                fontFamily: FONT_MONO,
-                                fontSize: 12,
-                                color: T.textDim,
-                                marginBottom: 12,
-                                lineHeight: 1.5,
-                              }}
-                            >
+                            <InfoHelp title="Unmapped transactions">
                               SimpleFin transactions the sync couldn't map to a known category
                               (or matched a pattern but couldn't build a valid entry, e.g. a
                               stock trade or a new bond/CD purchase — SimpleFin has no
                               structured qty/price for trades of any kind, so it always
                               needs manual entry). Enter these manually if needed via the
                               form or CSV import above.
-                            </div>
+                            </InfoHelp>
                             <ScrollHintTable>
                               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                                 <thead>

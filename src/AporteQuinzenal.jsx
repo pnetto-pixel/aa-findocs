@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 // src/AporteQuinzenal.jsx
 // Tab: Contributions
 // Item 25: monthly plan → split into two halves
@@ -224,8 +225,9 @@ function daysInCurrentMonth() {
 // ── Sub-components (defined outside to prevent React remounting on re-render) ─
 
 
-function CardToggle({ label, sub, open, onToggle }) {
+function CardToggle({ label, sub, help, open, onToggle }) {
   return (
+    <div style={{ position: "relative" }}>
     <button
       onClick={onToggle}
       style={{
@@ -240,7 +242,7 @@ function CardToggle({ label, sub, open, onToggle }) {
         textAlign: "left",
       }}
     >
-      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, paddingRight: help ? 32 : 0 }}>
         <span
           style={{
             fontFamily: FONT_MONO,
@@ -269,6 +271,8 @@ function CardToggle({ label, sub, open, onToggle }) {
         }}
       />
     </button>
+    {help && <span style={{ position: "absolute", right: 42, top: 12 }}><InfoHelp title={label}>{help}</InfoHelp></span>}
+    </div>
   );
 }
 
@@ -893,11 +897,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               {divLastMonth === null ? (
                 <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
               ) : (
-                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:4 }}>
                   <span style={{ fontFamily:FONT_MONO, fontSize:13, color: divLastMonth > 0 ? T.text : T.textFaint }}>
                     {fmtUSD(divLastMonth, valuesHidden)}
                   </span>
-                  <span style={{ fontFamily:FONT_BODY, fontSize:10, color:T.textFaint }}>from Dividends</span>
+                  <InfoHelp title="Dividends source">Received dividends from the previous month, from the Dividends tab.</InfoHelp>
                 </div>
               )}
             </div>
@@ -906,11 +910,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
               {txLoading ? (
                 <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
               ) : (
-                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:4 }}>
                   <span style={{ fontFamily:FONT_MONO, fontSize:13, color: dellSaleAuto > 0 ? T.text : T.textFaint }}>
                     {fmtUSD(dellSaleAuto, valuesHidden)}
                   </span>
-                  <span style={{ fontFamily:FONT_BODY, fontSize:10, color:T.textFaint }}>from Transactions</span>
+                  <InfoHelp title="DELL sale source">DELL sales recorded in Transactions for the current month.</InfoHelp>
                 </div>
               )}
             </div>
@@ -1111,10 +1115,9 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                       </div>
                       {rolledUp && (
                         <div
-                          title="Rolled over from the 1st-half deficit"
                           style={{ fontFamily: FONT_BODY, fontSize: 10, color: T.gold, marginTop: 3 }}
                         >
-                          +{fmtUSD(rollover.half1Deficit, valuesHidden)} rollover
+                          +{fmtUSD(rollover.half1Deficit, valuesHidden)} rollover<InfoHelp title="Contribution rollover">Rolled over from the first-half deficit.</InfoHelp>
                         </div>
                       )}
                     </div>
@@ -1230,7 +1233,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
         <div style={goldAccent} />
         <CardToggle
           label="Contribution History"
-          sub="DELL excluded"
+          help="DELL is excluded from contribution history because stock vesting is not a cash contribution."
           open={histOpen}
           onToggle={() => setHistOpen((v) => !v)}
         />

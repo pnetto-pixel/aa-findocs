@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 // src/Dividends.jsx
 // Tab: Dividends / Income — US assets only (Yahoo Finance, keyless).
 // Item 17: Income History — collapsible card with KPIs inside, bar chart
@@ -1086,17 +1087,9 @@ function PositionDividendsTable({ rows, transactions, valuesHidden, open, onTogg
               </tbody>
             </table>
           </ScrollHintTable>
-          <div
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              color: T.textFaint,
-              padding: "10px 16px 14px",
-              letterSpacing: "0.04em",
-            }}
-          >
+          <InfoHelp title="Position Dividends">
             YoC = trailing-12-month dividends ÷ cost basis. Recovered = all-time dividends ÷ cost basis. Y/Y YTD compares this year to the same period last year.
-          </div>
+          </InfoHelp>
         </div>
       )}
 
@@ -1268,17 +1261,9 @@ function DividendsMonthlyMap({ events, valuesHidden, open, onToggle }) {
               </table>
             </ScrollHintTable>
           )}
-          <div
-            style={{
-              fontFamily: FONT_MONO,
-              fontSize: 10,
-              color: T.textFaint,
-              padding: "10px 16px 14px",
-              letterSpacing: "0.04em",
-            }}
-          >
+          <InfoHelp title="Dividends Monthly Map">
             Total dividends received per calendar month. Darker = higher month.
-          </div>
+          </InfoHelp>
         </div>
       )}
     </div>

@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid, Info } from "lucide-react";
 import InfoDialog from "./InfoDialog.jsx";
@@ -1178,7 +1179,7 @@ function AllocationCSVImportModal({ auth, holdings, transactions, onClose, onApp
                 marginBottom: 10,
               }}
             >
-              Paste CSV or upload a file. Format: ticker, target %
+              Paste CSV or upload a file. <InfoHelp title="Allocation CSV format">Use the columns ticker and target %. Paste the CSV into the box or upload a file.</InfoHelp>
             </div>
             <textarea
               value={csvText}
@@ -4766,8 +4767,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     >
                       <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
                       <span>
-                        Targets sum to {fmtPct(totalTarget)}, not 100%. Rebalance numbers
-                        assume the targets you've set; cash may not be fully deployed.
+                        Targets sum to {fmtPct(totalTarget)}, not 100%. <InfoHelp title="Allocation targets">Rebalance numbers assume the targets you have set; cash may not be fully deployed.</InfoHelp>
                       </span>
                     </div>
                   )}
@@ -4861,17 +4861,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
             {showManualForm && (
               <div style={{ marginTop: 14 }}>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: T.textDim,
-                    fontFamily: FONT_MONO,
-                    marginBottom: 8,
-                    lineHeight: 1.5,
-                  }}
-                >
+                <InfoHelp title="Manual assets">
                   For assets without a public ticker (Cash, Bonds, Tesouro SELIC, Tesouro IPCA, etc.). Price won't auto-update.
-                </div>
+                </InfoHelp>
 
                 {/* Mode toggle */}
                 <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
@@ -5135,19 +5127,11 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
               {usersOpen && (
                 <div style={{ marginTop: 14 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: T.textDim,
-                      fontFamily: FONT_MONO,
-                      lineHeight: 1.5,
-                      marginBottom: 12,
-                    }}
-                  >
+                  <InfoHelp title="User access">
                     Invite an email to the Redis allowlist. They also need to be
                     added as a Test User in Google Cloud Console while the app
                     is in Testing mode.
-                  </div>
+                  </InfoHelp>
 
                   <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
                     <Input
@@ -5358,7 +5342,7 @@ function HoldingLots({ lots, uncertain, valuesHidden }) {
   if (!uncertain && lots.length === 0) return null;
   return <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 10, marginTop: 10 }}>
     <div style={{ fontFamily: FONT_MONO, color: T.textDim, fontSize: 10, marginBottom: 6 }}>Lots{!uncertain && ` · ${lots.length}`}</div>
-    {uncertain ? <div style={{ fontFamily: FONT_MONO, color: T.gold, fontSize: 11 }}>Review lot links in Transactions.</div> : <TaxLotList lots={lots} valuesHidden={valuesHidden} />}
+    {uncertain ? <div style={{ fontFamily: FONT_MONO, color: T.gold, fontSize: 11 }}>Lots unavailable <InfoHelp title="Lot history">Review lot links in Transactions to identify the remaining purchase lots.</InfoHelp></div> : <TaxLotList lots={lots} valuesHidden={valuesHidden} />}
   </div>;
 }
 
@@ -5959,7 +5943,7 @@ function LoginGate({ onGoogleAuth, onPasswordAuth }) {
               lineHeight: 1.5,
             }}
           >
-            Sign in to access your portfolio. Each user has an isolated set of holdings.
+            Sign in to access your portfolio. <InfoHelp title="Portfolio privacy">Each user has an isolated set of holdings.</InfoHelp>
           </div>
 
           <div
@@ -6551,11 +6535,11 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
         >
           {isBankBonds ? (
             <div style={{ marginBottom: 8 }}>
-              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Auto-calculated from transactions</span>
+              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Value <InfoHelp title="Bank Bonds value">Auto-calculated from transactions.</InfoHelp></span>
             </div>
           ) : valueLocked ? (
             <div style={{ marginBottom: 8 }}>
-              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Synced automatically via SimpleFin</span>
+              <span style={{ color: T.textDim, fontSize: 13, fontFamily: FONT_MONO }}>Value <InfoHelp title="Synced balance">Synced automatically via SimpleFin.</InfoHelp></span>
             </div>
           ) : holding.manualMode === "value" ? (
             <div style={{ marginBottom: 8 }}>

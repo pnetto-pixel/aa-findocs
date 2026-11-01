@@ -1,3 +1,4 @@
+import InfoHelp from "./InfoHelp.jsx";
 // src/Performance.jsx — Performance view
 // Lazy-loaded. Shows portfolio USD value by default; toggling "vs S&P 500"
 // switches to a TWR % comparison chart.
@@ -1504,7 +1505,7 @@ function CompositionCard({
                 color: T.textDim,
               }}
             >
-              No transactions in eligible asset classes (excludes BRA Fixed Income, Cash and Unallocated BRL).
+              No eligible transactions. <InfoHelp title="Composition asset classes">Composition excludes BRA Fixed Income, Cash and Unallocated BRL.</InfoHelp>
             </div>
           ) : (
             <>
@@ -1658,17 +1659,9 @@ function CompositionCard({
                 />
               </div>
 
-              <div
-                style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 10,
-                  color: T.textFaint,
-                  marginTop: 12,
-                  letterSpacing: "0.04em",
-                }}
-              >
+              <InfoHelp title="Composition Evolution">
                 Excludes BRA Fixed Income
-              </div>
+              </InfoHelp>
             </>
           )}
         </div>
@@ -2848,17 +2841,9 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   </ResponsiveContainer>
                 </div>
 
-                <div
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 10,
-                    color: T.textFaint,
-                    marginTop: 12,
-                    letterSpacing: "0.04em",
-                  }}
-                >
+                <InfoHelp title="Total Return">
                   Total Return includes US dividends only (BRA and fixed income excluded).
-                </div>
+                </InfoHelp>
               </>
             )}
           </div>
@@ -2990,11 +2975,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+              <InfoHelp title="Risk & Drawdown">
                 Metrics over the selected window, from the daily TWR series (same asset universe
                 as the chart above — the Asset Class/Ticker chips up top apply here too).
                 XIRR is always since inception; BRL cashflows convert at each ticker's current FX rate.
-              </div>
+              </InfoHelp>
                 </>
               )}
             </div>
@@ -3066,10 +3051,10 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   </tbody>
                 </table>
               </ScrollHintTable>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+              <InfoHelp title="Monthly Returns">
                 TWR % per calendar month over the selected window. The first month shown may be partial.
                 YTD compounds only the months visible in the window.
-              </div>
+              </InfoHelp>
                 </>
               )}
             </div>
@@ -3145,7 +3130,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+              <InfoHelp title="Invested vs Growth">
                 Portfolio Value minus Capital Invested is market gain (net of sells).
                 Invested and received income are cumulative since inception even in shorter windows.
                 Value + Income includes available USD dividends and received bond
@@ -3154,7 +3139,7 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                   ` ${analyticsBase.incomeSkippedCurrency} income event${analyticsBase.incomeSkippedCurrency !== 1 ? "s" : ""} skipped (currency is not USD).`}
                 {analyticsBase.investedSkipped > 0 &&
                   ` ${analyticsBase.investedSkipped} BRL transaction${analyticsBase.investedSkipped !== 1 ? "s" : ""} skipped (no live FX rate for the ticker).`}
-              </div>
+              </InfoHelp>
             </div>
           )}
         </section>
@@ -3174,14 +3159,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
             {!dellExcluded && nwHistory.length > 0 && <PeriodPills value={nwPeriod} onChange={setNwPeriod} />}
             {dellExcluded ? (
               <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
-                History without DELL is unavailable: monthly snapshots store total net worth
-                without a ticker breakdown. Turn DELL on to view the original totals.
+                History unavailable with DELL off. <InfoHelp title="DELL and net worth history">Monthly snapshots store total net worth without a ticker breakdown. Turn DELL on to view the original totals.</InfoHelp>
               </div>
             ) : nwHistory.length === 0 ? (
               <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>
-                No snapshots yet. Your TOTAL net worth (including Cash, Unallocated and BRA
-                Fixed Income) is recorded automatically once per month when you open the app —
-                history builds from now on.
+                No snapshots yet. <InfoHelp title="Net worth snapshots">Your total net worth, including Cash, Unallocated and BRA Fixed Income, is recorded automatically once per month when you open the app. History builds from now on.</InfoHelp>
               </div>
             ) : (
               <>
@@ -3220,11 +3202,11 @@ export default function PerformanceView({ auth, onAuthFail, valuesHidden, holdin
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.textFaint, marginTop: 12, letterSpacing: "0.04em" }}>
+                <InfoHelp title="Total Net Worth History">
                   One snapshot per month — your total net worth at the last app load of that
                   month. Unlike the performance chart, this includes ALL holdings (Cash,
                   Unallocated, BRA Fixed Income).
-                </div>
+                </InfoHelp>
               </>
             )}
           </div>
