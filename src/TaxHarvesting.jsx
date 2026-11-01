@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Scissors } from "lucide-react";
+import { ChevronDown, ChevronRight, Scissors, Info } from "lucide-react";
 import InfoDialog from "./InfoDialog.jsx";
 import { groupHarvestCandidates } from "./lib/taxHarvest.js";
 
@@ -74,18 +74,15 @@ function HarvestGroup({ group, valuesHidden }) {
   const id = useId();
   return <div style={{ borderTop: `1px solid ${T.borderSoft}` }}>
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(v => !v)}
-      style={{ ...emptyButton, display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "13px 0", textAlign: "left", fontFamily: MONO }}>
+      style={{ ...emptyButton, display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 0", textAlign: "left", fontFamily: MONO }}>
       {open ? <ChevronDown size={12} style={{ flexShrink: 0, color: T.textDim }} /> : <ChevronRight size={12} style={{ flexShrink: 0, color: T.textDim }} />}
-      <span style={{ minWidth: 0, flex: 1 }}>
-        <span style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-          <strong style={{ fontSize: 12, color: T.text, overflowWrap: "anywhere" }}>{group.ticker}</strong>
-        </span>
-        <span style={{ color: T.textDim, fontSize: 10 }}>{group.lots.length} {group.lots.length === 1 ? "lot" : "lots"}</span>
+      <span style={{ minWidth: 0, flex: 1, display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 8px" }}>
+        <strong style={{ fontSize: 12, color: T.text, overflowWrap: "anywhere" }}>{group.ticker}</strong>
+        <span style={{ color: T.textDim, fontSize: 10, whiteSpace: "nowrap" }}>{group.lots.length} {group.lots.length === 1 ? "lot" : "lots"}</span>
       </span>
       <span style={{ fontSize: 12, color: T.red, textAlign: "right", overflowWrap: "anywhere" }}>{money(-group.totalLoss, group.currency, valuesHidden)} <span style={{ fontSize: 9, color: T.textDim }}>{group.currency}</span></span>
     </button>
     {open && <div id={id} style={{ padding: "0 0 8px" }}>
-      {group.restricted && <div style={{ color: T.gold, fontFamily: BODY, fontSize: 11, lineHeight: 1.5, padding: "0 0 4px" }}>Recent shares would remain after selling. Their 30-day purchase window clears on {group.clearDate}.</div>}
       <TaxLotList lots={group.lots} valuesHidden={valuesHidden} />
     </div>}
   </div>;
@@ -93,6 +90,7 @@ function HarvestGroup({ group, valuesHidden }) {
 
 export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTransactions }) {
   const [open, setOpen] = useState(false);
+  const [recentHelp, setRecentHelp] = useState(false);
   const id = useId();
   const summary = useMemo(() => groupHarvestCandidates(harvest?.candidates || []), [harvest?.candidates]);
   const available = summary.groups.filter(group => !group.restricted);
@@ -135,10 +133,13 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
       {!available.length && <div style={{ padding: "12px 0", fontFamily: BODY, fontSize: 11, color: T.textDim }}>No unrestricted loss lots found.</div>}
       {available.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       {review.length > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
-        <summary style={{ cursor: "pointer", color: T.gold, padding: "4px 0" }}>Recent purchases · {review.length}</summary>
-        <p style={{ color: T.textDim, fontSize: 11, lineHeight: 1.5, margin: "8px 0" }}>These losses need a purchase-window check and are excluded from the total.</p>
+        <summary style={{ cursor: "pointer", color: T.gold, padding: "4px 0" }}>Recent purchases · {review.length}<button type="button" aria-label="About recent purchases" aria-haspopup="dialog" onClick={event => { event.preventDefault(); event.stopPropagation(); setRecentHelp(true); }} style={{ ...emptyButton, display: "inline-flex", alignItems: "center", verticalAlign: "middle", padding: 6, marginLeft: 4, color: T.textDim }}><Info size={13} /></button></summary>
         {review.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       </details>}
+      {recentHelp && <InfoDialog title="Recent purchases" onClose={() => setRecentHelp(false)}>
+        <p style={{ margin: "0 0 12px", color: T.textDim }}>Recent purchases would remain in your portfolio after selling the loss lots. These losses need a purchase-window check and are excluded from the total.</p>
+        {review.map(group => <div key={group.key} style={{ marginTop: 8 }}><strong>{group.ticker}</strong><span style={{ color: T.textDim }}> · Purchase window clears {group.clearDate}</span></div>)}
+      </InfoDialog>}
       {unavailableCount > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
         <summary style={{ cursor: "pointer", color: T.textDim, padding: "4px 0" }}>Not calculated · {unavailableCount}</summary>
         <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 8 }} tabIndex={0} aria-label="Reasons some assets were not calculated">
