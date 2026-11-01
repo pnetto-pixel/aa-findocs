@@ -8,6 +8,10 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Escopo do card (v1.24.2)
+
+Tax Harvesting remove o bloco `About this estimate`. O card usa somente tickers com quantidade positiva em Holdings, excluindo Bank Bonds, inclusive nos totais, compras recentes e dados nao calculados. Ativos zerados, mesmo com target configurado, nao aparecem. O filtro usa Holdings completo, nao os filtros visuais, e e aplicado apos reconstruir os lotes: historico de vendas, vinculacoes, Holdings e tags do Rebalance permanecem intactos.
+
 ### Clareza dos avisos (v1.24.1)
 
 O card separa `Recent purchases` (perdas com compra recente que permaneceria na carteira) de `Not calculated` (dados insuficientes). Ambos iniciam recolhidos, fora do total principal. A etiqueta generica `REVIEW` foi removida; expandir um ativo com compra recente explica a janela e sua data final. Os dados nao calculados sao agrupados por motivo real — venda sem lotes, vinculos inconsistentes, moeda, data, transacao invalida, custo ou cotacao — com tickers compactos e instrucao uma vez por grupo, area de altura limitada e atalho para Transactions. O motor expõe `uncertaintyReasons` sem alterar quais lotes entram nos calculos. Testes direcionados cobrem a distincao entre motivos; QA Chromium usa dados simulados.

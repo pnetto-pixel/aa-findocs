@@ -202,3 +202,20 @@ export function groupHarvestCandidates(candidates = []) {
   }
   return { groups, totalsByCurrency, restrictedTotalsByCurrency };
 }
+
+// Scope only the card's presentation; the lot replay must still see all sales.
+export function scopeHarvestToHoldings(harvest, holdings = []) {
+  const current = new Set(holdings.filter(h => h.ticker &&
+    String(h.assetClass || '').trim().toLowerCase() !== 'bank bonds' &&
+    Number.isFinite(Number(h.qty)) && Number(h.qty) > EPSILON
+  ).map(h => String(h.ticker).trim().toUpperCase()));
+  const includes = ticker => current.has(String(ticker || '').trim().toUpperCase());
+  return {
+    ...harvest,
+    candidates: (harvest.candidates || []).filter(lot => includes(lot.ticker)),
+    openLots: (harvest.openLots || []).filter(lot => includes(lot.ticker)),
+    uncertainTickers: (harvest.uncertainTickers || []).filter(includes),
+    incompleteTickers: (harvest.incompleteTickers || []).filter(includes),
+    uncertaintyReasons: Object.fromEntries(Object.entries(harvest.uncertaintyReasons || {}).filter(([ticker]) => includes(ticker))),
+  };
+}

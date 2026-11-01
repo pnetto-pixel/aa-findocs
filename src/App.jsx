@@ -3,7 +3,7 @@ import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, 
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 import { inferAssetClass } from "./lib/parsing.js";
-import { buildHarvestLots, washSaleWarnings } from "./lib/taxHarvest.js";
+import { buildHarvestLots, washSaleWarnings, scopeHarvestToHoldings } from "./lib/taxHarvest.js";
 import { TaxHarvestingCard, TaxLotList, TaxStatusTag } from "./TaxHarvesting.jsx";
 import { divCacheHash, setDivCacheEntry } from "./lib/dividendsCache.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
@@ -3039,6 +3039,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const now = new Date();
   const taxToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const harvest = useMemo(() => buildHarvestLots(transactions, taxPrices, taxToday), [transactions, taxPrices, taxToday]);
+  const cardHarvest = useMemo(() => scopeHarvestToHoldings(harvest, holdings), [harvest, holdings]);
   const lotsByTicker = useMemo(() => {
     const grouped = {};
     for (const lot of harvest.openLots) (grouped[lot.ticker] ||= []).push(lot);
@@ -4870,7 +4871,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             )}
           </section>
 
-          <TaxHarvestingCard harvest={harvest} valuesHidden={valuesHidden} onReviewTransactions={() => setActiveView("transactions")} />
+          <TaxHarvestingCard harvest={cardHarvest} valuesHidden={valuesHidden} onReviewTransactions={() => setActiveView("transactions")} />
 
           {/* Rebalance Suggestion — placed below Add Manual Asset */}
           {holdings.some((h) => h.target > 0) && (
