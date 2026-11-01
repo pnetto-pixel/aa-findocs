@@ -9,6 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Atualizar esses dois arquivos** ao final de sessions que mudam features ou decisões técnicas — commitar junto com o PR da feature ou num PR separado de docs.
 
+## UI explanations
+
+User preference: whenever an explanation or instruction is needed in the interface, use a small circled `i` (Lucide `Info`) next to the relevant label. Tapping opens a popup with the information. Avoid adding explanatory lines or paragraphs to the main screen. Keep the trigger accessible by keyboard, with an explicit accessible label; the popup must support closing and returning focus. Use `src/InfoDialog.jsx` for the existing pattern.
+
 ## Deploy Pattern
 
 **Merge direto no main** — não usar PR. O usuário não tem como fazer preview funcional antes do merge (constraint iPhone-only). Workflow:

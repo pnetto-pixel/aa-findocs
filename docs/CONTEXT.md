@@ -8,6 +8,12 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Padrao de explicacoes e lotes inline (v1.24.5)
+
+**Preferencia permanente do usuario:** sempre que precisar explicar algo na interface, usar um pequeno `i` dentro de um circulo (icone `Info`) junto ao elemento; clicar/tocar abre um pop-up com a explicacao. Evitar linhas ou paragrafos explicativos na tela principal. O gatilho precisa de label acessivel; o pop-up deve permitir fechar por Escape/toque e devolver foco (componente `InfoDialog.jsx`). Regra tambem registrada em CLAUDE.md para futuras implementacoes.
+
+No Tax Harvesting, ticker e quantidade de lotes ficam lado a lado; a explicacao de Recent purchases e as datas de fim da janela de cada ativo ficam no pop-up do icone Info ao lado do titulo. Abrir a ajuda nao alterna o accordion. Calculos preservados.
+
 ### Rebalance compacto e colunas de lotes (v1.24.4)
 
 Rebalance aproxima ticker e tag (`WASH` ou `TAX LOSS`), e BUY/quantidade e valor ficam lado a lado. A linha pode quebrar em espacos estreitos, preservando numeros completos; tocar ticker mostra o nome. As tags abrem dialogo com data ou lotes. As instrucoes abaixo do input foram movidas para o icone Info junto ao label, com dialogo via portal, Escape, foco contido e retorno de foco. A lista de lotes compartilhada usa a mesma grade no cabecalho e linhas: data a esquerda, quantidade centralizada e ganho/perda a direita, com intervalo de 12px entre colunas. Build e QA Chromium com mocks em 390/1024px; calculos preservados.
