@@ -4870,7 +4870,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             )}
           </section>
 
-          <TaxHarvestingCard harvest={harvest} valuesHidden={valuesHidden} />
+          <TaxHarvestingCard harvest={harvest} valuesHidden={valuesHidden} onReviewTransactions={() => setActiveView("transactions")} />
 
           {/* Rebalance Suggestion — placed below Add Manual Asset */}
           {holdings.some((h) => h.target > 0) && (

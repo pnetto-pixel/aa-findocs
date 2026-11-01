@@ -44,14 +44,20 @@ export function washSaleWarnings(transactions, asOf) {
 // have consumed any of its buys. Amounts include buy fees in the cost basis.
 export function buildHarvestLots(transactions, pricesByTicker, asOf) {
   const today = dayNumber(asOf);
-  if (today == null) return { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [] };
+  if (today == null) return { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [], uncertaintyReasons: {} };
   const uncertain = new Set();
+  const uncertaintyReasons = {};
+  function markUncertain(ticker, reason) {
+    uncertain.add(ticker);
+    const reasons = uncertaintyReasons[ticker] ||= [];
+    if (!reasons.includes(reason)) reasons.push(reason);
+  }
   const rows = (transactions || []).filter(tx => {
     if (!tx || !tickerOf(tx)) return false;
     const date = dayNumber(tx.date);
     if (date == null) {
       // An undated buy or sale cannot safely be placed in the lot history.
-      if (tx.side === 'buy' || tx.side === 'sell') uncertain.add(tickerOf(tx));
+      if (tx.side === 'buy' || tx.side === 'sell') markUncertain(tickerOf(tx), "invalid-date");
       return false;
     }
     return date <= today;
@@ -64,13 +70,13 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
     if (tx.side !== 'buy' && tx.side !== 'sell') continue;
     const ticker = tickerOf(tx);
     const currency = String(tx.currency || currencyForAssetClass(tx.assetClass) || '').trim().toUpperCase();
-    if (currency !== 'USD' && currency !== 'BRL') { uncertain.add(ticker); continue; }
-    if (currencies.has(ticker) && currencies.get(ticker) !== currency) uncertain.add(ticker);
+    if (currency !== 'USD' && currency !== 'BRL') { markUncertain(ticker, 'currency'); continue; }
+    if (currencies.has(ticker) && currencies.get(ticker) !== currency) markUncertain(ticker, 'currency');
     else currencies.set(ticker, currency);
   }
   for (const [ticker, currency] of currencies) {
     const quote = pricesByTicker?.[ticker];
-    if (quote != null && (typeof quote !== 'object' || String(quote.currency || '').trim().toUpperCase() !== currency)) uncertain.add(ticker);
+    if (quote != null && (typeof quote !== 'object' || String(quote.currency || '').trim().toUpperCase() !== currency)) markUncertain(ticker, 'currency');
   }
   const lots = new Map();
   const buys = [];
@@ -80,7 +86,7 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
     const qty = Number(tx.qty);
     if (tx.side === 'buy') {
       if (!tx.id || !(qty > 0) || !Number.isFinite(qty) || lots.has(tx.id)) {
-        uncertain.add(ticker);
+        markUncertain(ticker, 'invalid-transaction');
         continue;
       }
       const lot = { tx, ticker, qty, remaining: qty };
@@ -88,7 +94,7 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
       buys.push(lot);
     } else if (tx.side === 'sell') {
       if (!(qty > 0) || !Number.isFinite(qty) || !Array.isArray(tx.harvestLots)) {
-        uncertain.add(ticker);
+        markUncertain(ticker, !(qty > 0) || !Number.isFinite(qty) ? 'invalid-transaction' : 'unlinked-sale');
         continue;
       }
       let total = 0;
@@ -106,7 +112,7 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
       }
       if (Math.abs(total - qty) > EPSILON || [...allocations].some(([lot, amount]) => amount > lot.remaining + EPSILON)) valid = false;
       if (!valid) {
-        uncertain.add(ticker);
+        markUncertain(ticker, tx.harvestLots.length === 0 ? 'unlinked-sale' : 'lot-links');
         continue;
       }
       for (const [lot, amount] of allocations) lot.remaining = Math.max(0, lot.remaining - amount);
@@ -162,7 +168,7 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
   // unpriced lots stay visible without claiming a monetary result.
   openLots.sort((a, b) => a.ticker.localeCompare(b.ticker) ||
     (a.gainLoss == null && b.gainLoss == null ? 0 : a.gainLoss == null ? 1 : b.gainLoss == null ? -1 : a.gainLoss - b.gainLoss) || a.date.localeCompare(b.date));
-  return { candidates, openLots, uncertainTickers: [...uncertain].sort(), incompleteTickers: [...incomplete].sort() };
+  return { candidates, openLots, uncertainTickers: [...uncertain].sort(), incompleteTickers: [...incomplete].sort(), uncertaintyReasons };
 }
 
 // Keep loss estimates in their native currency. The main total includes only
