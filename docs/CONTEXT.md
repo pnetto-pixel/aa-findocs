@@ -8,6 +8,20 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Redesenho minimalista (v1.24.0, out/2026)
+
+A coluna **Tax** na tabela de Transactions substitui o antigo botao na coluna de acoes. Mostra `—`, `HARVEST` ou `REBUY`; o toque abre um editor fiscal dedicado para marcar a venda, vincular os lotes vendidos ou associar a recompra. O formulario geral deixa de carregar o bloco fiscal extenso. Os vinculos e as protecoes de quantidade, data, ticker e moeda continuam sendo usados.
+
+O accordion de cada ativo em **Holdings** inclui os lotes abertos com data, quantidade e ganho/perda em valor e percentual, com detalhes de custo e cotacao ao tocar. Lotes negativos aparecem primeiro. Resultado sem cotacao ou custo confiavel fica indisponivel; historico incerto pede revisao dos vinculos em Transactions. Valores seguem a mascara de privacidade e a moeda do lote.
+
+O **Rebalance** usa apenas tags compactas: `WASH` tem prioridade quando existe venda de harvesting na janela inclusiva ate o dia +30; o toque mostra a primeira data fora da janela (+31). Sem `WASH`, `TAX LOSS` indica lote aberto negativo e permite consultar os lotes antes de comprar. As tags sao avisos: nao alteram valores ou distribuicao do rebalanceamento. `WASH` alerta sobre a recompra; nao bloqueia automaticamente a venda de outros lotes.
+
+O card recolhivel **Tax Harvesting** agrupa lotes negativos por ativo, com total de prejuizo potencial por moeda e grupos ordenados pela maior perda dentro de cada moeda. Ao expandir o ativo, mostra os lotes. Compras recentes que permaneceriam na carteira tornam o grupo sujeito a revisao; grupos com essa restricao, historico incerto ou sem cotacao confiavel ficam fora do total principal. USD e BRL nunca sao somados diretamente. O valor apresentado e prejuizo potencial realizavel, sem estimativa de imposto economizado ou abatimento fiscal garantido.
+
+A analise continua supondo a venda integral de todos os lotes negativos de cada ticker. Vender somente parte pode mudar o risco; novas compras nos 30 dias seguintes tambem podem afetar o resultado. Hipoteses e limites ficam em detalhes recolhiveis, mantendo a tela principal curta. O calculo nao cobre automaticamente outras contas, ativos substancialmente identicos ou transacoes ausentes.
+
+**Entrega:** v1.23.0 mergeada em `main` no commit `8ca4c55`; deploy de producao `READY` e alias `aa-findocs.vercel.app` confirmados em 31/out/2026. v1.24.0: build e suites automatizadas aprovados; auditoria corrigiu custo incompleto e marcador fiscal apos troca de lado. QA Chromium com APIs simuladas validou lotes, tags, agrupamento e salvamento de venda/recompra em 390 e 320px; Safari real nao testado.
+
 > **Repo público:** <https://github.com/pnetto-pixel/aa-findocs>
 > **App live:** <https://aa-findocs.vercel.app>
 > **Owner / Admin:** [pnetto@gmail.com](mailto:pnetto@gmail.com)

@@ -4,8 +4,9 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Check, Upload, Download, AlertCircle, ChevronDown, ChevronRight, RefreshCw, Link2 } from "lucide-react";
 import DateMonthPicker from "./DateMonthPicker.jsx";
+import TaxTransactionEditor from "./TaxTransactionEditor.jsx";
 import {
   newId,
   ASSET_CLASS_IDS,
@@ -395,9 +396,6 @@ function TransactionForm({ initial, knownTickers, transactions = [], onSubmit, o
   const [assetClass, setAssetClass] = useState(initial?.assetClass || "");
   const [fee, setFee] = useState(initial?.fee ? String(initial.fee) : "");
   const [notes, setNotes] = useState(initial?.notes || "");
-  const [harvestSale, setHarvestSale] = useState(!!initial?.harvestSale);
-  const [harvestRebuySaleId, setHarvestRebuySaleId] = useState(initial?.harvestRebuySaleId || "");
-  const [lotQty, setLotQty] = useState(() => Object.fromEntries((initial?.harvestLots || []).map((l) => [l.buyId, String(l.qty)])));
   const [error, setError] = useState("");
   const [showTickerList, setShowTickerList] = useState(false);
   const [tickerValidating, setTickerValidating] = useState(false);
@@ -473,22 +471,6 @@ function TransactionForm({ initial, knownTickers, transactions = [], onSubmit, o
     if (fee && (!isFinite(feeN) || feeN < 0)) return setError("Fee invalid");
     if (!date) return setError("Date required");
 
-    const eligibleLots = transactions.filter((t) => t.id !== initial?.id && t.side === "buy" && String(t.ticker || "").toUpperCase() === tkr && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency);
-    const lots = [];
-    if (side === "sell") {
-      for (const [buyId, value] of Object.entries(lotQty)) {
-        if (value === "") continue;
-        const amount = Number(value);
-        const buy = eligibleLots.find((t) => t.id === buyId);
-        if (!buy || !Number.isFinite(amount) || amount <= 0) return setError("Check the selected lot quantities and dates.");
-        const used = transactions.filter((t) => t.id !== initial?.id && t.side === "sell").reduce((sum, t) => sum + (t.harvestLots || []).filter((l) => l.buyId === buyId).reduce((s, l) => s + Number(l.qty || 0), 0), 0);
-        if (amount + used > Number(buy.qty) + 1e-8) return setError("Lot allocation exceeds the available quantity.");
-        lots.push({ buyId, qty: amount });
-      }
-      if (lots.reduce((sum, l) => sum + l.qty, 0) > qn + 1e-8) return setError("Lot allocations exceed the sale quantity.");
-    }
-    if (side === "buy" && harvestRebuySaleId && !transactions.some((t) => t.id === harvestRebuySaleId && t.side === "sell" && t.harvestSale && String(t.ticker || "").toUpperCase() === tkr && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency)) return setError("Select an earlier harvesting sale of the same ticker and currency.");
-
     const tx = {
       ...initial,
       id: initial?.id || newId(),
@@ -501,9 +483,6 @@ function TransactionForm({ initial, knownTickers, transactions = [], onSubmit, o
       currency,
       fee: feeN,
       notes: notes.trim(),
-      harvestSale: side === "sell" && harvestSale,
-      harvestLots: side === "sell" ? lots : [],
-      harvestRebuySaleId: side === "buy" ? harvestRebuySaleId : "",
       // Only populated when the ticker above came from the synthetic-id
       // generator (bondGenMeta) — a manually-typed CUSIP or any other asset
       // class never gets these fields, same as before this feature.
@@ -825,31 +804,6 @@ function TransactionForm({ initial, knownTickers, transactions = [], onSubmit, o
           <Label>Notes (optional)</Label>
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
-      </div>
-
-      <div style={{ marginTop: 16, padding: 12, border: `1px solid ${T.border}`, color: T.textDim, fontFamily: FONT_MONO, fontSize: 11 }}>
-        <div style={{ color: T.gold, marginBottom: 8 }}>TAX HARVESTING</div>
-        {side === "sell" ? <>
-          <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-            <input type="checkbox" checked={harvestSale} onChange={(e) => setHarvestSale(e.target.checked)} />
-            Mark as tax harvesting sale
-          </label>
-          <div style={{ marginBottom: 8 }}>Link sold lots (optional). Unlinked quantities leave the remaining lots uncertain.</div>
-          {transactions.filter((t) => t.id !== initial?.id && t.side === "buy" && String(t.ticker || "").toUpperCase() === ticker.trim().toUpperCase() && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency).map((buy) => {
-            const used = transactions.filter((t) => t.id !== initial?.id && t.side === "sell").reduce((sum, t) => sum + (t.harvestLots || []).filter((l) => l.buyId === buy.id).reduce((s, l) => s + Number(l.qty || 0), 0), 0);
-            return <div key={buy.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <span style={{ flex: 1 }}>{buy.date} · {buy.qty} @ {buy.price} · available {Number(Math.max(0, Number(buy.qty) - used).toFixed(6))}</span>
-              <input aria-label={`Quantity sold from lot ${buy.date}`} type="number" min="0" step="any" placeholder="Qty" value={lotQty[buy.id] || ""} onChange={(e) => setLotQty((prev) => ({ ...prev, [buy.id]: e.target.value }))} style={{ width: 85, background: T.bg, color: T.text, border: `1px solid ${T.border}`, padding: 7 }} />
-            </div>;
-          })}
-          {Object.values(lotQty).some(Boolean) && <button type="button" onClick={() => setLotQty({})} style={{ background: "transparent", color: T.textDim, border: `1px solid ${T.border}`, padding: 6 }}>Clear lot links</button>}
-        </> : <>
-          <Label>Rebuy funded by harvesting sale (same ticker)</Label>
-          <select value={harvestRebuySaleId} onChange={(e) => setHarvestRebuySaleId(e.target.value)} style={{ width: "100%", background: T.bg, color: T.text, border: `1px solid ${T.border}`, padding: 10 }}>
-            <option value="">None — normal contribution</option>
-            {transactions.filter((t) => t.side === "sell" && t.harvestSale && String(t.ticker || "").toUpperCase() === ticker.trim().toUpperCase() && t.date <= date && (t.currency || currencyForAssetClass(t.assetClass)) === currency).map((t) => <option key={t.id} value={t.id}>{t.date} · {t.ticker} · {t.qty} @ {t.price}</option>)}
-          </select>
-        </>}
       </div>
 
       {error && (
@@ -1359,7 +1313,7 @@ function ScrollHintTable({ children, style, leftFadeOffset = 0, fadeBg = T.card 
 
 function TransactionTable({
   transactions,
-  onEdit,
+  onTaxEdit,
   onDelete,
   onUpdate,
   onBulkDelete,
@@ -1890,7 +1844,7 @@ function TransactionTable({
       <table
         style={{
           width: "100%",
-          minWidth: 760,
+          minWidth: 800,
           borderCollapse: "collapse",
           fontFamily: FONT_MONO,
           fontSize: 11,
@@ -1901,13 +1855,14 @@ function TransactionTable({
           <col style={{ width: "28px" }} />
           <col style={{ width: "90px" }} />
           <col style={{ width: "36px" }} />
-          <col style={{ width: "110px" }} />
           <col style={{ width: "74px" }} />
+          <col style={{ width: "72px" }} />
+          <col style={{ width: "110px" }} />
           <col style={{ width: "56px" }} />
           <col style={{ width: "80px" }} />
           <col style={{ width: "70px" }} />
           <col style={{ width: "auto" }} />
-          <col style={{ width: "88px" }} />
+          <col style={{ width: "56px" }} />
         </colgroup>
         <thead>
           <tr>
@@ -1935,8 +1890,9 @@ function TransactionTable({
             </th>
             {renderHeaderCell({ col: "date", label: "Date" })}
             {renderHeaderCell({ col: "side", label: "B/S" })}
-            {renderHeaderCell({ col: "assetClass", label: "Class" })}
             {renderHeaderCell({ col: "ticker", label: "Ticker" })}
+            <th style={{ padding: "10px 4px", borderBottom: `1px solid ${T.border}`, background: T.card, color: T.textDim, fontSize: 10, fontWeight: 500, textAlign: "left" }}>Tax</th>
+            {renderHeaderCell({ col: "assetClass", label: "Class" })}
             {renderHeaderCell({ col: "qty", label: "Qty", align: "right" })}
             {renderHeaderCell({ col: "price", label: "Price", align: "right" })}
             {renderHeaderCell({ col: "fee", label: "Fee", align: "right" })}
@@ -1957,7 +1913,7 @@ function TransactionTable({
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={10}
+                colSpan={11}
                 style={{
                   padding: 32,
                   textAlign: "center",
@@ -2037,6 +1993,16 @@ function TransactionTable({
                       </select>
                     </td>
                     <td style={cellStyle}>
+                      <input
+                        type="text"
+                        value={draft.ticker}
+                        onChange={(e) => setDraft({ ...draft, ticker: e.target.value.toUpperCase() })}
+                        onKeyDown={onKey}
+                        style={{ ...inputStyle, textTransform: "uppercase" }}
+                      />
+                    </td>
+                    <td style={{ ...cellStyle, color: T.textDim, fontSize: 9 }}>{tx.harvestSale ? "HARVEST" : tx.harvestRebuySaleId ? "REBUY" : "—"}</td>
+                    <td style={cellStyle}>
                       <select
                         value={draft.assetClass}
                         onChange={(e) => setDraft({ ...draft, assetClass: e.target.value })}
@@ -2049,15 +2015,6 @@ function TransactionTable({
                           </option>
                         ))}
                       </select>
-                    </td>
-                    <td style={cellStyle}>
-                      <input
-                        type="text"
-                        value={draft.ticker}
-                        onChange={(e) => setDraft({ ...draft, ticker: e.target.value.toUpperCase() })}
-                        onKeyDown={onKey}
-                        style={{ ...inputStyle, textTransform: "uppercase" }}
-                      />
                     </td>
                     <td style={cellStyle}>
                       <input
@@ -2194,18 +2151,6 @@ function TransactionTable({
                   <td
                     style={{
                       padding: "8px 4px",
-                      color: T.textDim,
-                      fontSize: 10,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {tx.assetClass || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "8px 4px",
                       color: T.text,
                       fontWeight: 500,
                       overflow: "hidden",
@@ -2226,6 +2171,24 @@ function TransactionTable({
                         {tx.ticker}
                       </span>
                     </span>
+                  </td>
+                  <td style={{ padding: "4px 2px" }}>
+                    <button type="button" disabled={busy || editingId != null} onClick={(event) => { event.stopPropagation(); onTaxEdit?.(tx.id); }} onDoubleClick={event => event.stopPropagation()} aria-label={`Tax details for ${tx.ticker} ${tx.date}${tx.harvestLots?.length ? ", sold lots linked" : ""}`} style={{ minHeight: 36, width: "100%", padding: "4px 2px", border: 0, borderRadius: 3, background: tx.harvestSale || tx.harvestRebuySaleId ? "rgba(201,169,97,.08)" : "transparent", color: tx.harvestSale || tx.harvestRebuySaleId || tx.harvestLots?.length ? T.gold : T.textFaint, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 3, fontFamily: FONT_MONO, fontSize: 9, cursor: "pointer" }}>
+                      {tx.harvestSale ? "HARVEST" : tx.harvestRebuySaleId ? "REBUY" : "—"}
+                      {!tx.harvestSale && tx.harvestLots?.length > 0 && <Link2 size={10} />}
+                    </button>
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 4px",
+                      color: T.textDim,
+                      fontSize: 10,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tx.assetClass || "—"}
                   </td>
                   <td
                     style={{
@@ -2272,7 +2235,6 @@ function TransactionTable({
                     {tx.notes || "—"}
                   </td>
                   <td style={{ padding: "6px 2px", textAlign: "right", whiteSpace: "nowrap" }}>
-                    <button onClick={() => onEdit?.(tx)} disabled={busy} title="Tax harvesting and lot links" aria-label={`Tax details for ${tx.ticker} ${tx.date}`} style={{ background: "transparent", border: `1px solid ${T.border}`, color: tx.harvestSale || tx.harvestRebuySaleId || tx.harvestLots?.length ? T.gold : T.textDim, padding: "3px 4px", marginRight: 2, cursor: "pointer", fontSize: 9 }}>Tax</button>
                     <button
                       onClick={() => startEdit(tx)}
                       disabled={busy}
@@ -5274,6 +5236,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
   const [saving, setSaving] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null); // tx | null
+  const [taxEditingId, setTaxEditingId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   // Transaction history starts collapsed, matching Income History, so the
   // tab opens without scrolling past hundreds of rows.
@@ -5458,8 +5421,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setTransactions(nextList);
       if (Array.isArray(nextIncome)) setBondIncome(nextIncome);
       onTransactionsChange?.(nextList);
+      return true;
     } catch (err) {
       setError(err.message || "Save failed");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -5852,10 +5817,24 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
       setError("This transaction is linked to tax records. Remove its links before changing its ticker, side, date, quantity, class or currency, or unmarking a sale with linked repurchases.");
       return;
     }
+    // A marker on an unlinked sale must not follow it when changed to a buy.
+    if (old && old.side !== tx.side) {
+      tx = tx.side === "buy" ? { ...tx, harvestSale: false, harvestLots: [] } : { ...tx, harvestRebuySaleId: "" };
+    }
     const next = transactions.map((t) => (t.id === tx.id ? tx : t));
     await persist(next);
     setEditing(null);
     verifyTickers([tx], { force: true });
+  }
+
+  async function handleTaxUpdate(id, patch) {
+    const original = transactions.find(tx => tx.id === id);
+    if (!original) return "Transaction no longer exists. Close and reopen the editor.";
+    if (original.harvestSale && patch.harvestSale === false && hasLinkedRebuys(original, transactions)) return "Unlink its repurchases before removing the harvesting mark.";
+    const next = transactions.map(tx => tx.id === id ? { ...tx, ...patch } : tx);
+    const linkError = validateImportedTaxLinks(next);
+    if (linkError) return linkError;
+    return await persist(next) ? null : "Could not save. Please try again.";
   }
 
   async function handleDelete(tx) {
@@ -6466,6 +6445,10 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         </div>
       )}
 
+      {taxEditingId && transactions.some(tx => tx.id === taxEditingId) && (
+        <TaxTransactionEditor key={taxEditingId} transaction={transactions.find(tx => tx.id === taxEditingId)} transactions={transactions} onSave={handleTaxUpdate} onClose={() => setTaxEditingId(null)} busy={saving} valuesHidden={valuesHidden} />
+      )}
+
       {formOpen && !editing && (
         <TransactionForm
           knownTickers={knownTickers}
@@ -6536,7 +6519,7 @@ export default function TransactionsView({ auth, onAuthFail, knownTickers = [], 
         {historyOpen && (
           <TransactionTable
             transactions={transactions}
-            onEdit={setEditing}
+            onTaxEdit={setTaxEditingId}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onBulkDelete={handleBulkDelete}
