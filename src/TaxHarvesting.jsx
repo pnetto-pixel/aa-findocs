@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Scissors } from "lucide-react";
 import { groupHarvestCandidates } from "./lib/taxHarvest.js";
 
 const T = {
@@ -34,22 +34,22 @@ export function TaxLotList({ lots = [], valuesHidden = false, compact = false })
   const [expanded, setExpanded] = useState(null);
   if (!lots.length) return <div style={{ color: T.textDim, fontSize: 11, padding: "10px 0" }}>No open lots.</div>;
   const sorted = [...lots].sort((a, b) => (a.gainLoss == null ? Infinity : a.gainLoss) - (b.gainLoss == null ? Infinity : b.gainLoss) || a.date.localeCompare(b.date));
-  return <div style={{ fontFamily: MONO, fontSize: 11, minWidth: 0 }}>
-    {!compact && <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 32px minmax(0,1.15fr)", gap: 6, color: T.textFaint, fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "8px 0" }}>
+  return <div style={{ fontFamily: MONO, fontSize: 10, minWidth: 0, overflowX: "auto" }}>
+    {!compact && <div style={{ display: "grid", gridTemplateColumns: "76px minmax(28px,1fr) max-content", gap: 6, color: T.textFaint, fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "8px 0", minWidth: 250 }}>
       <span>Lot date</span><span style={{ textAlign: "right" }}>Qty</span><span style={{ textAlign: "right" }}>Gain / Loss</span>
     </div>}
     {sorted.map(lot => {
       const pnl = lot.gainLoss ?? (lot.loss == null ? null : -lot.loss);
       const color = pnl == null || pnl === 0 ? T.textDim : pnl < 0 ? T.red : T.green;
       const open = expanded === lot.buyId;
-      return <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+      return <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}`, minWidth: compact ? 0 : 250 }}>
         <button type="button" aria-expanded={open} aria-label={`Lot ${lot.ticker} ${lot.date}, cost details`} onClick={() => setExpanded(open ? null : lot.buyId)}
-          style={{ ...emptyButton, width: "100%", display: "grid", gridTemplateColumns: compact ? "minmax(0,1fr)" : "minmax(0,1fr) 32px minmax(0,1.15fr)", gap: compact ? 3 : 6, alignItems: "center", padding: "10px 0", textAlign: "left", minHeight: 44 }}>
+          style={{ ...emptyButton, width: "100%", display: "grid", gridTemplateColumns: compact ? "minmax(0,1fr)" : "76px minmax(28px,1fr) max-content", gap: compact ? 3 : 6, alignItems: "center", padding: "7px 0", textAlign: "left", minHeight: 36 }}>
           <span style={{ color: T.textDim, fontSize: 10, whiteSpace: "nowrap" }}>{lot.date}</span>
           <span style={{ color: T.text, textAlign: compact ? "left" : "right", overflowWrap: "anywhere" }}>{compact ? "Qty " : ""}{quantity(lot.qty)}</span>
-          <span style={{ color, textAlign: compact ? "left" : "right", minWidth: 0, overflowWrap: "anywhere" }}>
-            <span style={{ display: "block" }}>{money(pnl, lot.currency, valuesHidden, true)}</span>
-            <span style={{ display: "block", fontSize: 10, marginTop: 2 }}>{percent(lot.gainLossPct, valuesHidden)}</span>
+          <span style={{ color, display: "inline-flex", alignItems: "baseline", justifyContent: compact ? "flex-start" : "flex-end", gap: 6, whiteSpace: "nowrap" }}>
+            <span>{money(pnl, lot.currency, valuesHidden, true)}</span>
+            <span style={{ fontSize: 10 }}>{percent(lot.gainLossPct, valuesHidden)}</span>
           </span>
         </button>
         {open && <div style={{ padding: "0 0 10px", color: T.textDim, fontSize: 10, lineHeight: 1.7 }}>
@@ -118,18 +118,19 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
   return <section style={{ marginTop: 18, background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4, color: T.text }}>
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(v => !v)}
       style={{ ...emptyButton, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%", padding: "14px 16px", textAlign: "left" }}>
-      <span style={{ minWidth: 0 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: MONO, fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: T.gold }}>
-          {open ? <ChevronDown size={12} style={{ flexShrink: 0 }} /> : <ChevronRight size={12} style={{ flexShrink: 0 }} />} Tax Harvesting
-        </span>
-        <span style={{ display: "block", marginTop: 5, fontFamily: BODY, fontSize: 10, color: T.textDim }}>{available.length} {available.length === 1 ? "asset" : "assets"} · {lotsCount} {lotsCount === 1 ? "lot" : "lots"}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: MONO, fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: T.gold }}>
+        <Scissors size={14} strokeWidth={2} /> Tax Harvesting
       </span>
-      <span style={{ textAlign: "right", minWidth: 0 }}>
-        <span style={{ display: "block", fontFamily: BODY, fontSize: 9, color: T.textDim, marginBottom: 4 }}>Potential loss</span>
-        <CurrencyTotals totals={summary.totalsByCurrency} valuesHidden={valuesHidden} />
-      </span>
+      <ChevronDown size={16} style={{ color: T.textDim, transform: open ? "rotate(180deg)" : "none", transition: "transform .2s", flexShrink: 0 }} />
     </button>
     {open && <div id={id} style={{ padding: "0 16px 12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "12px 0" }}>
+        <span style={{ fontFamily: BODY, fontSize: 11, color: T.textDim }}>{available.length} {available.length === 1 ? "asset" : "assets"} · {lotsCount} {lotsCount === 1 ? "lot" : "lots"}</span>
+        <span style={{ textAlign: "right" }}>
+          <span style={{ display: "block", fontFamily: BODY, fontSize: 9, color: T.textDim, marginBottom: 4 }}>Potential loss</span>
+          <CurrencyTotals totals={summary.totalsByCurrency} valuesHidden={valuesHidden} />
+        </span>
+      </div>
       {!available.length && <div style={{ padding: "12px 0", fontFamily: BODY, fontSize: 11, color: T.textDim }}>No unrestricted loss lots found.</div>}
       {available.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       {review.length > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>

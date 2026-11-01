@@ -8,6 +8,10 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Layout dos cards e lotes (v1.24.3)
+
+A ordem dos controles no dashboard passa a ser Rebalance Suggestion, Tax Harvesting, Import Allocation Targets e Add Manual Asset. Tax Harvesting usa tesoura a esquerda e chevron a direita; contagens e total de prejuizo aparecem somente expandido. Em Holdings, os lotes aparecem apos as demais informacoes e o botao Refresh price. Ganho/perda em valor e percentual ficam lado a lado na mesma linha, com scroll local em larguras estreitas para preservar os valores. QA Chromium com dados simulados em mobile e desktop; calculos preservados.
+
 ### Escopo do card (v1.24.2)
 
 Tax Harvesting remove o bloco `About this estimate`. O card usa somente tickers com quantidade positiva em Holdings, excluindo Bank Bonds, inclusive nos totais, compras recentes e dados nao calculados. Ativos zerados, mesmo com target configurado, nao aparecem. O filtro usa Holdings completo, nao os filtros visuais, e e aplicado apos reconstruir os lotes: historico de vendas, vinculacoes, Holdings e tags do Rebalance permanecem intactos.
