@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addCalendarDays, buildHarvestLots, groupHarvestCandidates, washSaleWarnings } from '../src/lib/taxHarvest.js';
+import { addCalendarDays, buildHarvestLots, groupHarvestCandidates, washSaleWarnings, scopeHarvestToHoldings } from '../src/lib/taxHarvest.js';
 
 const buy = (id, date, qty = 10, price = 100) => ({ id, date, side: 'buy', ticker: 'abc', qty, price, fee: 10, currency: 'USD' });
 const sell = (date, qty, harvestLots) => ({ id: 's', date, side: 'sell', ticker: 'ABC', qty, harvestLots, currency: 'USD' });
@@ -208,4 +208,26 @@ test('empty and invalid-date histories keep the full result shape', () => {
   assert.deepEqual(currency.uncertaintyReasons.ABC, ['currency']);
   const date = buildHarvestLots([{ ...buy('a', '2026-01-01'), date: 'invalid' }], {}, '2026-03-01');
   assert.deepEqual(date.uncertaintyReasons.ABC, ['invalid-date']);
+});
+
+test('card scope removes bank bonds and closed positions from every section and total', () => {
+  const tickers = ['OPEN', 'CLOSED', 'BOND', 'ABSENT'];
+  const harvest = {
+    candidates: tickers.map(ticker => ({ ticker, buyId: ticker, date: '2026-01-01', currency: 'USD', loss: 10 })),
+    openLots: tickers.map(ticker => ({ ticker })),
+    uncertainTickers: tickers, incompleteTickers: tickers,
+    uncertaintyReasons: Object.fromEntries(tickers.map(ticker => [ticker, ['unlinked-sale']])),
+  };
+  const result = scopeHarvestToHoldings(harvest, [
+    { ticker: 'open', qty: 0.5, assetClass: 'Stocks' },
+    { ticker: 'CLOSED', qty: 0, target: 20, assetClass: 'Stocks' },
+    { ticker: 'BOND', qty: 10, assetClass: 'Bank Bonds' },
+  ]);
+  assert.deepEqual(result.candidates.map(l => l.ticker), ['OPEN']);
+  assert.deepEqual(result.openLots.map(l => l.ticker), ['OPEN']);
+  assert.deepEqual(result.uncertainTickers, ['OPEN']);
+  assert.deepEqual(result.incompleteTickers, ['OPEN']);
+  assert.deepEqual(Object.keys(result.uncertaintyReasons), ['OPEN']);
+  assert.deepEqual(groupHarvestCandidates(result.candidates).totalsByCurrency, { USD: 10 });
+  assert.equal(harvest.candidates.length, 4);
 });

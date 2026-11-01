@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Info } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { groupHarvestCandidates } from "./lib/taxHarvest.js";
 
 const T = {
@@ -148,10 +148,7 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
         </div>
         {onReviewTransactions && <button type="button" onClick={onReviewTransactions} style={{ ...emptyButton, fontSize: 11, color: T.gold, minHeight: 40, padding: "8px 0" }}>Open Transactions →</button>}
       </details>}
-      <details style={{ borderTop: `1px solid ${T.borderSoft}`, paddingTop: 10, color: T.textDim, fontFamily: BODY, fontSize: 10, lineHeight: 1.6 }}>
-        <summary style={{ cursor: "pointer", width: "fit-content" }}><Info size={10} style={{ verticalAlign: "middle", marginRight: 4 }} />About this estimate</summary>
-        <p style={{ margin: "8px 0 0" }}>Estimated loss at current prices, assuming all loss lots of each ticker are sold together. This is not estimated tax savings. Verify broker lots; other accounts and identical securities may not be included. Avoid replacement purchases during the 30 days after a loss sale. Selling only some lots can change the risk.</p>
-      </details>
+
     </div>}
   </section>;
 }
