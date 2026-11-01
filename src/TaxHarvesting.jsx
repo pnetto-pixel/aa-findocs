@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Scissors } from "lucide-react";
+import InfoDialog from "./InfoDialog.jsx";
 import { groupHarvestCandidates } from "./lib/taxHarvest.js";
 
 const T = {
@@ -35,18 +36,18 @@ export function TaxLotList({ lots = [], valuesHidden = false, compact = false })
   if (!lots.length) return <div style={{ color: T.textDim, fontSize: 11, padding: "10px 0" }}>No open lots.</div>;
   const sorted = [...lots].sort((a, b) => (a.gainLoss == null ? Infinity : a.gainLoss) - (b.gainLoss == null ? Infinity : b.gainLoss) || a.date.localeCompare(b.date));
   return <div style={{ fontFamily: MONO, fontSize: 10, minWidth: 0, overflowX: "auto" }}>
-    {!compact && <div style={{ display: "grid", gridTemplateColumns: "76px minmax(28px,1fr) max-content", gap: 6, color: T.textFaint, fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "8px 0", minWidth: 250 }}>
-      <span>Lot date</span><span style={{ textAlign: "right" }}>Qty</span><span style={{ textAlign: "right" }}>Gain / Loss</span>
+    {!compact && <div style={{ display: "grid", gridTemplateColumns: "minmax(76px,1fr) 40px minmax(132px,1fr)", gap: 12, color: T.textFaint, fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "8px 0", minWidth: 272 }}>
+      <span>Lot date</span><span style={{ textAlign: "center" }}>Qty</span><span style={{ textAlign: "right" }}>Gain / Loss</span>
     </div>}
     {sorted.map(lot => {
       const pnl = lot.gainLoss ?? (lot.loss == null ? null : -lot.loss);
       const color = pnl == null || pnl === 0 ? T.textDim : pnl < 0 ? T.red : T.green;
       const open = expanded === lot.buyId;
-      return <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}`, minWidth: compact ? 0 : 250 }}>
+      return <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}`, minWidth: compact ? 0 : 272 }}>
         <button type="button" aria-expanded={open} aria-label={`Lot ${lot.ticker} ${lot.date}, cost details`} onClick={() => setExpanded(open ? null : lot.buyId)}
-          style={{ ...emptyButton, width: "100%", display: "grid", gridTemplateColumns: compact ? "minmax(0,1fr)" : "76px minmax(28px,1fr) max-content", gap: compact ? 3 : 6, alignItems: "center", padding: "7px 0", textAlign: "left", minHeight: 36 }}>
+          style={{ ...emptyButton, width: "100%", display: "grid", gridTemplateColumns: compact ? "minmax(0,1fr)" : "minmax(76px,1fr) 40px minmax(132px,1fr)", gap: compact ? 3 : 12, alignItems: "center", padding: "7px 0", textAlign: "left", minHeight: 36 }}>
           <span style={{ color: T.textDim, fontSize: 10, whiteSpace: "nowrap" }}>{lot.date}</span>
-          <span style={{ color: T.text, textAlign: compact ? "left" : "right", overflowWrap: "anywhere" }}>{compact ? "Qty " : ""}{quantity(lot.qty)}</span>
+          <span style={{ color: T.text, textAlign: compact ? "left" : "center", overflowWrap: "anywhere" }}>{compact ? "Qty " : ""}{quantity(lot.qty)}</span>
           <span style={{ color, display: "inline-flex", alignItems: "baseline", justifyContent: compact ? "flex-start" : "flex-end", gap: 6, whiteSpace: "nowrap" }}>
             <span>{money(pnl, lot.currency, valuesHidden, true)}</span>
             <span style={{ fontSize: 10 }}>{percent(lot.gainLossPct, valuesHidden)}</span>
@@ -156,18 +157,17 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
 
 export function TaxStatusTag({ warning, lots = [], valuesHidden = false }) {
   const [open, setOpen] = useState(false);
-  const id = useId();
   if (!warning && !lots.length) return null;
-  return <div style={{ marginTop: 4, fontFamily: MONO, minWidth: 0 }}>
-    <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}
-      style={{ ...emptyButton, ...badgeStyle, color: T.gold, background: "rgba(201,169,97,.08)", border: "1px solid rgba(201,169,97,.22)", minHeight: 28 }}>
+  return <>
+    <button type="button" aria-haspopup="dialog" onClick={() => setOpen(true)}
+      style={{ ...emptyButton, ...badgeStyle, color: T.gold, background: "rgba(201,169,97,.08)", border: "1px solid rgba(201,169,97,.22)", minHeight: 26, flexShrink: 0 }}>
       {warning ? "WASH" : "TAX LOSS"}
     </button>
-    {open && <div id={id} style={{ padding: "8px 0 2px", fontSize: 11, color: T.textDim, lineHeight: 1.5 }}>
+    {open && <InfoDialog title={warning ? "Wash sale window" : "Loss lots"} onClose={() => setOpen(false)}>
       {warning ? <>Buy on or after <span style={{ color: T.gold }}>{warning.safeDate}</span>.</> : <>
-        <div>Review loss lots before buying.</div>
-        <TaxLotList lots={lots} valuesHidden={valuesHidden} compact />
+        <div style={{ color: T.textDim, marginBottom: 8 }}>Review loss lots before buying.</div>
+        <TaxLotList lots={lots} valuesHidden={valuesHidden} />
       </>}
-    </div>}
-  </div>;
+    </InfoDialog>}
+  </>;
 }

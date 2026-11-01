@@ -3,6 +3,7 @@
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
 ## ✅ Concluídos
+- **Rebalance compacto e espacamento dos lotes (v1.24.4):** ticker/tag e BUY/valor lado a lado; instrucoes no icone Info e detalhes em dialogos por toque. Qty centralizado com espacamento consistente entre colunas no Tax Harvesting e Holdings. Calculos preservados, build e QA Chromium com mocks.
 - **Layout compacto de harvesting (v1.24.3):** Rebalance e Tax Harvesting antes de import/add; cabecalho com tesoura e chevron, resumo somente expandido. Lotes de Holdings abaixo de Refresh price, ganho/perda em valor e percentual lado a lado. Calculos preservados.
 - **Tax Harvesting apenas posicoes atuais (v1.24.2):** remove `About this estimate`, Bank Bonds e tickers sem quantidade aberta em Holdings de todas as secoes e totais do card. Historico e tags preservados; teste de escopo cobre posicao fracionaria, zerada com target e exclusao de bonds.
 - **Avisos de Tax Harvesting simplificados (v1.24.1):** separa compras recentes e dados nao calculados em resumos recolhidos; remove `REVIEW` generico e mensagens repetidas; motivos reais agrupam os tickers, com altura limitada e atalho para Transactions. Calculos preservados; testes e QA com mocks.
