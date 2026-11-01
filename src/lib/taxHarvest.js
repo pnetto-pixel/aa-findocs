@@ -44,7 +44,7 @@ export function washSaleWarnings(transactions, asOf) {
 // have consumed any of its buys. Amounts include buy fees in the cost basis.
 export function buildHarvestLots(transactions, pricesByTicker, asOf) {
   const today = dayNumber(asOf);
-  if (today == null) return { candidates: [], uncertainTickers: [] };
+  if (today == null) return { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [] };
   const uncertain = new Set();
   const rows = (transactions || []).filter(tx => {
     if (!tx || !tickerOf(tx)) return false;
@@ -113,23 +113,35 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
     }
   }
 
-  const candidates = [];
+  const openLots = [];
+  const incomplete = new Set();
+  let candidates = [];
   for (const lot of buys) {
     if (uncertain.has(lot.ticker) || lot.remaining <= EPSILON) continue;
     const quote = pricesByTicker?.[lot.ticker];
-    const currentPrice = quote?.price == null || quote.price === '' ? NaN : Number(quote.price);
-    const price = lot.tx.price == null || lot.tx.price === '' ? NaN : Number(lot.tx.price);
+    const quotedPrice = quote?.price == null || quote.price === '' ? NaN : Number(quote.price);
+    const purchasePrice = lot.tx.price == null || lot.tx.price === '' ? NaN : Number(lot.tx.price);
     const fee = Number(lot.tx.fee || 0);
     // A zero quote is also the app's common placeholder for a missing price.
-    if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(fee) || fee < 0) continue;
-    const costPerShare = price + fee / lot.qty;
-    if (!(currentPrice < costPerShare)) continue;
-    candidates.push({
+    const currentPrice = Number.isFinite(quotedPrice) && quotedPrice > 0 ? quotedPrice : null;
+    const price = Number.isFinite(purchasePrice) && purchasePrice >= 0 ? purchasePrice : null;
+    const costPerShare = price != null && Number.isFinite(fee) && fee >= 0 ? price + fee / lot.qty : null;
+    if (costPerShare == null) incomplete.add(lot.ticker);
+    const gainLoss = currentPrice != null && costPerShare != null ? (currentPrice - costPerShare) * lot.remaining : null;
+    const openLot = {
       buyId: lot.tx.id, ticker: lot.ticker, date: lot.tx.date, qty: lot.remaining,
-      price, costPerShare, currentPrice, loss: (costPerShare - currentPrice) * lot.remaining,
+      price, costPerShare, currentPrice, gainLoss,
+      gainLossPct: gainLoss != null && costPerShare > 0 ? (currentPrice / costPerShare - 1) * 100 : null,
+      loss: gainLoss == null ? null : Math.max(0, -gainLoss),
       currency: currencies.get(lot.ticker),
-    });
+    };
+    openLots.push(openLot);
+    if (gainLoss < 0) candidates.push(openLot);
   }
+  // The hypothetical sale needs every open lot's basis to identify all loss
+  // lots. Keep incomplete lots visible in Holdings, but exclude their ticker
+  // from opportunity totals until its cost history can be reviewed.
+  candidates = candidates.filter(lot => !incomplete.has(lot.ticker));
   // The card models selling all known loss lots for each ticker today. Shares
   // in those lots (and shares already sold) cannot also be replacement shares.
   // Purchases still held in non-candidate lots remain potential replacements.
@@ -146,5 +158,41 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
     candidate.clearDate = priorBuys.length ? addCalendarDays(priorBuys[0].date, 31) : null;
   }
   candidates.sort((a, b) => a.ticker.localeCompare(b.ticker) || a.date.localeCompare(b.date));
-  return { candidates, uncertainTickers: [...uncertain].sort() };
+  // Within each ticker the greatest losses come first, followed by gains;
+  // unpriced lots stay visible without claiming a monetary result.
+  openLots.sort((a, b) => a.ticker.localeCompare(b.ticker) ||
+    (a.gainLoss == null && b.gainLoss == null ? 0 : a.gainLoss == null ? 1 : b.gainLoss == null ? -1 : a.gainLoss - b.gainLoss) || a.date.localeCompare(b.date));
+  return { candidates, openLots, uncertainTickers: [...uncertain].sort(), incompleteTickers: [...incomplete].sort() };
+}
+
+// Keep loss estimates in their native currency. The main total includes only
+// groups without a known prior-purchase restriction; restricted losses remain
+// visible separately and are never presented as tax savings.
+export function groupHarvestCandidates(candidates = []) {
+  const byAsset = new Map();
+  for (const lot of candidates) {
+    if (!lot || !lot.ticker || !['USD', 'BRL'].includes(lot.currency) || !Number.isFinite(lot.loss) || lot.loss <= 0) continue;
+    const key = `${lot.ticker}|${lot.currency}`;
+    let group = byAsset.get(key);
+    if (!group) {
+      group = { key, ticker: lot.ticker, currency: lot.currency, lots: [], totalLoss: 0, restricted: false, clearDate: null };
+      byAsset.set(key, group);
+    }
+    group.lots.push(lot);
+    group.totalLoss += lot.loss;
+    if (lot.priorBuys?.length) {
+      group.restricted = true;
+      if (lot.clearDate && (!group.clearDate || lot.clearDate > group.clearDate)) group.clearDate = lot.clearDate;
+    }
+  }
+  const groups = [...byAsset.values()];
+  for (const group of groups) group.lots.sort((a, b) => b.loss - a.loss || a.date.localeCompare(b.date));
+  groups.sort((a, b) => (a.currency === b.currency ? b.totalLoss - a.totalLoss || a.ticker.localeCompare(b.ticker) : a.currency === 'USD' ? -1 : 1));
+  const totalsByCurrency = {};
+  const restrictedTotalsByCurrency = {};
+  for (const group of groups) {
+    const totals = group.restricted ? restrictedTotalsByCurrency : totalsByCurrency;
+    totals[group.currency] = (totals[group.currency] || 0) + group.totalLoss;
+  }
+  return { groups, totalsByCurrency, restrictedTotalsByCurrency };
 }

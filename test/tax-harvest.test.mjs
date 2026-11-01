@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addCalendarDays, buildHarvestLots, washSaleWarnings } from '../src/lib/taxHarvest.js';
+import { addCalendarDays, buildHarvestLots, groupHarvestCandidates, washSaleWarnings } from '../src/lib/taxHarvest.js';
 
 const buy = (id, date, qty = 10, price = 100) => ({ id, date, side: 'buy', ticker: 'abc', qty, price, fee: 10, currency: 'USD' });
 const sell = (date, qty, harvestLots) => ({ id: 's', date, side: 'sell', ticker: 'ABC', qty, harvestLots, currency: 'USD' });
@@ -111,4 +111,92 @@ test('legacy transactions derive a known currency from asset class', () => {
   const result = buildHarvestLots([legacy], { ABC: { price: 80, currency: 'BRL' } }, '2026-10-31');
   assert.equal(result.candidates.length, 1);
   assert.equal(result.candidates[0].currency, 'BRL');
+});
+
+test('open lots include gains, losses and remaining shares with proportional buy fees', () => {
+  const tx = [buy('loss', '2026-01-01'), buy('gain', '2026-02-01', 10, 50),
+    sell('2026-03-01', 4, [{ buyId: 'loss', qty: 4 }])];
+  const result = buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.deepEqual(result.openLots.map(lot => lot.buyId), ['loss', 'gain']);
+  assert.equal(result.openLots[0].qty, 6);
+  assert.equal(result.openLots[0].costPerShare, 101);
+  assert.equal(result.openLots[0].gainLoss, -126);
+  assert.equal(result.openLots[1].gainLoss, 290);
+  assert.ok(Math.abs(result.openLots[1].gainLossPct - (80 / 51 - 1) * 100) < 1e-8);
+  assert.equal(result.candidates[0], result.openLots[0]);
+});
+
+test('unpriced and unknown-cost lots remain visible without an invented result', () => {
+  for (const prices of [{}, { ABC: { price: 0, currency: 'USD' } }]) {
+    const result = buildHarvestLots([buy('a', '2026-01-01')], prices, '2026-10-31');
+    assert.equal(result.openLots.length, 1);
+    assert.equal(result.openLots[0].currentPrice, null);
+    assert.equal(result.openLots[0].gainLoss, null);
+    assert.equal(result.openLots[0].gainLossPct, null);
+    assert.deepEqual(result.candidates, []);
+  }
+  const unknown = buildHarvestLots([{ ...buy('a', '2026-01-01'), price: null }], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.equal(unknown.openLots[0].costPerShare, null);
+  assert.equal(unknown.openLots[0].gainLoss, null);
+  assert.deepEqual(unknown.incompleteTickers, ['ABC']);
+  const zeroBasis = buildHarvestLots([{ ...buy('a', '2026-01-01', 10, 0), fee: 0 }], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.equal(zeroBasis.openLots[0].gainLoss, 800);
+  assert.equal(zeroBasis.openLots[0].gainLossPct, null);
+});
+
+test('an incomplete open basis excludes the entire ticker from opportunity totals', () => {
+  for (const incomplete of [{ price: null }, { fee: -1 }]) {
+    const result = buildHarvestLots([
+      buy('loss', '2026-01-01'),
+      { ...buy('unknown', '2026-01-02'), ...incomplete },
+      { ...buy('other', '2026-01-01'), ticker: 'XYZ' },
+    ], { ABC: { price: 80, currency: 'USD' }, XYZ: { price: 80, currency: 'USD' } }, '2026-10-31');
+    assert.deepEqual(result.incompleteTickers, ['ABC']);
+    assert.deepEqual(result.openLots.filter(lot => lot.ticker === 'ABC').map(lot => lot.gainLoss), [-210, null]);
+    assert.deepEqual(result.candidates.map(lot => lot.ticker), ['XYZ']);
+    assert.deepEqual(groupHarvestCandidates(result.candidates).totalsByCurrency, { USD: 210 });
+  }
+  const closedUnknown = buildHarvestLots([
+    buy('loss', '2026-01-01'),
+    { ...buy('unknown', '2026-01-02'), price: null },
+    sell('2026-02-01', 10, [{ buyId: 'unknown', qty: 10 }]),
+  ], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.deepEqual(closedUnknown.incompleteTickers, []);
+  assert.equal(closedUnknown.candidates.length, 1);
+});
+
+test('uncertain and closed lots stay outside open lots and all monetary totals', () => {
+  const uncertain = buildHarvestLots([buy('a', '2026-01-01'), sell('2026-02-01', 3, [])], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.deepEqual(uncertain.openLots, []);
+  assert.deepEqual(groupHarvestCandidates(uncertain.candidates).totalsByCurrency, {});
+  const closed = buildHarvestLots([buy('a', '2026-01-01'), sell('2026-02-01', 10, [{ buyId: 'a', qty: 10 }])], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
+  assert.deepEqual(closed.openLots, []);
+});
+
+test('grouped loss estimates separate currencies and known purchase restrictions', () => {
+  const tx = [
+    buy('a1', '2026-01-01', 10, 100), buy('a2', '2026-02-01', 10, 90),
+    { ...buy('b1', '2026-01-01'), ticker: 'BR', currency: 'BRL' },
+    { ...buy('c1', '2026-01-01'), ticker: 'XYZ' },
+    { ...buy('replacement', '2026-10-20', 2, 40), ticker: 'XYZ' },
+  ];
+  const result = buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' }, BR: { price: 50, currency: 'BRL' }, XYZ: { price: 80, currency: 'USD' } }, '2026-10-31');
+  const grouped = groupHarvestCandidates(result.candidates);
+  assert.deepEqual(grouped.totalsByCurrency, { USD: 320, BRL: 510 });
+  assert.deepEqual(grouped.restrictedTotalsByCurrency, { USD: 210 });
+  const abc = grouped.groups.find(group => group.ticker === 'ABC');
+  assert.equal(abc.lots.length, 2);
+  assert.equal(abc.totalLoss, 320);
+  assert.equal(abc.restricted, false);
+  const restricted = grouped.groups.find(group => group.ticker === 'XYZ');
+  assert.equal(restricted.restricted, true);
+  assert.equal(restricted.clearDate, '2026-11-20');
+  assert.deepEqual(grouped.groups.map(group => group.currency), ['USD', 'USD', 'BRL']);
+});
+
+test('empty and invalid-date histories keep the full result shape', () => {
+  const empty = { candidates: [], openLots: [], uncertainTickers: [], incompleteTickers: [] };
+  assert.deepEqual(buildHarvestLots([], {}, '2026-10-31'), empty);
+  assert.deepEqual(buildHarvestLots([], {}, 'invalid'), empty);
+  assert.deepEqual(groupHarvestCandidates(), { groups: [], totalsByCurrency: {}, restrictedTotalsByCurrency: {} });
 });

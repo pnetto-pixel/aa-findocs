@@ -4,6 +4,7 @@ import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, n
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 import { inferAssetClass } from "./lib/parsing.js";
 import { buildHarvestLots, washSaleWarnings } from "./lib/taxHarvest.js";
+import { TaxHarvestingCard, TaxLotList, TaxStatusTag } from "./TaxHarvesting.jsx";
 import { divCacheHash, setDivCacheEntry } from "./lib/dividendsCache.js";
 const PerformanceView = lazy(() => import("./Performance.jsx"));
 // Lazy so recharts (used by the treemap) stays out of the main bundle.
@@ -3038,6 +3039,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const now = new Date();
   const taxToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const harvest = useMemo(() => buildHarvestLots(transactions, taxPrices, taxToday), [transactions, taxPrices, taxToday]);
+  const lotsByTicker = useMemo(() => {
+    const grouped = {};
+    for (const lot of harvest.openLots) (grouped[lot.ticker] ||= []).push(lot);
+    return grouped;
+  }, [harvest.openLots]);
+  const lossesByTicker = useMemo(() => {
+    const grouped = {};
+    for (const lot of harvest.candidates) (grouped[lot.ticker] ||= []).push(lot);
+    return grouped;
+  }, [harvest.candidates]);
   const washWarnings = useMemo(() => washSaleWarnings(transactions, taxToday), [transactions, taxToday]);
 
   // Build asset class dropdown options from existing holdings
@@ -4520,6 +4531,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           {h.type === "manual" ? (
                             <ManualHoldingRow
                               holding={h}
+                              lots={lotsByTicker[(h.ticker || "").toUpperCase()] || []}
+                              lotsUncertain={harvest.uncertainTickers.includes((h.ticker || "").toUpperCase())}
                               usdBrlRate={usdBrlRate}
                               totalValue={totalValue}
                               valuesHidden={valuesHidden}
@@ -4532,6 +4545,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           ) : (
                             <HoldingRow
                               holding={h}
+                              lots={lotsByTicker[(h.ticker || "").toUpperCase()] || []}
+                              lotsUncertain={harvest.uncertainTickers.includes((h.ticker || "").toUpperCase())}
                               totalValue={totalValue}
                               busy={!!busyIds[h.id]}
                               valuesHidden={valuesHidden}
@@ -4855,15 +4870,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
             )}
           </section>
 
-          <section style={{ marginTop: 18, padding: 16, background: T.card, border: `1px solid ${T.borderSoft}`, borderRadius: 4 }}>
-            <div style={{ color: T.gold, fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase" }}>Tax harvesting candidates</div>
-            <p style={{ color: T.textDim, fontSize: 12, lineHeight: 1.5 }}>Estimated from recorded transactions and current prices, assuming all loss lots of each ticker are sold together. Selling only some shares can change the wash sale risk. Verify lots and tax basis with your broker. Other accounts, dividend reinvestments and substantially identical securities may not be included.</p>
-            {harvest.uncertainTickers.length > 0 && <p style={{ color: T.gold, fontSize: 12 }}>Unresolved sales or incomplete history: {harvest.uncertainTickers.join(", ")}. Link sold lots in Transactions before relying on these estimates.</p>}
-            {harvest.candidates.length === 0 ? <p style={{ color: T.textDim, fontSize: 12 }}>No eligible estimated loss lots with a current price.</p> : harvest.candidates.map(lot => <div key={lot.buyId} style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontSize: 12, color: T.text, lineHeight: 1.5 }}>
-              <strong>{lot.ticker}</strong> · {lot.date} · {lot.qty} shares · estimated loss {valuesHidden ? "••••" : `${lot.currency === "BRL" ? "R$" : "$"}${lot.loss.toFixed(2)}`}
-              {lot.priorBuys.length > 0 && <div style={{ color: T.gold }}>Possible wash sale: recent same-ticker purchase. Window clears {lot.clearDate} if no further purchases occur.</div>}
-            </div>)}
-          </section>
+          <TaxHarvestingCard harvest={harvest} valuesHidden={valuesHidden} />
 
           {/* Rebalance Suggestion — placed below Add Manual Asset */}
           {holdings.some((h) => h.target > 0) && (
@@ -4983,7 +4990,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         }}
                       >
                         {rebalance.map((r) => (
-                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} warning={washWarnings[(r.holding.ticker || "").toUpperCase()]} />
+                          <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden} warning={washWarnings[(r.holding.ticker || "").toUpperCase()]} lots={lossesByTicker[(r.holding.ticker || "").toUpperCase()] || []} />
                         ))}
                       </div>
 
@@ -5351,8 +5358,18 @@ function Input({ style, onEnter, ...props }) {
   );
 }
 
+function HoldingLots({ lots, uncertain, valuesHidden }) {
+  if (!uncertain && lots.length === 0) return null;
+  return <div style={{ borderBottom: `1px solid ${T.border}`, paddingBottom: 10, marginBottom: 10 }}>
+    <div style={{ fontFamily: FONT_MONO, color: T.textDim, fontSize: 10, marginBottom: 6 }}>Lots{!uncertain && ` · ${lots.length}`}</div>
+    {uncertain ? <div style={{ fontFamily: FONT_MONO, color: T.gold, fontSize: 11 }}>Review lot links in Transactions.</div> : <TaxLotList lots={lots} valuesHidden={valuesHidden} />}
+  </div>;
+}
+
 function HoldingRow({
   holding,
+  lots = [],
+  lotsUncertain = false,
   totalValue,
   busy,
   valuesHidden,
@@ -5536,6 +5553,7 @@ function HoldingRow({
             marginTop: 8,
           }}
         >
+          <HoldingLots lots={lots} uncertain={lotsUncertain} valuesHidden={valuesHidden} />
           {holding.target > 0 ? (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
@@ -5727,7 +5745,7 @@ function IconButton({ children, onClick, disabled, danger, label }) {
   );
 }
 
-function RebalanceRow({ item, valuesHidden, warning }) {
+function RebalanceRow({ item, valuesHidden, warning, lots }) {
   const { holding, deltaShares, deltaDollars } = item;
 
   return (
@@ -5754,7 +5772,7 @@ function RebalanceRow({ item, valuesHidden, warning }) {
         >
           {holding.ticker}
         </div>
-        {warning && <div style={{ color: T.gold, fontSize: 11, lineHeight: 1.4 }}>Possible wash sale · buy on or after {warning.safeDate}</div>}
+        <TaxStatusTag warning={warning} lots={lots} valuesHidden={valuesHidden} />
         {holding.name && (
           <div
             style={{
@@ -6288,7 +6306,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false, onRefresh, busy = false }) {
+function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false, onRefresh, busy = false }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -6497,6 +6515,7 @@ function ManualHoldingRow({ holding, usdBrlRate, totalValue, valuesHidden, delta
             marginTop: 8,
           }}
         >
+          <HoldingLots lots={lots} uncertain={lotsUncertain} valuesHidden={valuesHidden} />
           {holding.target > 0 ? (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
