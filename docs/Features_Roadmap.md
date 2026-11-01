@@ -3,6 +3,7 @@
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
 ## ✅ Concluídos
+- **Income History: pop-up de comparacoes (v1.25.0):** reutiliza GrowthTooltip dos aportes, com Y/Y e M/M-Q/Q-H/H, somente Y/Y em Year, marcadores to-date e cores padronizadas. Referencias calendario com filtros de ticker/classe e historico de anos ocultos, renda liquida e sem eventos futuros. Testes de paridade/limites, build e QA Chromium M/Q/H/Y aprovados.
 - **Lotes inline e ajuda em pop-up (v1.24.5):** quantidade de lotes ao lado do ticker; explicacao e datas de Recent purchases no icone Info. Preferencia permanente de usar circled-i com pop-up para explicacoes registrada em CONTEXT e CLAUDE. Calculos preservados.
 - **Rebalance compacto e espacamento dos lotes (v1.24.4):** ticker/tag e BUY/valor lado a lado; instrucoes no icone Info e detalhes em dialogos por toque. Qty centralizado com espacamento consistente entre colunas no Tax Harvesting e Holdings. Calculos preservados, build e QA Chromium com mocks.
 - **Layout compacto de harvesting (v1.24.3):** Rebalance e Tax Harvesting antes de import/add; cabecalho com tesoura e chevron, resumo somente expandido. Lotes de Holdings abaixo de Refresh price, ganho/perda em valor e percentual lado a lado. Calculos preservados.

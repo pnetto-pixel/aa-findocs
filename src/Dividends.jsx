@@ -17,6 +17,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { GrowthTooltip } from "./AccumulatedInvestmentCard.jsx";
+import { buildIncomeHistory } from "./lib/incomeHistory.js";
 import DateMonthPicker from "./DateMonthPicker.jsx";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
 
@@ -167,51 +169,6 @@ function buildBondEvents(bondIncome) {
     });
   }
   return events;
-}
-
-// Full history grouped by the chosen granularity, optional date/ticker/assetClass filter.
-function buildChartData(events, groupBy, selectedYears, selectedTickers, selectedAssetClasses) {
-  const filtered = events.filter((e) => {
-    if (!e.date) return false;
-    if (selectedYears.size > 0 && !selectedYears.has(e.date.slice(0, 4))) return false;
-    if (selectedTickers.size > 0 && !selectedTickers.has(e.ticker)) return false;
-    if (selectedAssetClasses.size > 0 && !selectedAssetClasses.has(e.assetClass)) return false;
-    return true;
-  });
-  if (!filtered.length) return [];
-
-  const byKey = {};
-  for (const e of filtered) {
-    const [yStr, mStr] = e.date.slice(0, 7).split("-");
-    const y = parseInt(yStr, 10);
-    const m = parseInt(mStr, 10);
-    let key;
-    if (groupBy === "Month") key = `${yStr}-${mStr}`;
-    else if (groupBy === "Quarter") key = `${y}-Q${Math.ceil(m / 3)}`;
-    else if (groupBy === "Half") key = `${y}-H${m <= 6 ? 1 : 2}`;
-    else key = yStr;
-    byKey[key] = (byKey[key] || 0) + e.totalReceived;
-  }
-
-  return Object.keys(byKey)
-    .sort()
-    .map((key) => {
-      let label;
-      if (groupBy === "Month") {
-        const [y, mStr] = key.split("-");
-        const d = new Date(parseInt(y, 10), parseInt(mStr, 10) - 1, 1);
-        label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-      } else if (groupBy === "Quarter") {
-        const [y, q] = key.split("-");
-        label = `${q} '${y.slice(2)}`;
-      } else if (groupBy === "Half") {
-        const [y, h] = key.split("-");
-        label = `${h} '${y.slice(2)}`;
-      } else {
-        label = key;
-      }
-      return { label, value: byKey[key] };
-    });
 }
 
 // Net cost basis per US ticker (avg-cost method), derived from transactions.
@@ -383,26 +340,6 @@ function KpiCard({ label, value, color, yoy, sub }) {
           {sub}
         </div>
       )}
-    </div>
-  );
-}
-
-function BarTooltip({ active, payload, label, hidden }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div
-      style={{
-        background: T.cardElev,
-        border: `1px solid ${T.border}`,
-        borderRadius: 4,
-        padding: "8px 12px",
-        fontFamily: FONT_MONO,
-        fontSize: 12,
-        color: T.text,
-      }}
-    >
-      <div style={{ color: T.textDim, marginBottom: 4 }}>{label}</div>
-      <div style={{ color: T.gold }}>{fmtUSD(payload[0].value, hidden)}</div>
     </div>
   );
 }
@@ -2251,9 +2188,10 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
     return [...new Set(allEvents.map((e) => e.assetClass).filter(Boolean))].sort();
   }, [allEvents]);
 
+  const chartToday = localTodayISO();
   const chartData = useMemo(
-    () => buildChartData(allEvents, groupBy, selectedYears, selectedTickers, selectedAssetClasses),
-    [allEvents, groupBy, selectedYears, selectedTickers, selectedAssetClasses]
+    () => buildIncomeHistory(allEvents, { groupBy, selectedYears, selectedTickers, selectedAssetClasses, today: chartToday }),
+    [allEvents, groupBy, selectedYears, selectedTickers, selectedAssetClasses, chartToday]
   );
   const hasChartData = chartData.some((d) => d.value > 0);
   const xInterval = chartData.length > 12 ? Math.ceil(chartData.length / 10) - 1 : 0;
@@ -2506,7 +2444,7 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={240}>
-                    <BarChart data={chartData} margin={{ top: 8, right: 4, left: 0, bottom: 50 }}>
+                    <BarChart data={chartData} margin={{ top: 8, right: 4, left: 0, bottom: 50 }} accessibilityLayer>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
                       <XAxis
                         dataKey="label"
@@ -2525,8 +2463,8 @@ export default function DividendsView({ auth, onAuthFail, valuesHidden }) {
                         tickLine={false}
                         width={44}
                       />
-                      <Tooltip content={(props) => <BarTooltip {...props} hidden={valuesHidden} />} cursor={{ fill: "rgba(201,169,97,0.08)" }} />
-                      <Bar dataKey="value" fill={T.gold} radius={[2, 2, 0, 0]} />
+                      <Tooltip trigger="click" content={(props) => <GrowthTooltip {...props} valuesHidden={valuesHidden} groupBy={groupBy} theme={T} font={FONT_MONO} />} cursor={{ fill: "rgba(201,169,97,0.08)" }} />
+                      <Bar dataKey="value" fill={T.gold} radius={[2, 2, 0, 0]} isAnimationActive={false} />
                     </BarChart>
                   </ResponsiveContainer>
                 )}
