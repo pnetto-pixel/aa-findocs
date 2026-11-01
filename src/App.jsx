@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
-import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid } from "lucide-react";
+import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid, Info } from "lucide-react";
+import InfoDialog from "./InfoDialog.jsx";
 import TransactionsView, { applySplitToTransactions, saveTransactionsToServer, noteTransactionsSavedAt } from "./Transactions.jsx";
 import { applyBankBondsHolding, BANK_BONDS_ID, computeBankBondsMarketValue } from "./lib/bankBonds.js";
 import { inferAssetClass } from "./lib/parsing.js";
@@ -1533,6 +1534,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     return isFinite(v) && v > 0 ? v : null;
   });
   const [showRebalance, setShowRebalance] = useState(false);
+  const [showRebalanceHelp, setShowRebalanceHelp] = useState(false);
   const [showTreemap, setShowTreemap] = useState(false);
   const [newCash, setNewCash] = useState("");
   const importJsonRef = useRef(null);
@@ -4681,6 +4683,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 >
                   {/* New cash input */}
                   <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                     <label
                       style={{
                         display: "block",
@@ -4689,28 +4692,20 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         textTransform: "uppercase",
                         color: T.textDim,
                         fontFamily: FONT_MONO,
-                        marginBottom: 6,
+                        marginBottom: 0,
                       }}
                     >
                       New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
                     </label>
+                      <button type="button" aria-label="Rebalance instructions" aria-haspopup="dialog" onClick={() => setShowRebalanceHelp(true)} style={{ background: "none", border: 0, color: T.textDim, padding: 6, display: "flex", cursor: "pointer" }}><Info size={14} /></button>
+                    </div>
                     <Input
                       placeholder="0.00"
                       value={newCash}
                       onChange={(e) => setNewCash(e.target.value)}
                       inputMode="decimal"
                     />
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: T.textFaint,
-                        fontFamily: FONT_MONO,
-                        marginTop: 6,
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      Suggestions are buys only, integer shares targeting ~${PER_ASSET_TARGET.toLocaleString()} per asset (+/-10%). Shares priced above the band suggest 1 share. BRA Fixed Income and Bank Bonds get a dollar amount instead (no share price). If cash is set, total purchases stay within it (most underweight first).
-                    </div>
+                    {showRebalanceHelp && <InfoDialog title="Rebalance instructions" onClose={() => setShowRebalanceHelp(false)}><div style={{ color: T.textDim }}>Suggestions are buys only, integer shares targeting ~${PER_ASSET_TARGET.toLocaleString()} per asset (+/-10%). Shares priced above the band suggest 1 share. BRA Fixed Income and Bank Bonds get a dollar amount instead (no share price). If cash is set, total purchases stay within it (most underweight first).</div></InfoDialog>}
                   </div>
 
                   {/* Rebalance rows */}
@@ -5748,80 +5743,18 @@ function IconButton({ children, onClick, disabled, danger, label }) {
 
 function RebalanceRow({ item, valuesHidden, warning, lots }) {
   const { holding, deltaShares, deltaDollars } = item;
-
-  return (
-    <div
-      style={{
-        background: T.card,
-        padding: "12px 14px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div
-          style={{
-            fontFamily: FONT_MONO,
-            fontWeight: 600,
-            fontSize: 13,
-            color: T.text,
-            letterSpacing: "0.04em",
-            marginBottom: 2,
-          }}
-        >
-          {holding.ticker}
-        </div>
-        <TaxStatusTag warning={warning} lots={lots} valuesHidden={valuesHidden} />
-        {holding.name && (
-          <div
-            style={{
-              fontSize: 10,
-              color: T.textFaint,
-              fontFamily: FONT_DISPLAY,
-              fontStyle: "italic",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {holding.name}
-          </div>
-        )}
-      </div>
-
-      <div style={{ textAlign: "right" }}>
-        <div
-          style={{
-            fontFamily: FONT_MONO,
-            fontSize: 12,
-            fontWeight: 600,
-            color: T.green,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            background: T.greenBg,
-            padding: "3px 8px",
-            borderRadius: 1,
-            display: "inline-block",
-          }}
-        >
-          BUY{deltaShares == null ? "" : ` ${deltaShares}`}
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: T.green,
-            fontFamily: FONT_MONO,
-            fontWeight: 500,
-            marginTop: 4,
-          }}
-        >
-          {maskMoney(deltaDollars, valuesHidden)}
-        </div>
-      </div>
+  const [showName, setShowName] = useState(false);
+  return <div style={{ background: T.card, padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "4px 8px" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <button type="button" aria-label={`Details for ${holding.ticker}`} aria-expanded={showName} onClick={() => setShowName(value => !value)} style={{ background: "none", border: 0, padding: "5px 0", color: T.text, fontFamily: FONT_MONO, fontWeight: 600, fontSize: 12, cursor: "pointer", overflowWrap: "anywhere" }}>{holding.ticker}</button>
+      <TaxStatusTag warning={warning} lots={lots} valuesHidden={valuesHidden} />
     </div>
-  );
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginLeft: "auto", color: T.green, fontFamily: FONT_MONO, fontSize: 11, whiteSpace: "nowrap" }}>
+      <span style={{ fontWeight: 600, background: T.greenBg, padding: "3px 6px", borderRadius: 1 }}>BUY{deltaShares == null ? "" : ` ${deltaShares}`}</span>
+      <span style={{ fontWeight: 500 }}>{maskMoney(deltaDollars, valuesHidden)}</span>
+    </div>
+    {showName && holding.name && <div style={{ flexBasis: "100%", color: T.textDim, fontFamily: FONT_DISPLAY, fontStyle: "italic", fontSize: 11 }}>{holding.name}</div>}
+  </div>;
 }
 
 function RebalanceSummary({ items, newCash, valuesHidden }) {

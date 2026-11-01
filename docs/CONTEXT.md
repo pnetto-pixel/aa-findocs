@@ -8,6 +8,10 @@ Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticke
 
 Isto e uma estimativa, nao determinacao fiscal: o app conhece apenas transacoes registradas e nao identifica automaticamente ativos substancialmente identicos, outras contas, familiares ou reinvestimentos ausentes. Dados incompletos e ajustes fiscais podem fazer os lotes e custos diferirem da corretora. Conferir antes de operar e verificar o tratamento fiscal aplicavel. Vinculos fiscais sao validados na importacao e protegidos contra alteracoes em massa incompativeis.
 
+### Rebalance compacto e colunas de lotes (v1.24.4)
+
+Rebalance aproxima ticker e tag (`WASH` ou `TAX LOSS`), e BUY/quantidade e valor ficam lado a lado. A linha pode quebrar em espacos estreitos, preservando numeros completos; tocar ticker mostra o nome. As tags abrem dialogo com data ou lotes. As instrucoes abaixo do input foram movidas para o icone Info junto ao label, com dialogo via portal, Escape, foco contido e retorno de foco. A lista de lotes compartilhada usa a mesma grade no cabecalho e linhas: data a esquerda, quantidade centralizada e ganho/perda a direita, com intervalo de 12px entre colunas. Build e QA Chromium com mocks em 390/1024px; calculos preservados.
+
 ### Layout dos cards e lotes (v1.24.3)
 
 A ordem dos controles no dashboard passa a ser Rebalance Suggestion, Tax Harvesting, Import Allocation Targets e Add Manual Asset. Tax Harvesting usa tesoura a esquerda e chevron a direita; contagens e total de prejuizo aparecem somente expandido. Em Holdings, os lotes aparecem apos as demais informacoes e o botao Refresh price. Ganho/perda em valor e percentual ficam lado a lado na mesma linha, com scroll local em larguras estreitas para preservar os valores. QA Chromium com dados simulados em mobile e desktop; calculos preservados.
