@@ -1,5 +1,10 @@
 # CONTEXT.md — aa-findocs
 
+## Ultima compra visivel em Recent purchases (v1.27.1)
+
+Cada ativo em Recent purchases mostra `Last buy Mon DD` junto ao ticker e numero de lotes. A data vem da compra conhecida mais recente em priorBuys, inclusive compras com ganho ou cujas cotas ja foram vendidas; nao e inferida da data do lote negativo listado. O Info de Recent purchases mostra a data completa e o fim da janela anterior a venda, com explicacao de que a data para voltar a comprar apos uma venda com prejuizo depende da venda e aparece no WASH. Grupos fora de Recent purchases nao recebem essa etiqueta; totais e janelas nao foram modificados. Build e QA Chromium com mocks em 390/1024px aprovados, incluindo compra mais recente com ganho e fora dos lotes negativos listados.
+
+
 ## Quantidades parciais e selecao rapida no Tax (v1.27.0)
 
 O editor Tax de vendas permite quantidade parcial editavel por lote, inclusive decimal, para reconciliar vendas antigas (ex.: DELL). O checkbox de cada lote preenche todo o saldo disponivel; desmarcar limpa a quantidade. `Select all` preenche todos os lotes disponiveis de uma vez e desmarcar limpa todos. Estado misto indica selecao parcial. Nao ha rateio/FIFO automatico nem truncamento para caber na venda: o usuario identifica os lotes conforme a corretora.

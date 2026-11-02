@@ -70,7 +70,13 @@ function CurrencyTotals({ totals, valuesHidden, color = T.red }) {
   </span>;
 }
 
+function lastPurchaseDate(group) {
+  return group.lots.flatMap(lot => lot.priorBuys || []).reduce((latest, buy) => buy.date > latest ? buy.date : latest, "");
+}
+
 function HarvestGroup({ group, valuesHidden }) {
+  const lastBuy = lastPurchaseDate(group);
+  const lastBuyLabel = lastBuy ? new Date(`${lastBuy}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
   const [open, setOpen] = useState(false);
   const id = useId();
   return <div style={{ borderTop: `1px solid ${T.borderSoft}` }}>
@@ -80,6 +86,7 @@ function HarvestGroup({ group, valuesHidden }) {
       <span style={{ minWidth: 0, flex: 1, display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 8px" }}>
         <strong style={{ fontSize: 12, color: T.text, overflowWrap: "anywhere" }}>{group.ticker}</strong>
         <span style={{ color: T.textDim, fontSize: 10, whiteSpace: "nowrap" }}>{group.lots.length} {group.lots.length === 1 ? "lot" : "lots"}</span>
+        {group.restricted && lastBuy && <span style={{ color: T.textDim, fontSize: 10, whiteSpace: "nowrap" }}>· Last buy {lastBuyLabel}</span>}
       </span>
       <span style={{ fontSize: 12, color: T.red, textAlign: "right", overflowWrap: "anywhere" }}>{money(-group.totalLoss, group.currency, valuesHidden)} <span style={{ fontSize: 9, color: T.textDim }}>{group.currency}</span></span>
     </button>
@@ -138,8 +145,8 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
         {review.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       </details>}
       {recentHelp && <InfoDialog title="Recent purchases" onClose={() => setRecentHelp(false)}>
-        <p style={{ margin: "0 0 12px", color: T.textDim }}>These tickers have known purchases in the last 30 calendar days, including the purchase date and day +30. They stay here even if all lots are negative or you plan to sell everything. Their losses are excluded from the main total until this purchase-window flag expires. This is a review alert; it does not determine whether a trade is a wash sale or how much loss is deductible. Further purchases can extend the window.</p>
-        {review.map(group => <div key={group.key} style={{ marginTop: 8 }}><strong>{group.ticker}</strong><span style={{ color: T.textDim }}> · Latest purchase leaves window {group.clearDate}</span></div>)}
+        <p style={{ margin: "0 0 12px", color: T.textDim }}>These tickers have known purchases in the last 30 calendar days, including the purchase date and day +30. They stay here even if all lots are negative or you plan to sell everything. Their losses are excluded from the main total until this purchase-window flag expires. This is a review alert; it does not determine whether a trade is a wash sale or how much loss is deductible. Further purchases can extend the window. Last buy is the latest recorded purchase, not a date authorizing a new purchase. After a loss sale, the WASH notice shows when to buy again based on that sale.</p>
+        {review.map(group => <div key={group.key} style={{ marginTop: 8 }}><strong>{group.ticker}</strong><span style={{ color: T.textDim }}> · Last buy {lastPurchaseDate(group)} · Purchase leaves window {group.clearDate}</span></div>)}
       </InfoDialog>}
       {unavailableCount > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
         <summary style={{ cursor: "pointer", color: T.textDim, padding: "4px 0" }}>Not calculated · {unavailableCount}</summary>
