@@ -54,16 +54,16 @@ test('undated sales leave the ticker uncertain', () => {
   assert.deepEqual(result.candidates, []);
 });
 
-test('recent loss lots sold together cannot replace themselves', () => {
+test('all recent loss lots keep a conservative purchase-window flag', () => {
   const result = buildHarvestLots([buy('a', '2026-10-15'), buy('b', '2026-10-20', 2, 110)], { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
   assert.equal(result.candidates.length, 2);
   for (const lot of result.candidates) {
-    assert.deepEqual(lot.priorBuys, []);
-    assert.equal(lot.clearDate, null);
+    assert.deepEqual(lot.priorBuys, [{ date: '2026-10-20', qty: 2 }, { date: '2026-10-15', qty: 10 }]);
+    assert.equal(lot.clearDate, '2026-11-20');
   }
 });
 
-test('only recent replacement shares still held after the hypothetical sale trigger a warning', () => {
+test('recent buys still flag risk after subsequent full or partial lot sales', () => {
   const tx = [
     buy('loss', '2026-01-01'),
     buy('closed', '2026-10-03', 2, 60),
@@ -73,16 +73,16 @@ test('only recent replacement shares still held after the hypothetical sale trig
   ];
   const result = buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
   assert.equal(result.candidates.length, 1);
-  assert.deepEqual(result.candidates[0].priorBuys, [{ date: '2026-10-10', qty: 3 }]);
+  assert.deepEqual(result.candidates[0].priorBuys, [{ date: '2026-10-10', qty: 5 }, { date: '2026-10-03', qty: 2 }]);
   assert.equal(result.candidates[0].clearDate, '2026-11-10');
   assert.deepEqual(buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' } }, '2026-11-10').candidates[0].priorBuys, []);
 });
 
-test('loss lot shares sold partially in the past do not become replacement shares', () => {
+test('partial sale does not suppress the purchase-window alert', () => {
   const tx = [buy('a', '2026-10-15'), sell('2026-10-20', 4, [{ buyId: 'a', qty: 4 }])];
   const result = buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
   assert.equal(result.candidates[0].qty, 6);
-  assert.deepEqual(result.candidates[0].priorBuys, []);
+  assert.deepEqual(result.candidates[0].priorBuys, [{ date: '2026-10-15', qty: 10 }]);
 });
 
 
@@ -230,4 +230,38 @@ test('card scope removes bank bonds and closed positions from every section and 
   assert.deepEqual(Object.keys(result.uncertaintyReasons), ['OPEN']);
   assert.deepEqual(groupHarvestCandidates(result.candidates).totalsByCurrency, { USD: 10 });
   assert.equal(harvest.candidates.length, 4);
+});
+
+test('ARE October 12/23 buys are grouped as recent and excluded from main totals', () => {
+  const tx = [
+    { ...buy('are-old', '2025-01-01', 10, 100), ticker: 'ARE', fee: 0 },
+    { ...buy('are-12', '2026-10-12', 23, 43.92), ticker: 'are', fee: 0 },
+    { ...buy('are-23a', '2026-10-23', 23, 43.30), ticker: 'ARE', fee: 0 },
+    { ...buy('are-23b', '2026-10-23', 14, 43.33), ticker: 'ARE', fee: 0 },
+    { ...buy('other', '2025-01-01', 1, 100), ticker: 'XYZ', fee: 0 },
+  ];
+  const quotes = { ARE: { price: 40.45, currency: 'USD' }, XYZ: { price: 80, currency: 'USD' } };
+  for (const today of ['2026-11-02', '2026-11-22']) {
+    const result = buildHarvestLots(tx, quotes, today);
+    const grouped = groupHarvestCandidates(result.candidates);
+    const are = grouped.groups.find(g => g.ticker === 'ARE');
+    assert.equal(are.restricted, true);assert.equal(are.lots.length, 4);
+    assert.equal(are.clearDate, '2026-11-23');
+    assert.deepEqual(grouped.totalsByCurrency, { USD: 20 });
+    assert.ok(Math.abs(grouped.restrictedTotalsByCurrency.USD - (595.50 + 185.68)) < 1e-8);
+    assert.equal(result.openLots.filter(l => l.ticker === 'ARE').reduce((sum, l) => sum + l.qty, 0), 70);
+  }
+  const released = groupHarvestCandidates(buildHarvestLots(tx, quotes, '2026-11-23').candidates);
+  assert.equal(released.groups.find(g => g.ticker === 'ARE').restricted, false);
+  assert.deepEqual(released.restrictedTotalsByCurrency, {});
+});
+
+test('purchase alert includes same day/day 30, ignores future buys and extends with latest buy', () => {
+  const quotes = { ABC: { price: 80, currency: 'USD' } };
+  const tx = [buy('old', '2025-01-01'), buy('today', '2026-11-02', 0.5), buy('future', '2026-11-03')];
+  const result = buildHarvestLots(tx, quotes, '2026-11-02');
+  assert.deepEqual(result.candidates[0].priorBuys, [{ date: '2026-11-02', qty: 0.5 }]);
+  assert.equal(result.candidates[0].clearDate, '2026-12-03');
+  const next = buildHarvestLots(tx, quotes, '2026-11-03');
+  assert.equal(next.candidates[0].clearDate, '2026-12-04');
 });

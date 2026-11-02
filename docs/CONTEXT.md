@@ -1,5 +1,14 @@
 # CONTEXT.md — aa-findocs
 
+## Janela conservadora de compras para harvesting (v1.25.2)
+
+**Regra atual (substitui a hipotese de liquidacao das versoes anteriores):** qualquer compra conhecida do mesmo ticker no dia da analise ou nos 30 dias corridos anteriores sinaliza todos os lotes negativos desse ativo em `Recent purchases`, inclusive lotes negativos que seriam vendidos e compras cujas cotas ja foram vendidas. O app nao calcula o pareamento fiscal de wash sales nem ajustes de custo; nao descarta risco com base em uma venda hipotetica de todos os lotes. Isto e um alerta para revisao, nao uma conclusao de wash sale ou prejuizo dedutivel.
+
+Grupos com alerta ficam fora do total principal. A data exibida e a ultima compra +31 dias (limite +30 inclusivo); novas compras estendem a janela. Datas futuras nao antecipam alertas, e ativos sem posicao atual/Bank Bonds continuam fora do card. Holdings preserva todos os lotes abertos e respectivos valores; WASH no Rebalance continua baseado na venda de harvesting registrada, separado deste alerta anterior a uma venda. Os textos explicativos ficam no icone Info.
+
+Regressao ARE: compras 12/out e 23/out, todas negativas, mantem ARE em Recent purchases em 02/nov e no limite 22/nov; o alerta da ultima compra expira em 23/nov sem novas compras. Testes cobrem outros tickers, vendas parciais/totais posteriores, compra no mesmo dia, futuras, quantidades fracionarias, totais separados e nova compra que estende prazo. Validacao: 21 testes direcionados e build aprovados; QA Chromium com mocks confirmou ARE na secao Recent purchases em 02/nov (390px) e 22/nov (1024px), com saida da janela em 23/nov, lotes de Holdings preservados e nenhum erro de renderizacao.
+
+
 ## Revisao geral de explicacoes nos cards (v1.25.1)
 
 Componente `InfoHelp.jsx` padroniza icone Info (i circulado), label acessivel, dialogo por toque/clique, Escape, contencao e retorno de foco via InfoDialog. Gatilhos nao alternam accordions; sem botoes de ajuda aninhados em botoes de titulo. CLAUDE.md aponta o componente como padrao permanente.
@@ -18,7 +27,7 @@ Na tab Dividends, o grafico de Income History reutiliza `GrowthTooltip` dos card
 
 ## Tax harvesting e possivel wash sale (v1.23.0, out/2026)
 
-O fluxo usa as transacoes reais para posicoes e performance. Cada compra representa um lote estimado; as vendas devem ser vinculadas aos lotes que consumiram, inclusive em baixas parciais. Uma venda anterior sem vinculacao deixa incertos os lotes remanescentes: o historico do app nao comprova o custo fiscal nem os lotes selecionados na corretora. O card identifica lotes abertos com prejuizo estimado e simula a venda integral de todos os lotes negativos de cada ticker. Alerta sobre compras conhecidas nos 30 dias anteriores cujas cotas continuariam na carteira; vender apenas parte pode mudar o risco. Precos e custos precisam estar na mesma moeda.
+O fluxo usa as transacoes reais para posicoes e performance. Cada compra representa um lote estimado; as vendas devem ser vinculadas aos lotes que consumiram, inclusive em baixas parciais. Uma venda anterior sem vinculacao deixa incertos os lotes remanescentes: o historico do app nao comprova o custo fiscal nem os lotes selecionados na corretora. O card identifica lotes abertos com prejuizo estimado e alerta sobre qualquer compra conhecida do ticker nos 30 dias anteriores, inclusive lotes negativos ou posteriormente vendidos (regra conservadora v1.25.2). Precos e custos precisam estar na mesma moeda.
 
 Vendas de harvesting sao marcadas manualmente. No rebalanceamento, o mesmo ticker recebe um aviso durante os 30 dias seguintes a venda e a primeira data fora da janela, no dia 31; o aviso nao altera as sugestoes nem a distribuicao do orcamento. A janela considerada tem 61 dias inclusivos: 30 antes, o dia da venda e 30 depois. Compras vinculadas a uma venda marcada podem reduzir Contributions ate o produto liquido da venda, mesmo em outro periodo; o excedente continua sendo aporte. O vinculo de recompra e restrito ao mesmo ticker.
 
@@ -44,7 +53,7 @@ Tax Harvesting remove o bloco `About this estimate`. O card usa somente tickers 
 
 ### Clareza dos avisos (v1.24.1)
 
-O card separa `Recent purchases` (perdas com compra recente que permaneceria na carteira) de `Not calculated` (dados insuficientes). Ambos iniciam recolhidos, fora do total principal. A etiqueta generica `REVIEW` foi removida; expandir um ativo com compra recente explica a janela e sua data final. Os dados nao calculados sao agrupados por motivo real — venda sem lotes, vinculos inconsistentes, moeda, data, transacao invalida, custo ou cotacao — com tickers compactos e instrucao uma vez por grupo, area de altura limitada e atalho para Transactions. O motor expõe `uncertaintyReasons` sem alterar quais lotes entram nos calculos. Testes direcionados cobrem a distincao entre motivos; QA Chromium usa dados simulados.
+O card separa `Recent purchases` (perdas com qualquer compra conhecida nos 30 dias anteriores; regra v1.25.2) de `Not calculated` (dados insuficientes). Ambos iniciam recolhidos, fora do total principal. A etiqueta generica `REVIEW` foi removida; expandir um ativo com compra recente explica a janela e sua data final. Os dados nao calculados sao agrupados por motivo real — venda sem lotes, vinculos inconsistentes, moeda, data, transacao invalida, custo ou cotacao — com tickers compactos e instrucao uma vez por grupo, area de altura limitada e atalho para Transactions. O motor expõe `uncertaintyReasons` sem alterar quais lotes entram nos calculos. Testes direcionados cobrem a distincao entre motivos; QA Chromium usa dados simulados.
 
 ### Redesenho minimalista (v1.24.0, out/2026)
 
@@ -54,9 +63,9 @@ O accordion de cada ativo em **Holdings** inclui os lotes abertos com data, quan
 
 O **Rebalance** usa apenas tags compactas: `WASH` tem prioridade quando existe venda de harvesting na janela inclusiva ate o dia +30; o toque mostra a primeira data fora da janela (+31). Sem `WASH`, `TAX LOSS` indica lote aberto negativo e permite consultar os lotes antes de comprar. As tags sao avisos: nao alteram valores ou distribuicao do rebalanceamento. `WASH` alerta sobre a recompra; nao bloqueia automaticamente a venda de outros lotes.
 
-O card recolhivel **Tax Harvesting** agrupa lotes negativos por ativo, com total de prejuizo potencial por moeda e grupos ordenados pela maior perda dentro de cada moeda. Ao expandir o ativo, mostra os lotes. Compras recentes que permaneceriam na carteira tornam o grupo sujeito a revisao; grupos com essa restricao, historico incerto ou sem cotacao confiavel ficam fora do total principal. USD e BRL nunca sao somados diretamente. O valor apresentado e prejuizo potencial realizavel, sem estimativa de imposto economizado ou abatimento fiscal garantido.
+O card recolhivel **Tax Harvesting** agrupa lotes negativos por ativo, com total de prejuizo potencial por moeda e grupos ordenados pela maior perda dentro de cada moeda. Ao expandir o ativo, mostra os lotes. Qualquer compra conhecida nos 30 dias anteriores torna o grupo sujeito a revisao; grupos com essa restricao, historico incerto ou sem cotacao confiavel ficam fora do total principal. USD e BRL nunca sao somados diretamente. O valor apresentado e prejuizo potencial realizavel, sem estimativa de imposto economizado ou abatimento fiscal garantido.
 
-A analise continua supondo a venda integral de todos os lotes negativos de cada ticker. Vender somente parte pode mudar o risco; novas compras nos 30 dias seguintes tambem podem afetar o resultado. Hipoteses e limites ficam em detalhes recolhiveis, mantendo a tela principal curta. O calculo nao cobre automaticamente outras contas, ativos substancialmente identicos ou transacoes ausentes.
+A analise sinaliza compras recentes mesmo que todos os lotes estejam negativos ou se pretenda liquidar a posicao; novas compras nos 30 dias seguintes a venda tambem podem afetar o resultado. Hipoteses e limites ficam em detalhes recolhiveis, mantendo a tela principal curta. O calculo nao cobre automaticamente outras contas, ativos substancialmente identicos ou transacoes ausentes.
 
 **Entrega:** v1.23.0 mergeada em `main` no commit `8ca4c55`; deploy de producao `READY` e alias `aa-findocs.vercel.app` confirmados em 31/out/2026. v1.24.0: build e suites automatizadas aprovados; auditoria corrigiu custo incompleto e marcador fiscal apos troca de lado. QA Chromium com APIs simuladas validou lotes, tags, agrupamento e salvamento de venda/recompra em 390 e 320px; Safari real nao testado.
 
