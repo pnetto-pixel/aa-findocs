@@ -160,11 +160,9 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
     candidate.priorBuys = priorBuys;
     candidate.clearDate = priorBuys.length ? addCalendarDays(priorBuys[0].date, 31) : null;
   }
-  candidates.sort((a, b) => a.ticker.localeCompare(b.ticker) || a.date.localeCompare(b.date));
-  // Within each ticker the greatest losses come first, followed by gains;
-  // unpriced lots stay visible without claiming a monetary result.
-  openLots.sort((a, b) => a.ticker.localeCompare(b.ticker) ||
-    (a.gainLoss == null && b.gainLoss == null ? 0 : a.gainLoss == null ? 1 : b.gainLoss == null ? -1 : a.gainLoss - b.gainLoss) || a.date.localeCompare(b.date));
+  candidates.sort((a, b) => a.ticker.localeCompare(b.ticker) || b.date.localeCompare(a.date));
+  // Lot lists use newest purchases first; asset groups retain loss ranking.
+  openLots.sort((a, b) => a.ticker.localeCompare(b.ticker) || b.date.localeCompare(a.date));
   return { candidates, openLots, uncertainTickers: [...uncertain].sort(), incompleteTickers: [...incomplete].sort(), uncertaintyReasons };
 }
 
@@ -189,7 +187,7 @@ export function groupHarvestCandidates(candidates = []) {
     }
   }
   const groups = [...byAsset.values()];
-  for (const group of groups) group.lots.sort((a, b) => b.loss - a.loss || a.date.localeCompare(b.date));
+  for (const group of groups) group.lots.sort((a, b) => b.date.localeCompare(a.date));
   groups.sort((a, b) => (a.currency === b.currency ? b.totalLoss - a.totalLoss || a.ticker.localeCompare(b.ticker) : a.currency === 'USD' ? -1 : 1));
   const totalsByCurrency = {};
   const restrictedTotalsByCurrency = {};

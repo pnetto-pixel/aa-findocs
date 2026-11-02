@@ -117,13 +117,13 @@ test('open lots include gains, losses and remaining shares with proportional buy
   const tx = [buy('loss', '2026-01-01'), buy('gain', '2026-02-01', 10, 50),
     sell('2026-03-01', 4, [{ buyId: 'loss', qty: 4 }])];
   const result = buildHarvestLots(tx, { ABC: { price: 80, currency: 'USD' } }, '2026-10-31');
-  assert.deepEqual(result.openLots.map(lot => lot.buyId), ['loss', 'gain']);
-  assert.equal(result.openLots[0].qty, 6);
-  assert.equal(result.openLots[0].costPerShare, 101);
-  assert.equal(result.openLots[0].gainLoss, -126);
-  assert.equal(result.openLots[1].gainLoss, 290);
-  assert.ok(Math.abs(result.openLots[1].gainLossPct - (80 / 51 - 1) * 100) < 1e-8);
-  assert.equal(result.candidates[0], result.openLots[0]);
+  assert.deepEqual(result.openLots.map(lot => lot.buyId), ['gain', 'loss']);
+  assert.equal(result.openLots[1].qty, 6);
+  assert.equal(result.openLots[1].costPerShare, 101);
+  assert.equal(result.openLots[1].gainLoss, -126);
+  assert.equal(result.openLots[0].gainLoss, 290);
+  assert.ok(Math.abs(result.openLots[0].gainLossPct - (80 / 51 - 1) * 100) < 1e-8);
+  assert.equal(result.candidates[0], result.openLots[1]);
 });
 
 test('unpriced and unknown-cost lots remain visible without an invented result', () => {
@@ -152,7 +152,7 @@ test('an incomplete open basis excludes the entire ticker from opportunity total
       { ...buy('other', '2026-01-01'), ticker: 'XYZ' },
     ], { ABC: { price: 80, currency: 'USD' }, XYZ: { price: 80, currency: 'USD' } }, '2026-10-31');
     assert.deepEqual(result.incompleteTickers, ['ABC']);
-    assert.deepEqual(result.openLots.filter(lot => lot.ticker === 'ABC').map(lot => lot.gainLoss), [-210, null]);
+    assert.deepEqual(result.openLots.filter(lot => lot.ticker === 'ABC').map(lot => lot.gainLoss), [null, -210]);
     assert.deepEqual(result.candidates.map(lot => lot.ticker), ['XYZ']);
     assert.deepEqual(groupHarvestCandidates(result.candidates).totalsByCurrency, { USD: 210 });
   }
@@ -186,6 +186,7 @@ test('grouped loss estimates separate currencies and known purchase restrictions
   assert.deepEqual(grouped.restrictedTotalsByCurrency, { USD: 210 });
   const abc = grouped.groups.find(group => group.ticker === 'ABC');
   assert.equal(abc.lots.length, 2);
+  assert.deepEqual(abc.lots.map(lot => lot.date), ['2026-02-01', '2026-01-01']);
   assert.equal(abc.totalLoss, 320);
   assert.equal(abc.restricted, false);
   const restricted = grouped.groups.find(group => group.ticker === 'XYZ');
