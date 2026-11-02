@@ -1,3 +1,4 @@
+import { saleLotOptions, saleLotGainLoss } from "./lib/taxSaleLots.js";
 import InfoHelp from "./InfoHelp.jsx";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -20,13 +21,10 @@ export default function TaxTransactionEditor({ transaction, transactions, onSave
   const isSale = transaction.side === "sell";
   const currency = currencyOf(transaction);
   const match = tx => tickerOf(tx) === tickerOf(transaction) && currencyOf(tx) === currency && tx.date <= transaction.date;
-  const lots = transactions.filter(tx => tx.side === "buy" && match(tx)).map(buy => {
-    const used = transactions.filter(tx => tx.id !== transaction.id && tx.side === "sell").reduce((total, tx) => total + (tx.harvestLots || []).filter(lot => lot.buyId === buy.id).reduce((sum, lot) => sum + Number(lot.qty || 0), 0), 0);
-    return { ...buy, available: Math.max(0, Number(buy.qty) - used) };
-  }).filter(buy => buy.available > 1e-8 || lotQty[buy.id]).sort((a, b) => a.date.localeCompare(b.date));
+  const lots = saleLotOptions(transactions, transaction);
   const sales = transactions.filter(tx => tx.side === "sell" && tx.harvestSale && match(tx)).sort((a, b) => b.date.localeCompare(a.date));
   const allocated = Object.values(lotQty).reduce((sum, value) => sum + (Number(value) || 0), 0);
-  const money = value => valuesHidden ? "••••" : `${currency === "BRL" ? "R$" : "$"}${Number(value).toFixed(2)}`;
+  const money = (value, signed = false) => valuesHidden ? "••••" : value == null ? "—" : `${value < 0 ? "−" : signed && value > 0 ? "+" : ""}${currency === "BRL" ? "R$" : "$"}${Math.abs(Number(value)).toFixed(2)}`;
 
   useEffect(() => {
     const previous = document.activeElement;
@@ -54,6 +52,7 @@ export default function TaxTransactionEditor({ transaction, transactions, onSave
       if (!Number.isFinite(qty) || qty < 0) { setError("Check the lot quantities."); return; }
       allocations.push({ buyId, qty });
     }
+    if (isSale && allocations.reduce((sum, lot) => sum + lot.qty, 0) > Number(transaction.qty) + 1e-8) { setError("Selected lots exceed the recorded sale quantity."); return; }
     const patch = isSale ? { harvestSale, harvestLots: allocations } : { harvestRebuySaleId: saleId };
     const result = await onSave(transaction.id, patch);
     if (result) setError(result);
@@ -70,12 +69,19 @@ export default function TaxTransactionEditor({ transaction, transactions, onSave
         </div>
         {isSale ? <>
           <label style={{ display: "flex", gap: 9, alignItems: "center", fontSize: 12, padding: "16px 0" }}><input type="checkbox" checked={harvestSale} disabled={busy} onChange={event => setHarvestSale(event.target.checked)} style={{ accentColor: T.gold }} />Harvesting sale</label>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, color: T.dim, fontSize: 10, marginBottom: 8 }}><span>Sold lots</span><span>{Number(allocated.toFixed(6))} / {transaction.qty}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, color: T.dim, fontSize: 10, marginBottom: 8 }}><span>Sold lots<InfoHelp title="Sold lots">Check a lot to link its entire available balance. Gain/loss uses this recorded sale price and proportional purchase/sale fees, not the current market quote. Existing partial links are preserved until you deselect and reselect them. Selected shares cannot exceed the recorded sale quantity.</InfoHelp></span><span>{Number(allocated.toFixed(6))} / {transaction.qty}</span></div>
           {lots.length === 0 && <p style={{ color: T.dim, fontSize: 11 }}>No matching purchase lots.</p>}
-          {lots.map(lot => <label key={lot.id} style={{ display: "flex", gap: 12, alignItems: "center", borderTop: `1px solid ${T.border}`, padding: "8px 0" }}>
-            <span style={{ flex: 1, minWidth: 0, fontSize: 11 }}>{lot.date}<span style={{ display: "block", color: T.dim, fontSize: 10, marginTop: 3 }}>{Number(lot.available.toFixed(6))} available · {money(lot.price)}</span></span>
-            <input aria-label={`Quantity sold from ${lot.date} lot ${lot.id}`} type="number" min="0" max={lot.available} step="any" inputMode="decimal" placeholder="0" value={lotQty[lot.id] || ""} disabled={busy} onChange={event => setLotQty(previous => ({ ...previous, [lot.id]: event.target.value }))} style={{ ...controlStyle, width: 90 }} />
-          </label>)}
+          {lots.map(lot => {
+            const selected = Number(lotQty[lot.id]) > 0;
+            const selectedQty = selected ? Number(lotQty[lot.id]) : lot.available;
+            const partial = selected && Math.abs(selectedQty - lot.available) > 1e-8;
+            const pnl = saleLotGainLoss(lot, transaction, selectedQty);
+            return <label key={lot.id} style={{ display: "flex", gap: 10, alignItems: "center", borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
+              <input aria-label={`Sell lot ${lot.date} ${lot.id}`} type="checkbox" checked={selected} ref={node => { if (node) node.indeterminate = partial; }} aria-checked={partial ? "mixed" : selected} disabled={busy || (!selected && lot.available <= 1e-8)} onChange={event => setLotQty(previous => ({ ...previous, [lot.id]: event.target.checked ? String(lot.available) : "" }))} style={{ accentColor: T.gold, flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 11 }}>{lot.date}<span style={{ display: "block", color: T.dim, fontSize: 10, marginTop: 3 }}>{partial ? `${Number(selectedQty.toFixed(6))} linked / ` : ""}{Number(lot.available.toFixed(6))} shares · {money(lot.price)}</span></span>
+              <span style={{ color: pnl == null || pnl === 0 ? T.dim : pnl < 0 ? T.red : "#7dd3a4", fontSize: 11, whiteSpace: "nowrap" }}>{money(pnl, true)}</span>
+            </label>;
+          })}
           {allocated < Number(transaction.qty) && <div style={{ color: T.dim, fontSize: 10, marginTop: 8 }}>Unlinked shares <InfoHelp title="Unlinked shares">Link the sold quantity to its purchase lots to identify which shares remain. Unlinked shares leave remaining lots uncertain.</InfoHelp></div>}
         </> : <div style={{ marginTop: 18 }}>
           <label htmlFor="tax-rebuy-sale" style={{ display: "block", color: T.dim, fontSize: 11, marginBottom: 8 }}>Funded by harvesting sale</label>

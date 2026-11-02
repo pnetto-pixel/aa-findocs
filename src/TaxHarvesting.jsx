@@ -35,7 +35,7 @@ function quantity(value) {
 export function TaxLotList({ lots = [], valuesHidden = false, compact = false }) {
   const [expanded, setExpanded] = useState(null);
   if (!lots.length) return <div style={{ color: T.textDim, fontSize: 11, padding: "10px 0" }}>No open lots.</div>;
-  const sorted = [...lots].sort((a, b) => (a.gainLoss == null ? Infinity : a.gainLoss) - (b.gainLoss == null ? Infinity : b.gainLoss) || a.date.localeCompare(b.date));
+  const sorted = [...lots].sort((a, b) => b.date.localeCompare(a.date));
   return <div style={{ fontFamily: MONO, fontSize: 10, minWidth: 0, overflowX: "auto" }}>
     {!compact && <div style={{ display: "grid", gridTemplateColumns: "minmax(76px,1fr) 40px minmax(132px,1fr)", gap: 12, color: T.textFaint, fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "8px 0", minWidth: 272 }}>
       <span>Lot date</span><span style={{ textAlign: "center" }}>Qty</span><span style={{ textAlign: "right" }}>Gain / Loss</span>

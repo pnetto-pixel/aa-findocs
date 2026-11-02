@@ -1,5 +1,14 @@
 # CONTEXT.md — aa-findocs
 
+## Ordem de compra e selecao de lotes inteiros (v1.26.0)
+
+As listas de lotes em Holdings, Tax Harvesting e no pop-up TAX LOSS usam data de compra decrescente. Compras no mesmo dia preservam a ordem original; grupos de ativos continuam do maior para o menor prejuizo dentro de cada moeda. A mudanca de ordenacao nao modifica quantidades/custos/totais.
+
+O editor Tax de vendas troca inputs numericos por checkboxes. Selecionar um lote vincula todo seu saldo disponivel (descontadas alocacoes a outras vendas). A soma nao pode exceder a quantidade da venda registrada. Cada lote exibe ganho/perda em valor na moeda da transacao, usando o preco daquela venda e taxas de compra/venda proporcionais; e uma estimativa a partir do historico, nao custo fiscal ajustado ou cotacao atual. Valores seguem mascara e custo ausente aparece como --. Explicacao fica no icone Info de Sold lots.
+
+Vinculos parciais historicos permanecem intactos ao abrir/salvar: checkbox misto e contagem linked/available indicam esse estado. Desmarcar e remarcar seleciona todo o saldo disponivel; nenhuma alocacao existente e aumentada silenciosamente. Recompras continuam usando o seletor de venda associada. Helpers em taxSaleLots.js testam saldo, elegibilidade, ordem e taxas; testes de harvesting continuam cobrindo a janela de compras recentes.
+
+
 ## Janela conservadora de compras para harvesting (v1.25.2)
 
 **Regra atual (substitui a hipotese de liquidacao das versoes anteriores):** qualquer compra conhecida do mesmo ticker no dia da analise ou nos 30 dias corridos anteriores sinaliza todos os lotes negativos desse ativo em `Recent purchases`, inclusive lotes negativos que seriam vendidos e compras cujas cotas ja foram vendidas. O app nao calcula o pareamento fiscal de wash sales nem ajustes de custo; nao descarta risco com base em uma venda hipotetica de todos os lotes. Isto e um alerta para revisao, nao uma conclusao de wash sale ou prejuizo dedutivel.
@@ -59,7 +68,7 @@ O card separa `Recent purchases` (perdas com qualquer compra conhecida nos 30 di
 
 A coluna **Tax** na tabela de Transactions substitui o antigo botao na coluna de acoes. Mostra `—`, `HARVEST` ou `REBUY`; o toque abre um editor fiscal dedicado para marcar a venda, vincular os lotes vendidos ou associar a recompra. O formulario geral deixa de carregar o bloco fiscal extenso. Os vinculos e as protecoes de quantidade, data, ticker e moeda continuam sendo usados.
 
-O accordion de cada ativo em **Holdings** inclui os lotes abertos com data, quantidade e ganho/perda em valor e percentual, com detalhes de custo e cotacao ao tocar. Lotes negativos aparecem primeiro. Resultado sem cotacao ou custo confiavel fica indisponivel; historico incerto pede revisao dos vinculos em Transactions. Valores seguem a mascara de privacidade e a moeda do lote.
+O accordion de cada ativo em **Holdings** inclui os lotes abertos com data, quantidade e ganho/perda em valor e percentual, com detalhes de custo e cotacao ao tocar. Lotes aparecem pela data de compra mais recente (v1.26.0). Resultado sem cotacao ou custo confiavel fica indisponivel; historico incerto pede revisao dos vinculos em Transactions. Valores seguem a mascara de privacidade e a moeda do lote.
 
 O **Rebalance** usa apenas tags compactas: `WASH` tem prioridade quando existe venda de harvesting na janela inclusiva ate o dia +30; o toque mostra a primeira data fora da janela (+31). Sem `WASH`, `TAX LOSS` indica lote aberto negativo e permite consultar os lotes antes de comprar. As tags sao avisos: nao alteram valores ou distribuicao do rebalanceamento. `WASH` alerta sobre a recompra; nao bloqueia automaticamente a venda de outros lotes.
 
