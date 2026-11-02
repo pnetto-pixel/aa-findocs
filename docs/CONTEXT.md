@@ -1,5 +1,14 @@
 # CONTEXT.md — aa-findocs
 
+## Dividendos duplicados na virada do mes (v1.26.1)
+
+Caso JPM: mesmo valor em 31/out (API, apenas Dividend History) e 02/nov (credito importado). A regra antiga de cobertura por ticker/mes nao os reconciliava. Mantida a cobertura mensal existente, `lib/dividend-reconciliation.js` acrescenta conciliacao entre meses distintos por ticker normalizado, total USD igual com tolerancia de um centavo e intervalo maximo de tres dias corridos. Pareamento um a um, priorizando menor distancia de data e valor; varios creditos do mesmo ticker/data sao somados para comparar a estimativa consolidada. Creditos importados nao sao removidos nem regravados.
+
+O resultado unico preserva a data/valor do extrato, removendo apenas a estimativa externa correspondente; retencoes, juros, outros tickers/valores e pagamentos distantes continuam intactos. A conciliacao roda no endpoint compartilhado antes de totais/cache, cobrindo Dividends, Performance e Contributions. Dividend History e derivado: uma linha API nao e um registro persistido para apagar; pagamentos reais podem ser auditados em Transactions > Income History.
+
+Cache do endpoint passa a v13 e o cache compartilhado do cliente a divCache:v2, impedindo respostas antigas duplicadas apos recarregar. Telemetria adicional `meta.crossMonthPaymentsReconciled`. Sem identidade publica do pagamento no extrato, o pareamento e uma heuristica limitada: pagamentos distintos de mesmo ticker/valor dentro de tres dias cruzando o mes podem coincidir; o pareamento um a um restringe esse risco. Nenhum dado financeiro armazenado foi excluido. Testes cobrem JPM, ano, datas em ambos os sentidos, pagamentos legitimos diferentes, totais de contas, futuras e invalidacao dos caches; build aprovado.
+
+
 ## Ordem de compra e selecao de lotes inteiros (v1.26.0)
 
 As listas de lotes em Holdings, Tax Harvesting e no pop-up TAX LOSS usam data de compra decrescente. Compras no mesmo dia preservam a ordem original; grupos de ativos continuam do maior para o menor prejuizo dentro de cada moeda. A mudanca de ordenacao nao modifica quantidades/custos/totais.

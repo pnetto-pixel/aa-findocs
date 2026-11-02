@@ -11,7 +11,7 @@
 // Two-layer cache:
 //   - in-memory Map (module scope): survives tab switches within a session,
 //     dies on reload.
-//   - localStorage (`divCache:v1:<hash>`): survives a full page reload.
+//   - localStorage (`divCache:v2:<hash>`): survives a full page reload.
 // Every localStorage read/write is wrapped in try/catch — same tolerant
 // pattern already used for `usdBrlRate` (App.jsx) — private browsing /
 // quota-exceeded must never break the tab.
@@ -32,7 +32,7 @@ function localTodayISO(d = new Date()) {
   return new Date(d.getTime() - tz).toISOString().slice(0, 10);
 }
 
-const LS_PREFIX = "divCache:v1:";
+const LS_PREFIX = "divCache:v2:";
 
 // FNV-1a — same algorithm the old per-file caches used, just now fed a
 // normalized payload so identical data always hashes identically regardless
