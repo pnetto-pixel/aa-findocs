@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 import { currencyForAssetClass } from "./lib/parsing.js";
 
 const T = { bg: "#0b0d10", card: "#13161b", border: "#222831", text: "#ece8e0", dim: "#8a8f99", gold: "#c9a961", red: "#e88c8c" };
+const amountFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const MONO = "'JetBrains Mono', monospace";
 const currencyOf = tx => tx.currency || currencyForAssetClass(tx.assetClass);
 const tickerOf = tx => String(tx.ticker || "").trim().toUpperCase();
@@ -35,7 +36,7 @@ export default function TaxTransactionEditor({ transaction, transactions, onSave
     setLotQty(Object.fromEntries(lots.map(lot => [lot.id, checked && lot.available > 1e-8 ? String(lot.available) : ""])));
   }
   const allocated = Object.values(lotQty).reduce((sum, value) => sum + (Number(value) || 0), 0);
-  const money = (value, signed = false) => valuesHidden ? "••••" : value == null ? "—" : `${value < 0 ? "−" : signed && value > 0 ? "+" : ""}${currency === "BRL" ? "R$" : "$"}${Math.abs(Number(value)).toFixed(2)}`;
+  const money = (value, signed = false) => valuesHidden ? "••••" : value == null || !Number.isFinite(Number(value)) ? "—" : `${value < 0 ? "−" : signed && value > 0 ? "+" : ""}${currency === "BRL" ? "R$" : "$"}${amountFormatter.format(Math.abs(Number(value)))}`;
 
   useEffect(() => {
     const previous = document.activeElement;

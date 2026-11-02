@@ -3,6 +3,7 @@
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
 ## ✅ Concluídos
+- **Separadores monetarios no Tax (v1.27.2):** milhares e duas casas decimais no ganho/perda e demais valores monetarios do editor, preservando sinais/moedas/mascara e calculos.
 - **Last buy em Recent purchases (v1.27.1):** ultima compra conhecida ao lado do numero de lotes/ticker, data completa no Info e distincao entre janela de compra anterior e prazo de recompra apos venda (WASH). Sem alteracao de calculos.
 - **Tax com quantidades parciais e Select all (v1.27.0):** inputs editaveis por lote, checkbox para saldo inteiro e checkbox global para preencher/limpar todos. Ganho/perda recalcula com quantidade; validacoes de saldo e quantidade vendida preservadas, sem rateio automatico. Vinculos antigos e ordem decrescente mantidos; ajuda no Info.
 - **JPM/duplicatas de dividendos entre meses (v1.26.1):** reconcilia API e credito importado de mesmo ticker/valor em ate tres dias corridos cruzando o mes, mantendo data/valor do extrato. Pareamento um a um, sem apagar registros, cobrindo todos consumidores do endpoint. Caches servidor v13 e cliente v2 invalidados; regressao JPM 31/out-02/nov e testes de preservacao de pagamentos legitimos/cache aprovados.
