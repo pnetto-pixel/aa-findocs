@@ -56,7 +56,7 @@ export function TaxLotList({ lots = [], valuesHidden = false, compact = false })
         </button>
         {open && <div style={{ padding: "0 0 10px", color: T.textDim, fontSize: 10, lineHeight: 1.7 }}>
           Cost {money(lot.costPerShare, lot.currency, valuesHidden)} · Price {money(lot.currentPrice, lot.currency, valuesHidden)} <span style={{ color: T.textFaint }}>({lot.currency})</span>
-          {lot.priorBuys?.length > 0 && <InfoHelp title="Purchase window">Recent shares would remain after selling. Their purchase window clears on {lot.clearDate}.</InfoHelp>}
+          {lot.priorBuys?.length > 0 && <InfoHelp title="Purchase window">This ticker has a known purchase in the last 30 calendar days. The latest purchase leaves that window on {lot.clearDate}, if no new purchases occur. This is a risk flag, not a determination of deductible loss.</InfoHelp>}
         </div>}
       </div>;
     })}
@@ -131,15 +131,15 @@ export function TaxHarvestingCard({ harvest, valuesHidden = false, onReviewTrans
           <CurrencyTotals totals={summary.totalsByCurrency} valuesHidden={valuesHidden} />
         </span>
       </div>
-      {!available.length && <div style={{ padding: "12px 0", fontFamily: BODY, fontSize: 11, color: T.textDim }}>No unrestricted loss lots found.</div>}
+      {!available.length && <div style={{ padding: "12px 0", fontFamily: BODY, fontSize: 11, color: T.textDim }}>No loss lots without recent-purchase flags.</div>}
       {available.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       {review.length > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
         <summary style={{ cursor: "pointer", color: T.gold, padding: "4px 0" }}>Recent purchases · {review.length}<button type="button" aria-label="About recent purchases" aria-haspopup="dialog" onClick={event => { event.preventDefault(); event.stopPropagation(); setRecentHelp(true); }} style={{ ...emptyButton, display: "inline-flex", alignItems: "center", verticalAlign: "middle", padding: 6, marginLeft: 4, color: T.textDim }}><Info size={13} /></button></summary>
         {review.map(group => <HarvestGroup key={group.key} group={group} valuesHidden={valuesHidden} />)}
       </details>}
       {recentHelp && <InfoDialog title="Recent purchases" onClose={() => setRecentHelp(false)}>
-        <p style={{ margin: "0 0 12px", color: T.textDim }}>Recent purchases would remain in your portfolio after selling the loss lots. These losses need a purchase-window check and are excluded from the total.</p>
-        {review.map(group => <div key={group.key} style={{ marginTop: 8 }}><strong>{group.ticker}</strong><span style={{ color: T.textDim }}> · Purchase window clears {group.clearDate}</span></div>)}
+        <p style={{ margin: "0 0 12px", color: T.textDim }}>These tickers have known purchases in the last 30 calendar days, including the purchase date and day +30. They stay here even if all lots are negative or you plan to sell everything. Their losses are excluded from the main total until this purchase-window flag expires. This is a review alert; it does not determine whether a trade is a wash sale or how much loss is deductible. Further purchases can extend the window.</p>
+        {review.map(group => <div key={group.key} style={{ marginTop: 8 }}><strong>{group.ticker}</strong><span style={{ color: T.textDim }}> · Latest purchase leaves window {group.clearDate}</span></div>)}
       </InfoDialog>}
       {unavailableCount > 0 && <details style={{ borderTop: `1px solid ${T.borderSoft}`, padding: "10px 0", fontFamily: BODY, fontSize: 11 }}>
         <summary style={{ cursor: "pointer", color: T.textDim, padding: "4px 0" }}>Not calculated · {unavailableCount}</summary>

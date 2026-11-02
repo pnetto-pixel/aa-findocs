@@ -148,17 +148,14 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
   // lots. Keep incomplete lots visible in Holdings, but exclude their ticker
   // from opportunity totals until its cost history can be reviewed.
   candidates = candidates.filter(lot => !incomplete.has(lot.ticker));
-  // The card models selling all known loss lots for each ticker today. Shares
-  // in those lots (and shares already sold) cannot also be replacement shares.
-  // Purchases still held in non-candidate lots remain potential replacements.
-  // This is not a tax determination: outside accounts, DRIPs and identical
-  // securities are not necessarily present in the transaction history.
-  const soldLotIds = new Set(candidates.map(candidate => candidate.buyId));
+  // Conservative purchase-window alert, not a tax-lot wash-sale calculation.
+  // Include every known buy in the preceding 30 days, even if its lot is at a
+  // loss or was subsequently sold. Assuming a hypothetical liquidation does
+  // not prove that individual trades are free of wash-sale adjustments.
   for (const candidate of candidates) {
     const priorBuys = buys.filter(other => other.ticker === candidate.ticker &&
-      other.remaining > EPSILON && !soldLotIds.has(other.tx.id) &&
       dayNumber(other.tx.date) >= today - 30)
-      .map(other => ({ date: other.tx.date, qty: other.remaining }))
+      .map(other => ({ date: other.tx.date, qty: other.qty }))
       .sort((a, b) => b.date.localeCompare(a.date));
     candidate.priorBuys = priorBuys;
     candidate.clearDate = priorBuys.length ? addCalendarDays(priorBuys[0].date, 31) : null;
@@ -172,7 +169,7 @@ export function buildHarvestLots(transactions, pricesByTicker, asOf) {
 }
 
 // Keep loss estimates in their native currency. The main total includes only
-// groups without a known prior-purchase restriction; restricted losses remain
+// groups without a recent-purchase flag; restricted losses remain
 // visible separately and are never presented as tax savings.
 export function groupHarvestCandidates(candidates = []) {
   const byAsset = new Map();
