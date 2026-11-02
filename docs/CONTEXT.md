@@ -1,5 +1,10 @@
 # CONTEXT.md — aa-findocs
 
+## Separadores monetarios no editor Tax (v1.27.2)
+
+O editor Tax usa Intl.NumberFormat en-US para valores monetarios com agrupamento de milhares e duas casas decimais (ex.: -$1,234.56), preservando sinais de ganho/perda, USD/BRL e mascara. Aplica-se a previa de ganho/perda, preco do lote e valores das vendas no seletor de recompra. Alteracao somente de apresentacao; quantidades e calculos preservados.
+
+
 ## Ultima compra visivel em Recent purchases (v1.27.1)
 
 Cada ativo em Recent purchases mostra `Last buy Mon DD` junto ao ticker e numero de lotes. A data vem da compra conhecida mais recente em priorBuys, inclusive compras com ganho ou cujas cotas ja foram vendidas; nao e inferida da data do lote negativo listado. O Info de Recent purchases mostra a data completa e o fim da janela anterior a venda, com explicacao de que a data para voltar a comprar apos uma venda com prejuizo depende da venda e aparece no WASH. Grupos fora de Recent purchases nao recebem essa etiqueta; totais e janelas nao foram modificados. Build e QA Chromium com mocks em 390/1024px aprovados, incluindo compra mais recente com ganho e fora dos lotes negativos listados.
