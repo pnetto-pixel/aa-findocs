@@ -1,5 +1,12 @@
 # CONTEXT.md — aa-findocs
 
+## Quantidades parciais e selecao rapida no Tax (v1.27.0)
+
+O editor Tax de vendas permite quantidade parcial editavel por lote, inclusive decimal, para reconciliar vendas antigas (ex.: DELL). O checkbox de cada lote preenche todo o saldo disponivel; desmarcar limpa a quantidade. `Select all` preenche todos os lotes disponiveis de uma vez e desmarcar limpa todos. Estado misto indica selecao parcial. Nao ha rateio/FIFO automatico nem truncamento para caber na venda: o usuario identifica os lotes conforme a corretora.
+
+Ao salvar, cada quantidade deve ser finita, nao negativa e no maximo o saldo do lote, e a soma nao pode superar a quantidade da venda registrada. Se Select all exceder essa quantidade, o erro pede ajuste e nenhum dado e salvo. Quantidade menor que a venda continua permitida como reconciliacao incompleta, com aviso e lotes incertos ate completar. Ganho/perda acompanha a quantidade positiva informada; lotes desmarcados mostram a previa do saldo disponivel, com preco/taxas da venda registrada. Ordenacao recente primeiro e vinculos existentes preservados; recompra permanece com seletor original. Instrucoes no Info de Sold lots. Build e testes de saldo/taxas/guardas aprovados; QA Chromium com mocks em 390/1024px confirmou selecao individual/global, quantidades 1.25 e 0.75, validacao de negativos/saldo/total, ganho/perda proporcional e salvar/reabrir sem alterar vinculos antigos.
+
+
 ## Dividendos duplicados na virada do mes (v1.26.1)
 
 Caso JPM: mesmo valor em 31/out (API, apenas Dividend History) e 02/nov (credito importado). A regra antiga de cobertura por ticker/mes nao os reconciliava. Mantida a cobertura mensal existente, `lib/dividend-reconciliation.js` acrescenta conciliacao entre meses distintos por ticker normalizado, total USD igual com tolerancia de um centavo e intervalo maximo de tres dias corridos. Pareamento um a um, priorizando menor distancia de data e valor; varios creditos do mesmo ticker/data sao somados para comparar a estimativa consolidada. Creditos importados nao sao removidos nem regravados.
