@@ -39,6 +39,7 @@
 // integrations documented in docs/CONTEXT.md ("Pendência de validação em produção"). Watch
 // `meta.payDatesResolvedViaFinnhub` after deploy to confirm real-world coverage.
 
+import { reconcileDividendPayments } from '../lib/dividend-reconciliation.js';
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
 
@@ -72,7 +73,8 @@ import { authenticate } from '../lib/auth.js';
 // v5: Finnhub fallback for Yahoo-empty tickers (e.g. VALE ADR); stale empty results busted.
 // v4: future-pay-date dividends now excluded (was: included as received income).
 // v3: pay dates now sourced from Polygon (was Nasdaq in v2, ex-date in v1).
-const CACHE_VERSION = 'v12';
+// v13: reconcile equal broker/API payments across month-boundary posting dates.
+const CACHE_VERSION = 'v13';
 const TIMEOUT_MS = 12000;
 // Max day gap when matching a Yahoo ex-date to a Polygon row's ex-date (sources can differ ±1d).
 const EX_DATE_MATCH_TOLERANCE_DAYS = 5;
@@ -447,7 +449,7 @@ export default async function handler(req, res) {
   ]);
   const { rowsByTicker, allWarm } = payInfo;
 
-  const events = [];
+  let events = [];
   let payDatesMatched = 0;
   let payDatesMissing = 0;
   let payDatesResolvedViaFinnhub = 0;
@@ -588,6 +590,8 @@ export default async function handler(req, res) {
     }
   }
 
+  const reconciliation = reconcileDividendPayments(events);
+  events = reconciliation.events;
   events.sort((a, b) => a.date.localeCompare(b.date));
 
   const result = {
@@ -597,6 +601,7 @@ export default async function handler(req, res) {
       tickers: tickers.length,
       fidelityTickers: fidelityTickers.size,
       eventsFound: events.length,
+      crossMonthPaymentsReconciled: reconciliation.matchedCount,
       foreignTaxFound: foreignTax.length,
       payDatesMatched,
       payDatesMissing,
