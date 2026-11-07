@@ -1,5 +1,17 @@
 # CONTEXT.md — aa-findocs
 
+## DELL manual no plano de Contributions (v1.28.0, nov/2026)
+
+Decisao explicita do usuario: manter somente edicao manual do valor DELL, usando valor bruto (quantidade × preco), sem taxas e sem importar automaticamente vendas de Transactions. A estimativa de novembro nao foi cadastrada como transacao. A linha `DELL sale` permite editar/salvar/cancelar ou zerar; os totais mensal/quinzenal e o snapshot usam exatamente esse valor. Explicacoes ficam no InfoHelp.
+
+Novembro/2026 inicia com US$ 7.920 (24 × US$ 330) para planejamento com caixa existente. Nao e uma venda registrada nem movimenta Cash. Um snapshot corrente legado sem `dellSaleMode: "manual"` usa esse valor de transicao, substituindo a antiga soma automatica. Depois do primeiro save automatico do snapshot, edicoes manuais, inclusive zero, prevalecem ao reabrir. Outros meses iniciam em zero; a partir de dezembro o usuario informa o valor bruto efetivo das vendas do mes anterior. Nao ha mudanca automatica para last month nem copia do valor planejado no mes anterior.
+
+Persistencia no mesmo endpoint/store autenticado: snapshot ganha `dellSaleMode: "manual"`, com `dellSale` numerico como antes. A leitura restaura somente o snapshot do proprio mes; o campo legado global `aporteConfig.dellSale` e ignorado. Sem cache local novo nem endpoint novo. O componente e remontado na mudanca do mes local (timer/foco), descartando o valor/editor anterior. Snapshots de planejamento de meses encerrados permanecem intactos; a reconciliacao de `invested` existente continua funcionando.
+
+Falha ao carregar historico impede autosave e permite Retry, evitando sobrescrever um valor salvo com default. Falha no PUT aparece com Retry e aviso para nao sair da tab antes de salvar. Como os demais campos do plano dependem de transactions/dividends, a edicao DELL aguarda essas fontes; falha de transactions impede gravacao. Edicoes novas ainda nao confirmadas pelo servidor podem ser perdidas ao fechar a tab; nenhum Redis real foi acessado nesta validacao.
+
+Validacao: testes do endpoint real com auth/Redis simulados cobrem round-trip de 7.920, valor alterado e zero, preservacao do planejamento historico e reconciliacao somente do realizado; helpers cobrem transicao/virada do ano/inputs invalidos. Suites de capacity/extras/harvesting aprovadas. QA Chromium com API simulada em 390/1024px cobre edicao, cancelamento, validacao, zero persistido apos reload, Info, mascara, restore sem config local, falhas GET/PUT com retry e novembro→dezembro→janeiro sem carregar o valor anterior; sem erros de runtime. Build aprovado. Redis de producao e Safari real nao validados.
+
 ## Separadores monetarios no editor Tax (v1.27.2)
 
 O editor Tax usa Intl.NumberFormat en-US para valores monetarios com agrupamento de milhares e duas casas decimais (ex.: -$1,234.56), preservando sinais de ganho/perda, USD/BRL e mascara. Aplica-se a previa de ganho/perda, preco do lote e valores das vendas no seletor de recompra. Alteracao somente de apresentacao; quantidades e calculos preservados.
@@ -590,7 +602,7 @@ Popup por clique/toque compartilha `GrowthTooltip` com Accumulated Investment: l
 #### Storage
 
 - Chave Redis: `portfolio:<auth.storageKey com :holdings substituido por :contributions-history>:contributions-history` — objeto JSON mapeando `"YYYY-MM"` para snapshot.
-- Formato do snapshot: `{ monthlyFixed, dividends, dellSale, extras, planTotal, invested, savedAt }`.
+- Formato do snapshot: `{ monthlyFixed, dividends, dellSale, dellSaleMode?, extras, planTotal, invested, savedAt }`. Desde v1.28.0, `dellSaleMode: "manual"` distingue um valor DELL escolhido no plano de um snapshot legado calculado automaticamente.
 - **Sem versionamento `vN`:** e um store de upsert proprio, nao um cache de calculo. O planejamento salvo em cada snapshot e permanente; o mes corrente e sobrescrito a cada load (idempotente), enquanto o campo realizado `invested` de snapshots anteriores pode ser reconciliado a partir das transacoes atuais.
 - Endpoint: `api/contributions-history.js` (GET + PUT). `authenticate(req)` de `lib/auth.js`. `getRedis()` de `lib/redis.js`. O mesmo PUT aceita `{ month, snapshot, reconcileInvested? }` e faz uma unica operacao read-modify-write: atualiza o snapshot do mes corrente e, quando o mapa opcional e enviado, altera **somente `invested`** nos meses que ja existem. Nunca cria um mes historico ausente por causa da reconciliacao e preserva `monthlyFixed`, `dividends`, `dellSale`, `extras`, `planTotal` e o `savedAt` historico.
 - **Arquivo tambem serve uma segunda rota nao relacionada a Contributions (PR #128, jul/2026):** `?resource=alerts-read` (funcao `handleAlertsRead`) sincroniza o estado "lido" do painel de Alerts (Bell) — consolidado aqui em vez de um arquivo `api/alerts-read.js` novo por causa do limite de 12 Serverless Functions do Vercel Hobby plan. Ver "Painel de Alerts" e Decisoes Tecnicas.

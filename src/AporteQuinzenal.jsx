@@ -18,12 +18,12 @@ import {
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
 import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
+import { initialDellPlan, validDellAmount } from "./lib/contributionDell.js";
 import AccumulatedInvestmentCard, { GrowthTooltip } from "./AccumulatedInvestmentCard.jsx";
 import { buildContributionHistory } from "./lib/contributionHistory.js";
 import {
   computeMonthlyInvested,
   computeHalfInvested,
-  contributionTxToUSD,
   reconcileContributionCapacityHistory,
 } from "./lib/contributionCapacity.js";
 
@@ -52,7 +52,6 @@ const LS_REALIZADO = "aporteRealizado"; // kept only to clean up on mount
 const DEFAULT_CONFIG = {
   monthlyFixed: "",
   dividendsLastMonth: "",
-  dellSale: "",
   extras: [],
 };
 
@@ -101,20 +100,6 @@ function loadConfigState() {
     }
   } catch {}
   return { config: { ...DEFAULT_CONFIG }, extrasWerePersisted: false };
-}
-
-// Sums DELL sell transactions for the given year+month.
-// Returns total USD sold.
-function computeDellSale(transactions, usdBrlRate, year, month) {
-  const prefix = `${year}-${String(month).padStart(2, "0")}-`;
-  let total = 0;
-  for (const tx of transactions) {
-    if (tx.side !== "sell") continue;
-    if ((tx.ticker || "").toUpperCase() !== "DELL") continue;
-    if (!tx.date || !tx.date.startsWith(prefix)) continue;
-    total += contributionTxToUSD(tx, usdBrlRate);
-  }
-  return total;
 }
 
 function authHeaders(auth) {
@@ -547,9 +532,73 @@ function MonthlyFixedRow({ value, prevMonthValue, valuesHidden, onSave }) {
   );
 }
 
+function DellPlanRow({ value, valuesHidden, onSave, loadError, saveError, onRetry }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState(null);
+  const buttonStyle = {
+    background: "transparent", border: `1px solid ${T.border}`, borderRadius: 4,
+    color: T.textDim, padding: "5px 6px", display: "inline-flex", alignItems: "center", cursor: "pointer",
+  };
+  function save() {
+    if (!validDellAmount(draft)) {
+      setError("Enter a non-negative amount.");
+      return;
+    }
+    onSave(Number(draft));
+    setEditing(false);
+    setError(null);
+  }
+  return <div style={{ padding: "9px 0", borderBottom: `1px solid ${T.borderSoft}` }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", flex: 1 }}>
+        <span style={{ fontFamily: FONT_BODY, fontSize: 13, color: T.textDim }}>DELL sale</span>
+        <InfoHelp title="DELL sale plan">
+          Manual USD amount for this month's contribution plan, using gross proceeds (shares × sale price), before fees.
+          November 2026 starts with $7,920 (24 shares × $330), funded from existing cash.
+          From December, enter the actual gross DELL sales from the previous month.
+          Each new month starts at zero. Saved edits and zero amounts apply only to this month.
+          This field does not create or change a transaction or cash balance.
+        </InfoHelp>
+      </div>
+      {value === null ? <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>{loadError ? "Unavailable" : "Loading…"}</span> :
+        editing ? <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: T.textFaint }}>$</span>
+          <input aria-label="DELL sale amount" type="number" inputMode="decimal" min="0" step="0.01" value={draft}
+            onChange={e => { setDraft(e.target.value); setError(null); }} autoFocus
+            onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") { setEditing(false); setError(null); } }}
+            style={{ ...INPUT_STYLE, width: 90 }} />
+          <button type="button" aria-label="Save DELL sale" onClick={save} style={{ ...buttonStyle, color: T.gold }}><Check size={12} /></button>
+          <button type="button" aria-label="Cancel DELL edit" onClick={() => { setEditing(false); setError(null); }} style={buttonStyle}><X size={12} /></button>
+        </div> : <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: value > 0 ? T.text : T.textFaint }}>{fmtUSD(value, valuesHidden)}</span>
+          <button type="button" aria-label="Edit DELL sale" onClick={() => { setDraft(String(value)); setEditing(true); }} style={buttonStyle}><Pencil size={12} /></button>
+          <button type="button" aria-label="Zero DELL sale" disabled={value === 0} onClick={() => onSave(0)} style={{ ...buttonStyle, opacity: value === 0 ? 0.4 : 1 }}><Trash2 size={12} /></button>
+        </div>}
+    </div>
+    {(error || loadError || saveError) && <div role="alert" style={{ fontFamily: FONT_BODY, fontSize: 12, color: T.red, marginTop: 6 }}>
+      {error || (loadError ? "Could not load the saved plan." : "Plan not saved. Retry before leaving this tab.")}
+      {!error && <button type="button" onClick={onRetry} style={{ ...buttonStyle, marginLeft: 8 }}>Retry</button>}
+    </div>}
+  </div>;
+}
+
+// Remount at a local calendar boundary, so an open tab cannot carry November's
+// manual amount (or an unsaved editor draft) into December.
+export default function Contributions(props) {
+  const [month, setMonth] = useState(currentMonthKey);
+  useEffect(() => {
+    const checkMonth = () => setMonth(currentMonthKey());
+    const timer = setInterval(checkMonth, 30000);
+    window.addEventListener("focus", checkMonth);
+    return () => { clearInterval(timer); window.removeEventListener("focus", checkMonth); };
+  }, []);
+  return <AporteQuinzenal key={month} {...props} month={month} />;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
+function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   const initialConfig = useRef(null);
   if (initialConfig.current === null) initialConfig.current = loadConfigState();
   const [config, setConfig] = useState(initialConfig.current.config);
@@ -583,6 +632,25 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   const [capacityHistory, setCapacityHistory] = useState({}); // { "YYYY-MM": snapshot }
   const [capacityLoaded, setCapacityLoaded] = useState(false);
   const capacitySaveQueue = useRef(Promise.resolve());
+  const [dellSale, setDellSale] = useState(null);
+  const [capacityLoadError, setCapacityLoadError] = useState(false);
+  const [capacitySaveError, setCapacitySaveError] = useState(false);
+  const [saveRetry, setSaveRetry] = useState(0);
+  const saveRevision = useRef(0);
+
+  function loadCapacity() {
+    setCapacityLoadError(false);
+    fetchContributionsHistory(auth)
+      .then(hist => {
+        setCapacityHistory(hist);
+        setDellSale(initialDellPlan(month, hist[month]));
+        setCapacityLoaded(true);
+      })
+      .catch(e => {
+        if (e.code === 401) { onAuthFail(); return; }
+        setCapacityLoadError(true);
+      });
+  }
 
   const [newExtraLabel, setNewExtraLabel] = useState("");
   const [newExtraValue, setNewExtraValue] = useState("");
@@ -594,16 +662,7 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
 
   useEffect(() => {
     localStorage.removeItem(LS_REALIZADO);
-    // Load contribution-capacity history (silent failure — table just stays empty).
-    fetchContributionsHistory(auth)
-      .then((hist) => {
-        setCapacityHistory(hist);
-        setCapacityLoaded(true);
-      })
-      .catch((e) => {
-        if (e.code === 401) { onAuthFail(); return; }
-        setCapacityLoaded(true);
-      });
+    loadCapacity();
     fetchTransactions(auth)
       .then(({ transactions: txs, bondIncome: bi }) => {
         setTransactions(txs);
@@ -730,20 +789,14 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     updateConfig({ extras: (config.extras || []).filter((_, idx) => idx !== i) });
   }
 
-  const dellSaleAuto = useMemo(() => {
-    if (!transactions.length) return 0;
-    const now = new Date();
-    return computeDellSale(transactions, usdBrlRate, now.getFullYear(), now.getMonth() + 1);
-  }, [transactions, usdBrlRate]);
-
   const planTotal = useMemo(() => {
     const fixed = parseFloat(config.monthlyFixed) || 0;
     const extrasSum = (config.extras || []).reduce(
       (s, e) => s + (parseFloat(e.value) || 0),
       0
     );
-    return fixed + (divLastMonth ?? 0) + dellSaleAuto + extrasSum;
-  }, [config, divLastMonth, dellSaleAuto]);
+    return fixed + (divLastMonth ?? 0) + (dellSale ?? 0) + extrasSum;
+  }, [config, divLastMonth, dellSale]);
 
   const halfPlanned = planTotal / 2;
   const days = daysInCurrentMonth();
@@ -790,12 +843,12 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
   // fields stay untouched and no missing month is invented. The same single
   // read-modify-write also keeps capacityHistory in sync for immediate display.
   useEffect(() => {
-    if (!capacityLoaded || txLoading || divLastMonth === null) return;
-    const month = currentMonthKey();
+    if (!capacityLoaded || txLoading || txError || divLastMonth === null || dellSale === null || month !== currentMonthKey()) return;
     const snapshot = {
       monthlyFixed: parseFloat(config.monthlyFixed) || 0,
       dividends: divLastMonth ?? 0,
-      dellSale: dellSaleAuto,
+      dellSale,
+      dellSaleMode: "manual",
       extras: (config.extras || []).map((e) => ({
         name: e.label,
         amount: parseFloat(e.value) || 0,
@@ -820,9 +873,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     // Config edits can retrigger this effect quickly. Serialize the complete
     // reconciliation + current snapshot write so an older response can never
     // overwrite a newer one in Redis.
+    const revision = ++saveRevision.current;
     capacitySaveQueue.current = capacitySaveQueue.current
       .then(() => putContributionsSnapshot(auth, month, snapshot, reconcileInvested))
-      .catch(() => {});
+      .then(() => { if (revision === saveRevision.current) setCapacitySaveError(false); })
+      .catch(() => { if (revision === saveRevision.current) setCapacitySaveError(true); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     capacityLoaded,
@@ -830,10 +885,11 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
     divLastMonth,
     config.monthlyFixed,
     config.extras,
-    dellSaleAuto,
+    dellSale,
     planTotal,
     half1Auto,
     half2Auto,
+    saveRetry,
   ]);
 
   // Months sorted most-recent first for the capacity table.
@@ -905,19 +961,14 @@ export default function AporteQuinzenal({ auth, onAuthFail, valuesHidden }) {
                 </div>
               )}
             </div>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
-              <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>DELL sale (this month)</span>
-              {txLoading ? (
-                <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
-              ) : (
-                <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                  <span style={{ fontFamily:FONT_MONO, fontSize:13, color: dellSaleAuto > 0 ? T.text : T.textFaint }}>
-                    {fmtUSD(dellSaleAuto, valuesHidden)}
-                  </span>
-                  <InfoHelp title="DELL sale source">DELL sales recorded in Transactions for the current month.</InfoHelp>
-                </div>
-              )}
-            </div>
+            <DellPlanRow
+              value={txLoading || divLastMonth === null || txError ? null : dellSale}
+              valuesHidden={valuesHidden}
+              onSave={setDellSale}
+              loadError={capacityLoadError || Boolean(txError)}
+              saveError={capacitySaveError}
+              onRetry={() => txError ? window.location.reload() : capacityLoadError ? loadCapacity() : setSaveRetry(v => v + 1)}
+            />
 
             {/* Dynamic extras */}
             {(config.extras || []).map((extra, i) => (
