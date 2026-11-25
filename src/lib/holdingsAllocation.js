@@ -26,11 +26,30 @@ export function exDellAllocation(holdings, usdBrlRate) {
       sharePrice: !isValue && sharePrice > 0 ? sharePrice : null, fxMissing: fx && !(usdBrlRate > 0), holding,
     };
   }).sort((a, b) => compare(a.ticker, b.ticker) || compare(a.id, b.id));
+  return normalizeAllocation(rows);
+}
+
+function normalizeAllocation(rows) {
   const total = rows.reduce((sum, row) => sum + (row.value ?? 0), 0);
   const targetSum = rows.reduce((sum, row) => sum + row.rawTarget, 0);
   const complete = rows.every(row => row.value != null);
-  for (const row of rows) row.target = targetSum > 0 ? row.rawTarget / targetSum : null;
-  return { rows, total, targetSum, complete };
+  return {
+    rows: rows.map(row => ({ ...row, target: targetSum > 0 ? row.rawTarget / targetSum : null })),
+    total, targetSum, complete,
+  };
+}
+
+export function withoutAllocationCash(allocation) {
+  const invested = allocation.rows.filter(row => row.classId !== "cash");
+  return invested.length === allocation.rows.length ? allocation : normalizeAllocation(invested);
+}
+
+export function rebalanceExclusionOptions(allocation) {
+  const targeted = allocation.rows.filter(row => row.classId !== "cash" && row.rawTarget > 0);
+  return {
+    tickers: [...new Set(targeted.map(row => row.ticker).filter(Boolean))].map(ticker => [ticker, ticker]),
+    classes: [...new Map(targeted.map(row => [row.classId, row.assetClass]))].sort(([a], [b]) => compare(a, b)),
+  };
 }
 
 export function groupExDellAllocation(allocation, byClass) {

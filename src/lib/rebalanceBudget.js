@@ -27,27 +27,7 @@ export function validatePreferencePatch(patch) {
   return result;
 }
 
-export function parseBudgetCents(input) {
-  const text = String(input ?? "").trim();
-  if (!/^\d+(\.\d{0,2})?$|^\.\d{1,2}$/.test(text)) return null;
-  const cents = Math.round(Number(text) * 100);
-  return Number.isSafeInteger(cents) && cents <= 100_000_000_000 ? cents : null;
-}
-
 export function dollarsToBudgetCents(amount) {
   const cents = Math.floor(Number(amount) * 100 + 1e-7);
   return Number.isSafeInteger(cents) ? Math.max(0, cents) : null;
-}
-
-export function chooseBudget({ mode, source, account, contributions, customBudget }) {
-  const available = account?.value == null ? null : dollarsToBudgetCents(account.value);
-  if (mode === "cash" && source !== "cash") return { error: "Available Cash requires Existing Cash.", available };
-  if ((mode === "current" || mode === "monthly") && !contributions) return { error: "Contribution plan is unavailable.", available };
-  const cents = mode === "cash" ? available : mode === "custom" ? customBudget :
-    dollarsToBudgetCents(mode === "current" ? contributions.currentRemaining : contributions.monthRemaining);
-  if (cents == null) return { error: mode === "custom" ? "Enter a valid custom budget." : "Select an eligible Cash account.", available };
-  if (source === "cash" && cents > 0 && (available == null || cents > available)) {
-    return { error: available == null ? "Select an eligible Cash account." : "Budget exceeds the selected Cash balance.", available, requested: cents };
-  }
-  return { cents, available };
 }

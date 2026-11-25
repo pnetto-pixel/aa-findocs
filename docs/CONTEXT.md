@@ -1,6 +1,30 @@
 # CONTEXT.md — aa-findocs
 
+## Card de rebalance compacto (v1.29.1)
+
+- O card usa botoes Standard ($1K) e Dynamic Ex-DELL, um menu de exclusoes
+  pesquisavel e o total de compras em verde no canto inferior direito. O
+  menu mostra so tickers com target positivo e classes com algum target
+  positivo no universo Ex-DELL sem Cash. Exclusoes e protecao de wash sale
+  continuam sincronizadas; exclusoes salvas ficam ocultas quando o target
+  correspondente deixa de existir.
+- Dynamic usa sempre o saldo do periodo de contribuicao atual para limitar
+  compras. O calculo normaliza somente os targets fora de DELL e Cash. A base
+  de avaliacao e o valor investido nesse universo mais o orcamento do periodo,
+  com o objetivo de alocacao para uso integral. Cash nao afeta os gaps, os
+  limites de compra ou a pontuacao da carteira; o grafico de Asset Allocation
+  continua incluindo Cash. Pesos de erro, limites de overshoot, lotes inteiros
+  e busca com refill seguem a v1.29.0.
+- Modos de orcamento e fontes de fundos foram removidos do card. Registros
+  antigos dessas preferencias continuam compativeis com a API e ficam sem
+  efeito na tela atual. Standard volta ao campo manual opcional e mantem
+  as regras originais de compra. Detalhes do periodo ficam em Contributions;
+  dados de contribuicao incompletos ou transacoes indisponiveis impedem
+  recomendacoes dinamicas.
+
 ## Holdings Ex-DELL e Dynamic Rebalance (v1.29.0)
+
+Nesta secao, os controles de orcamento e fonte descrevem a v1.29.0; ver a simplificacao acima.
 
 Regra permanente de arquitetura: Redis sob a identidade autenticada e a fonte
 autoritativa de dados financeiros e preferencias persistentes. Mudancas devem

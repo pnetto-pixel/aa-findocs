@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildDynamicModel, evaluateDynamicBasket, optimizeDynamic, OPTIMIZER_RULES, projectFunding } from "../src/lib/dynamicRebalance.js";
-import { exDellAllocation, groupExDellAllocation } from "../src/lib/holdingsAllocation.js";
+import { exDellAllocation, groupExDellAllocation, rebalanceExclusionOptions, withoutAllocationCash } from "../src/lib/holdingsAllocation.js";
 import { standardRebalance } from "../src/lib/standardRebalance.js";
 import { washSaleWarnings } from "../src/lib/taxHarvest.js";
 import { fixture, largeFixture, referenceCases } from "./fixtures/rebalance.mjs";
@@ -64,12 +64,47 @@ test("unknown amounts are distinct from known zero quantities; signed balances d
   assert.ok(signed.find(r => r.key === "cash").actual < 0);
 });
 
+test("contribution-only recommendations ignore Cash balances, targets, and missing Cash values", () => {
+  const { holdings } = fixture(referenceCases.shareTrap);
+  const cash = holdings.find(h => h.assetClass === "Cash");
+  const base = holdings.filter(h => h !== cash);
+  const settings = { budgetCents: 100000, excludeTickers: ["LOCKED"] };
+  const model = buildDynamicModel(exDellAllocation(base), settings);
+  const expected = optimizeDynamic(model);
+  assert.ok(expected.spent > 0 && expected.spent <= settings.budgetCents);
+  for (const overrides of [
+    { manualValue: 0, target: 20 },
+    { manualValue: 80000, target: 50 },
+    { manualValue: -1234, target: 0 },
+    { manualValue: null, target: 99, manualCurrency: "BRL" },
+  ]) {
+    const totals = exDellAllocation([...base, { ...cash, ...overrides }]);
+    const invested = withoutAllocationCash(totals);
+    near(model.denom, (invested.total + settings.budgetCents / 100) * 100);
+    assert.ok(totals.rows.some(h => h.classId === "cash"));
+    assert.ok(!invested.rows.some(h => h.classId === "cash"));
+    near(invested.rows.reduce((sum, h) => sum + h.target, 0), 1);
+    assert.deepEqual(optimizeDynamic(buildDynamicModel(totals, settings)), expected);
+  }
+});
+
+test("only targeted non-Cash Ex-DELL positions and their classes are listed as exclusions", () => {
+  const { holdings } = fixture({
+    budget: 1000, assets: [["AAA", "Stocks", 400, 100], ["BBB", "Bonds", 600, 100]],
+  });
+  holdings.push({ id: "untargeted", ticker: "UN", assetClass: "Alternative", type: "auto", price: 20, qty: 30, target: 0 });
+  assert.deepEqual(rebalanceExclusionOptions(exDellAllocation(holdings)), {
+    tickers: [["AAA", "AAA"], ["BBB", "BBB"]],
+    classes: [["bonds", "Bonds"], ["stocks", "Stocks"]],
+  });
+});
+
 test("existing cash and new deposits conserve the correct total and Cash", () => {
   assert.deepEqual(projectFunding(100000, 5000, 99881, "cash", 81001), { total: 100000, cash: 4189.99 });
   assert.deepEqual(projectFunding(100000, 5000, 99881, "new", 81001), { total: 100998.81, cash: 5188.8 });
   const out = fixture(referenceCases.shareTrap);
   const m = modelFor(out);
-  const cash = m.cash;
+  const cash = m.funding.cash;
   const withDeposit = modelFor({ ...out, settings: { ...out.settings, fundingSource: "new" } });
   near(m.funding.total + 1000, withDeposit.funding.total);
   near(cash + 1000, withDeposit.funding.cash);
