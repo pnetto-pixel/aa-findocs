@@ -1,5 +1,13 @@
 # CONTEXT.md — aa-findocs
 
+## Dividendos no plano mensal (v1.29.3)
+
+Contributions mostra o valor disponível com o status Provisional enquanto a
+consulta das datas de pagamento estiver incompleta ou a atualização falhar
+com dados em cache. Unavailable indica uma falha sem valor disponível. O
+snapshot provisório continua sinalizado para impedir que o rebalanceamento
+dinâmico o use como orçamento definitivo.
+
 ## Resumo de Holdings no escopo Ex-DELL (v1.29.2)
 
 Em Ex-DELL, Total Value mostra o valor e a contagem de posicoes sem DELL e o
