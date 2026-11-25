@@ -597,7 +597,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
   const [bondIncome, setBondIncome] = useState([]);
   const [txLoading, setTxLoading] = useState(true);
   const [txError, setTxError] = useState(null);
-  const [divLastMonth, setDivLastMonth] = useState(null); // null = loading
+  const [divLastMonth, setDivLastMonth] = useState(null);
   const [divPlanComplete, setDivPlanComplete] = useState(null);
 
   const [groupBy, setGroupBy] = useState("Month");
@@ -672,7 +672,10 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
         // instantly instead of "Loading…"; the fresh fetch always runs in the
         // background and silently overwrites the KPI if the value differs.
         const applyDivData = (data, authoritative) => {
-          if (!data) return;
+          if (!Array.isArray(data?.events)) {
+            if (authoritative) setDivPlanComplete(false);
+            return;
+          }
           const now = new Date();
           const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
           const prefix = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, "0")}-`;
@@ -694,7 +697,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
             .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
             .reduce((sum, e) => sum + Number(e.amount), 0);
           setDivLastMonth(apiTotal + bondTotal);
-          if (authoritative) setDivPlanComplete(Array.isArray(data.events) && data.meta?.payDatesWarm !== false);
+          if (authoritative) setDivPlanComplete(data.meta?.payDatesWarm !== false);
         };
         const { cached, fresh } = fetchDividendsCached({
           auth,
@@ -705,7 +708,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
         if (cached) applyDivData(cached, false);
         fresh
           .then(data => applyDivData(data, true))
-          .catch(() => { setDivPlanComplete(false); if (!cached) setDivLastMonth(0); });
+          .catch(() => setDivPlanComplete(false));
       })
       .catch((e) => {
         if (e.code === 401) {
@@ -786,7 +789,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
   // fields stay untouched and no missing month is invented. The same single
   // read-modify-write also keeps capacityHistory in sync for immediate display.
   useEffect(() => {
-    if (!capacityLoaded || txLoading || txError || divPlanComplete === null || divLastMonth === null || dellSale === null || month !== currentMonthKey()) return;
+    if (!capacityLoaded || txLoading || txError || divPlanComplete === null || dellSale === null || month !== currentMonthKey()) return;
     const snapshot = {
       monthlyFixed: parseFloat(config.monthlyFixed) || 0,
       dividends: divLastMonth ?? 0,
@@ -911,21 +914,25 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate
             />
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
               <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>Dividends (last month)</span>
-              {divPlanComplete === false ? (
-                <span role="status" style={{ fontSize: 12, color: T.red }}>Unavailable</span>
-              ) : divLastMonth === null ? (
-                <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
+              {divLastMonth === null ? (
+                <span role="status" style={{ fontSize: 12, color: divPlanComplete === false ? T.red : T.textDim }}>
+                  {divPlanComplete === false ? "Unavailable" : "Loading…"}
+                </span>
               ) : (
                 <div style={{ display:"flex", alignItems:"center", gap:4 }}>
                   <span style={{ fontFamily:FONT_MONO, fontSize:13, color: divLastMonth > 0 ? T.text : T.textFaint }}>
                     {fmtUSD(divLastMonth, valuesHidden)}
                   </span>
-                  <InfoHelp title="Dividends source">Received dividends from the previous month, from the Dividends tab.</InfoHelp>
+                  {divPlanComplete === false && <span role="status" style={{ fontSize: 11, color: T.gold }}>Provisional</span>}
+                  <InfoHelp title="Dividends source">
+                    Received dividends from the previous month, from the Dividends tab.
+                    {divPlanComplete === false && " The amount uses the available payment data and may change after refresh."}
+                  </InfoHelp>
                 </div>
               )}
             </div>
             <DellPlanRow
-              value={txLoading || divLastMonth === null || txError ? null : dellSale}
+              value={txLoading || divPlanComplete === null || txError ? null : dellSale}
               valuesHidden={valuesHidden}
               onSave={value => { if (!planConflict.current) setDellSale(value); }}
               loadError={capacityLoadError || Boolean(txError)}

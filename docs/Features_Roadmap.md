@@ -4,6 +4,8 @@
 
 ## ✅ Concluídos
 
+- **Dividendos em Contributions (v1.29.3):** exibe o valor disponível como provisório quando as datas de pagamento ainda estão incompletas ou a atualização falha com dados em cache. Unavailable fica reservado para falhas sem valor disponível.
+
 - **Resumo Ex-DELL em Holdings (v1.29.2):** Total Value e a variacao diaria de Allocation acompanham o seletor Ex-DELL. A contagem e os targets exibidos usam o mesmo escopo. Os seletores ficam lado a lado no celular e Exclusions mostra os nomes ativos.
 
 - **Card de rebalance compacto (v1.29.1):** botoes de estrategia, menu unico com exclusoes pesquisaveis por ticker/classe com target e total de compras. Dynamic usa apenas o saldo do periodo de contribuicao e deixa Cash fora do calculo de alocacao. Detalhes do periodo permanecem em Contributions. O seletor Ex-DELL tambem atualiza Portfolio Map, Holdings (pesos/gaps), Standard e Tax Harvesting.
