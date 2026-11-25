@@ -6,8 +6,12 @@ export const isValueHolding = h => h.type === "manual" && h.manualMode === "valu
 const number = value => value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
+export function holdingsForAllocationScope(holdings, scope) {
+  return scope === "ex-dell" ? holdings.filter(h => tickerKey(h.ticker) !== "DELL") : holdings;
+}
+
 export function exDellAllocation(holdings, usdBrlRate) {
-  const rows = holdings.filter(h => tickerKey(h.ticker) !== "DELL").map(holding => {
+  const rows = holdingsForAllocationScope(holdings, "ex-dell").map(holding => {
     const cash = isCashHolding(holding);
     const assetClass = cash ? "Cash" : String(holding.assetClass || "Uncategorized").trim() || "Uncategorized";
     const sharePrice = number(holding.type === "manual" ? holding.manualPrice : holding.price);
@@ -26,11 +30,40 @@ export function exDellAllocation(holdings, usdBrlRate) {
       sharePrice: !isValue && sharePrice > 0 ? sharePrice : null, fxMissing: fx && !(usdBrlRate > 0), holding,
     };
   }).sort((a, b) => compare(a.ticker, b.ticker) || compare(a.id, b.id));
+  return normalizeAllocation(rows);
+}
+
+function normalizeAllocation(rows) {
   const total = rows.reduce((sum, row) => sum + (row.value ?? 0), 0);
   const targetSum = rows.reduce((sum, row) => sum + row.rawTarget, 0);
   const complete = rows.every(row => row.value != null);
-  for (const row of rows) row.target = targetSum > 0 ? row.rawTarget / targetSum : null;
-  return { rows, total, targetSum, complete };
+  return {
+    rows: rows.map(row => ({ ...row, target: targetSum > 0 ? row.rawTarget / targetSum : null })),
+    total, targetSum, complete,
+  };
+}
+
+export function withoutAllocationCash(allocation) {
+  const invested = allocation.rows.filter(row => row.classId !== "cash");
+  return invested.length === allocation.rows.length ? allocation : normalizeAllocation(invested);
+}
+
+export function rebalanceExclusionOptions(allocation) {
+  const targeted = allocation.rows.filter(row => row.classId !== "cash" && row.rawTarget > 0);
+  return {
+    tickers: [...new Set(targeted.map(row => row.ticker).filter(Boolean))].map(ticker => [ticker, ticker]),
+    classes: [...new Map(targeted.map(row => [row.classId, row.assetClass]))].sort(([a], [b]) => compare(a, b)),
+  };
+}
+
+function allocationPercentages(allocation, value, weight) {
+  const target = allocation.targetSum > 0 ? weight * 100 : null;
+  const actual = allocation.complete && allocation.total > 0 ? value / allocation.total * 100 : null;
+  return { target, actual, gap: actual == null || target == null ? null : actual - target };
+}
+
+export function allocationByHolding(allocation) {
+  return new Map(allocation.rows.map(row => [row.holding, allocationPercentages(allocation, row.value, row.target)]));
 }
 
 export function groupExDellAllocation(allocation, byClass) {
@@ -51,9 +84,6 @@ export function groupExDellAllocation(allocation, byClass) {
     }
     groups.set(key, group);
   }
-  return [...groups.values()].sort((a, b) => compare(a.label, b.label) || compare(a.key, b.key)).map(g => {
-    const target = allocation.targetSum > 0 ? g.target * 100 : null;
-    const actual = allocation.complete && allocation.total > 0 ? g.value / allocation.total * 100 : null;
-    return { ...g, target, actual, gap: actual == null || target == null ? null : actual - target };
-  });
+  return [...groups.values()].sort((a, b) => compare(a.label, b.label) || compare(a.key, b.key))
+    .map(group => ({ ...group, ...allocationPercentages(allocation, group.value, group.target) }));
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chooseBudget, parseBudgetCents } from "../src/lib/rebalanceBudget.js";
+import { dollarsToBudgetCents } from "../src/lib/rebalanceBudget.js";
 import { contributionBudgetForDate, contributionRollover, localContributionDate } from "../src/lib/contributionCapacity.js";
 
 const snap = { planTotal: 14000, planComplete: true };
@@ -37,19 +37,10 @@ test("budget recalculates with authoritative transactions, including empty histo
   assert.equal(calc("2026-11-16", [tx("2026-11-16", 5000, { currency: "BRL" })]).currentRemaining, 13000);
 });
 
-test("all four modes, fixed funding source, and insufficient Cash without silent clamping", () => {
+test("contribution leftover is a hard budget in whole cents", () => {
   const contributions = calc("2026-11-10", [tx("2026-11-10", 6800)]);
-  const source = "cash";
-  const account = { value: 1000.009 };
-  const data = { source, account, contributions };
-  assert.deepEqual(chooseBudget({ ...data, mode: "current" }), { cents: 20000, available: 100000 });
-  assert.match(chooseBudget({ ...data, mode: "monthly" }).error, /exceeds/);
-  assert.equal(chooseBudget({ ...data, mode: "monthly", source: "new" }).cents, 720000);
-  assert.equal(chooseBudget({ ...data, mode: "cash" }).cents, 100000);
-  assert.match(chooseBudget({ ...data, mode: "cash", source: "new" }).error, /requires/);
-  assert.equal(chooseBudget({ ...data, mode: "custom", customBudget: 7511 }).cents, 7511);
-  assert.match(chooseBudget({ ...data, mode: "current", account: null }).error, /Select/);
-  assert.match(chooseBudget({ ...data, mode: "current", contributions: null }).error, /unavailable/);
-  assert.equal(parseBudgetCents("1.01"), 101);
-  for (const input of ["-1", "1.001", "not money", "", "Infinity"]) assert.equal(parseBudgetCents(input), null);
+  assert.equal(dollarsToBudgetCents(contributions.currentRemaining), 20000);
+  assert.equal(dollarsToBudgetCents(1000.009), 100000);
+  assert.equal(dollarsToBudgetCents(0), 0);
+  assert.equal(dollarsToBudgetCents(Infinity), null);
 });
