@@ -55,3 +55,38 @@ export function reconcileContributionCapacityHistory(history, transactions, usdB
   }
   return reconciled;
 }
+
+// Shared by the Contributions display and the Holdings purchase budget.
+export function contributionRollover(planTotal, half1Auto, half2Auto, day) {
+  const half1Target = planTotal / 2;
+  const half1Deficit = Math.max(0, half1Target - half1Auto);
+  const half2Target = half1Target + (day > 15 ? half1Deficit : 0);
+  const half1Remaining = Math.max(0, half1Target - half1Auto);
+  const half2Remaining = Math.max(0, half2Target - half2Auto);
+  const totalInvested = half1Auto + half2Auto;
+  const monthRemaining = Math.max(0, planTotal - totalInvested);
+  const half = day <= 15 ? 1 : 2;
+  return {
+    half1Target, half2Target, half1Deficit, half1Remaining, half2Remaining, totalInvested, monthRemaining, half,
+    currentTarget: half === 1 ? half1Target : half2Target,
+    currentInvested: half === 1 ? half1Auto : half2Auto,
+    currentRemaining: Math.min(monthRemaining, half === 1 ? half1Remaining : half2Remaining),
+  };
+}
+
+export function localContributionDate(date = new Date()) {
+  return [date.getFullYear(), date.getMonth() + 1, date.getDate()].map(x => String(x).padStart(2, "0")).join("-");
+}
+
+// Holdings only consumes a completed server snapshot for the current month.
+export function contributionBudgetForDate(snapshot, transactions, usdBrlRate, date) {
+  if (!snapshot || snapshot.planComplete === false || !Number.isFinite(snapshot.planTotal) ||
+      snapshot.planTotal < 0 || !Array.isArray(transactions)) return null;
+  const month = date.slice(0, 7);
+  if (!(usdBrlRate > 0) && transactions.some(t => t?.date?.slice(0, 7) === month &&
+      t.currency === "BRL" && (t.side === "buy" || t.assetClass === "Bank Bonds") &&
+      String(t.ticker || "").trim().toUpperCase() !== "DELL")) return null;
+  const [year, monthNumber, day] = date.split("-").map(Number);
+  const { half1, half2 } = computeHalfInvested(transactions, usdBrlRate, year, monthNumber);
+  return { ...contributionRollover(snapshot.planTotal, half1, half2, day), monthlyTarget: snapshot.planTotal, month };
+}

@@ -53,8 +53,8 @@ const redis = {
   async get(key) { return key.endsWith(':fidelity-pending') ? stored : null; },
   async set(key, value) { stored = value; },
 };
-mock.module('../lib/auth.js', { exports: { authenticate: async () => ({ ok: true, admin: true, storageKey: 'test:holdings' }) } });
-mock.module('../lib/redis.js', { exports: { getRedis: () => redis } });
+mock.module('../lib/auth.js', { namedExports: { authenticate: async () => ({ ok: true, admin: true, storageKey: 'test:holdings' }) } });
+mock.module('../lib/redis.js', { namedExports: { getRedis: () => redis } });
 const { default: handler } = await import('../api/fidelity-pending.js');
 const originalFetch = globalThis.fetch;
 const originalUrl = process.env.SIMPLEFIN_ACCESS_URL;

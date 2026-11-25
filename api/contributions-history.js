@@ -40,7 +40,9 @@
 // PUT { month: "YYYY-MM", value: number }: { ok, savedAt }
 // Storage: auth.storageKey with ":holdings" swapped for ":networth-history".
 
+import { randomUUID } from 'node:crypto';
 import { getRedis } from '../lib/redis.js';
+import { compareAndSet } from '../lib/redis-compare-and-set.js';
 import { authenticate } from '../lib/auth.js';
 
 function historyKeyFromAuth(auth) {
@@ -205,6 +207,11 @@ async function handleContributionsHistory(req, res, auth) {
       const month = body.month;
       const snapshot = body.snapshot;
       const reconcileInvested = body.reconcileInvested;
+      const conditional = Object.hasOwn(body, 'expectedPlanRevision');
+      const expected = body.expectedPlanRevision;
+      if (conditional && expected !== null && (typeof expected !== "string" || !expected || expected.length > 64)) {
+        return res.status(400).json({ error: "Invalid plan revision" });
+      }
       if (typeof month !== 'string' || !MONTH_RE.test(month)) {
         return res.status(400).json({ error: 'month "YYYY-MM" required' });
       }
@@ -218,8 +225,9 @@ async function handleContributionsHistory(req, res, auth) {
 
       // Read-modify-write the map so past months are preserved.
       let history = {};
+      let prev;
       try {
-        const prev = await redis.get(storageKey);
+        prev = await redis.get(storageKey);
         if (prev) {
           const parsed = JSON.parse(prev);
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -228,7 +236,12 @@ async function handleContributionsHistory(req, res, auth) {
               : parsed;
           }
         }
-      } catch {}
+      } catch (err) {
+        if (conditional) throw err;
+      }
+      const currentPlanRevision = history[month]?.planRevision || history[month]?.savedAt || null;
+      const conflict = () => res.status(409).json({ error: "Contribution plan changed on another device." });
+      if (conditional && currentPlanRevision !== expected) return conflict();
 
       // Refresh only realized values on snapshots which already exist. This
       // deliberately cannot create historical planning rows.
@@ -239,10 +252,15 @@ async function handleContributionsHistory(req, res, auth) {
       }
 
       const savedAt = new Date().toISOString();
-      history[month] = { ...snapshot, savedAt };
-
-      await redis.set(storageKey, JSON.stringify(history));
-      return res.status(200).json({ ok: true, savedAt });
+      const planRevision = conditional ? randomUUID() : null;
+      history[month] = { ...snapshot, savedAt, ...(planRevision && { planRevision }) };
+      const next = JSON.stringify(history);
+      if (conditional) {
+        if (!await compareAndSet(redis, storageKey, prev, next)) return conflict();
+      } else {
+        await redis.set(storageKey, next);
+      }
+      return res.status(200).json({ ok: true, savedAt, ...(planRevision && { planRevision }) });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });

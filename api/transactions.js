@@ -59,6 +59,7 @@ export default async function handler(req, res) {
       }
       return res.status(200).json({
         exists,
+        historyAvailable: !raw || exists,
         transactions: transactions || [],
         bondIncome,
         splitEvents,

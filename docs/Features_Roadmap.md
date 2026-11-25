@@ -3,6 +3,8 @@
 > **Ver também:** [`docs/CONTEXT.md`](./CONTEXT.md) — contexto completo do projeto, stack, decisões técnicas e regras de operação do Claude.
 
 ## ✅ Concluídos
+
+- **Holdings Ex-DELL + Dynamic Rebalance (v1.29.0, em revisao):** Allocation Ex-DELL normaliza targets com Cash. Rebalanceamento incremental deterministico, orcamento por plano mensal/quinzena ou manual, simulacao Existing Cash/New Contribution e exclusoes independentes. Standard preservado. Preferencias sincronizadas no Redis com controle de revisao, sem funcao serverless nova. Ver metodologia, testes e limites em [CONTEXT.md](./CONTEXT.md#holdings-ex-dell-e-dynamic-rebalance-v1290).
 - **DELL manual em Contributions (v1.28.0):** editar/salvar/cancelar e zerar por mes, valor bruto; novembro/2026 inicia com US$ 7.920 (24 × US$ 330) e meses seguintes iniciam em zero para preenchimento manual com a venda efetiva do mes anterior. Snapshot `dellSaleMode: "manual"` restaura valores/zero sem puxar Transactions nem copiar outro mes; planejamento historico preservado. Falhas de leitura/escrita com Retry e protecao contra sobrescrever defaults. Testes de endpoint com Redis simulado, suites de capacity/extras/harvesting, build e QA Chromium mobile/desktop aprovados; sem Redis real/Safari real.
 - **Separadores monetarios no Tax (v1.27.2):** milhares e duas casas decimais no ganho/perda e demais valores monetarios do editor, preservando sinais/moedas/mascara e calculos.
 - **Last buy em Recent purchases (v1.27.1):** ultima compra conhecida ao lado do numero de lotes/ticker, data completa no Info e distincao entre janela de compra anterior e prazo de recompra apos venda (WASH). Sem alteracao de calculos.

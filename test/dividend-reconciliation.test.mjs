@@ -20,9 +20,9 @@ test('cent tolerance, combined account credits and one-to-one closest matching',
  assert.equal(reconcileDividendPayments([api('2026-10-31',15.02),broker('2026-11-02')]).matchedCount,0);
 });
 
-mock.module('../lib/auth.js',{exports:{authenticate:async()=>({ok:true,storageKey:'test:holdings'})}});
+mock.module('../lib/auth.js',{namedExports:{authenticate:async()=>({ok:true,storageKey:'test:holdings'})}});
 const writes=[];
-mock.module('../lib/redis.js',{exports:{getRedis:()=>({get:async key=>key==='dividends:paydates:v1:JPM'?JSON.stringify([{exDate:'2026-10-01',payDate:'2026-10-31'}]):null,set:async (...args)=>writes.push(args)})}});
+mock.module('../lib/redis.js',{namedExports:{getRedis:()=>({get:async key=>key==='dividends:paydates:v1:JPM'?JSON.stringify([{exDate:'2026-10-01',payDate:'2026-10-31'}]):null,set:async (...args)=>writes.push(args)})}});
 const {default:handler}=await import('../api/dividends.js');
 const originalFetch=globalThis.fetch;
 after(()=>globalThis.fetch=originalFetch);

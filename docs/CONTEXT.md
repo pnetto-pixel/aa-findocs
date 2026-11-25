@@ -1,5 +1,79 @@
 # CONTEXT.md — aa-findocs
 
+## Holdings Ex-DELL e Dynamic Rebalance (v1.29.0)
+
+Regra permanente de arquitetura: Redis sob a identidade autenticada e a fonte
+autoritativa de dados financeiros e preferencias persistentes. Mudancas devem
+sincronizar entre dispositivos pelo fluxo autenticado. Armazenamento do browser
+pode funcionar como cache ou estado de sessao, sem autoridade. Para novos
+recursos, prefira reutilizar endpoints e proteja escritas concorrentes com
+revisoes e compare-and-set atomico. Ver tambem [CLAUDE.md](../CLAUDE.md).
+
+- Allocation abre em Total Portfolio / By Class na ausencia de preferencias.
+  Ex-DELL exclui apenas DELL, inclui Cash e normaliza os targets restantes. A
+  tela deriva valores e gaps, sem editar holdings ou targets. Valor ou cambio
+  faltando deixa os pesos efetivos indisponiveis. Saldos negativos aparecem na
+  legenda, sem fatias negativas no donut.
+- Standard ($1K) continua padrao, com New Contribution e campo opcional em
+  branco. Usa a mesma ordem, banda $900–$1.100, excecao de uma cota acima da
+  banda e tratamento value-only. A selecao explicita de Existing Cash fornece
+  um orcamento finito sem aumentar o denominador.
+- Dynamic usa Ex-DELL independentemente do grafico. O padrao Current
+  Contribution Leftover usa a metade atual do plano (1–15 ou 16–fim do mes),
+  incluindo o rollover existente. O resultado e limitado ao restante mensal,
+  inclusive apos excesso de compras na primeira metade. Monthly Leftover usa
+  todo o restante mensal. Custom Amount usa o valor informado e salvo pelo
+  usuario. Available Cash usa a conta selecionada e exige Existing Cash.
+- O orcamento automatico le apenas o snapshot do mes corrente no Redis e
+  calcula o realizado com as transacoes atuais pelo mesmo helper de
+  Contributions. O primeiro snapshot do mes e gravado pela aba Contributions.
+  Sem snapshot completo, historico disponivel ou cambio necessario, o modo
+  automatico aguarda. Contributions restaura fixed/extras do snapshot atual
+  (ou ultimo plano anterior em um mes novo), preserva a regra manual DELL e
+  protege escritas do plano com revisao. Rascunhos antigos que so existiam em
+  `aporteConfig` local nao sao importados.
+- Existing Cash limita compras ao saldo USD da conta selecionada. O
+  denominador fica fixo e Cash cai pelo gasto estimado. New Contribution
+  acrescenta o deposito inteiro ao denominador e deixa o residual em Cash.
+  Um saldo insuficiente gera erro explicito, sem trocar fonte nem reduzir o
+  orcamento. Gaps antes das compras ja incluem o deposito na simulacao.
+- A pontuacao em pontos-base e `3*erro absoluto por classe + erro absoluto por
+  holding fora de Cash + penalidade convexa de deficit + R +
+  2*max(0,R-0.05*B) + numero de ordens`. R e o residual, B e o orcamento.
+  As quebras do deficit sao 1/3 e 2/3 do gap inicial de cada elegivel, com
+  peso 0,5 em cada quebra. A carteira final nao pode piorar a soma ponderada
+  dos gaps absolutos em relacao a nao comprar. Overshoot por ativo: menor
+  entre 50 bp e 25% do orcamento. Por classe: menor entre 25 bp e 15%,
+  contando a partir da posicao atual para classe ja acima do alvo. Bank Bonds
+  e BRA Fixed Income value-only recebem valores em USD ate o gap e aplicam
+  minimo/incremento se o holding informar `purchaseMinimumUSD` ou
+  `purchaseIncrementUSD`. Sem essa informacao, a sugestao e em centavos e
+  precisa ser ajustada a denominacao real do produto.
+- O modulo puro escolhe o melhor ganho marginal por dolar e reavalia os gaps
+  depois de cada compra. Testa blocos de cotas perto das quebras da pontuacao
+  para que a taxa fixa por ordem nao descarte compras de varias cotas. Remove
+  cada uma de ate quatro ordens maiores, independentemente, refaz o
+  preenchimento e mantem a melhor carteira. A busca tem limite fixo de
+  avaliacoes. Nao promete solucao global. Usa cotacoes atuais disponiveis e
+  arredondamento conservador de centavos; precos, cambio e custos na execucao
+  podem diferir. A aplicacao so sugere compras.
+- As preferencias usam `GET/PUT /api/holdings?resource=preferences` e a chave
+  derivada `:holdings-preferences:v1`, separada de holdings/targets. O cliente
+  recarrega no login, foco e Refresh All. Revisoes atomicas rejeitam alteracoes
+  obsoletas e a UI pede nova leitura em falha de escrita. Existing Cash/
+  New Contribution, modos, conta, custom amount, estrategia, grafico e
+  exclusoes sincronizam entre dispositivos. Ticker e classe sao independentes
+  e iniciam vazios. Wash sale inicia ligado, usa o WASH existente e pausa o
+  calculo quando o historico nao esta disponivel. O aviso nao comprova
+  conformidade fiscal.
+- Validacao sintetica: fixtures pequenas com referencia por enumeracao
+  exaustiva. Versoes de 40 holdings ($470k total, $5k de orcamento) e 60
+  ($600k, $10k), ambas com DELL a $150k, usaram 99,89% e 99,71% do
+  orcamento, respectivamente. Em Chromium, 25 execucoes por fixture deram
+  medianas de 1,9 ms e 4,5 ms (p95 de 5,7 ms e 13,2 ms) para montar e resolver
+  o modelo no ambiente de QA. Os testes de interface em 390 e 1280 px usam
+  APIs simuladas e nao substituem verificacao em iPhone real ou Redis de producao.
+
 ## DELL manual no plano de Contributions (v1.28.0, nov/2026)
 
 Decisao explicita do usuario: manter somente edicao manual do valor DELL, usando valor bruto (quantidade × preco), sem taxas e sem importar automaticamente vendas de Transactions. A estimativa de novembro nao foi cadastrada como transacao. A linha `DELL sale` permite editar/salvar/cancelar ou zerar; os totais mensal/quinzenal e o snapshot usam exatamente esse valor. Explicacoes ficam no InfoHelp.
