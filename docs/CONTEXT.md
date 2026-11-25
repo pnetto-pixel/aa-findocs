@@ -1,5 +1,14 @@
 # CONTEXT.md — aa-findocs
 
+## Resumo de Holdings no escopo Ex-DELL (v1.29.2)
+
+Em Ex-DELL, Total Value mostra o valor e a contagem de posicoes sem DELL e o
+total dos targets normalizados, incluindo Cash. O KPI diario de Allocation e
+identificado como Ex-DELL e usa apenas as posicoes desse escopo com cotacao
+e fechamento anterior. O S&P continua sendo o mesmo benchmark. Sem valores
+suficientes, o resumo mostra indisponibilidade. Snapshots de patrimonio
+continuam usando o total do portfolio.
+
 ## Card de rebalance compacto (v1.29.1)
 
 - O card usa botoes Standard ($1K) e Dynamic Ex-DELL, um menu de exclusoes

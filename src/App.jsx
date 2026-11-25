@@ -1957,6 +1957,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const exDell = useMemo(() => exDellAllocation(holdings, rebalanceFx), [holdings, rebalanceFx]);
   const displayAllocations = useMemo(() => isExDell ? allocationByHolding(exDell) : null, [isExDell, exDell]);
   const displayTotal = isExDell ? (exDell.complete ? exDell.total : null) : totalValue;
+  const displayTarget = isExDell ? (exDell.targetSum > 0 ? 100 : null) : totalTarget;
 
   const deltaColorMap = useMemo(() => {
     const ranked = displayHoldings
@@ -3144,7 +3145,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         actualSlices: signed ? [] : groups.filter(g => g.actual > 0).map(g => ({
           key: g.key, label: g.label, pct: g.actual, value: g.value, color: colorMap[g.key],
         })),
-        totalTarget: exDell.targetSum > 0 ? 100 : null, totalActualValue: exDell.complete ? exDell.total : null,
+        totalTarget: displayTarget, totalActualValue: displayTotal,
         portfolioDayChange: dayValue > 0 ? groups.reduce((sum, g) => sum + g.dayWeighted, 0) / dayValue : null,
       };
     }
@@ -3243,7 +3244,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       dayChangeMap,
       portfolioDayChange,
     };
-  }, [holdings, chartGrouping, allocationView, exDell, usdBrlRate]);
+  }, [holdings, chartGrouping, allocationView, exDell, displayTarget, displayTotal, usdBrlRate]);
 
   // Bell badge: unreviewed splits + unread alerts.
   const unreadAlertCount = alertLog.filter((a) => !a.read).length;
@@ -4051,6 +4052,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           <>
           {/* Total value card */}
           <section
+            aria-label={isExDell ? "Ex-DELL total value" : "Total Value"}
             style={{
               background: T.card,
               border: `1px solid ${T.borderSoft}`,
@@ -4081,7 +4083,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 marginBottom: 6,
               }}
             >
-              Total Value
+              Total Value{isExDell ? " · Ex-DELL" : ""}
             </div>
             <div
               style={{
@@ -4093,7 +4095,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 color: T.text,
               }}
             >
-              {maskMoney(totalValue, valuesHidden)}
+              {displayTotal == null ? "—" : maskMoney(displayTotal, valuesHidden)}
             </div>
             <div
               style={{
@@ -4105,13 +4107,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 fontFamily: FONT_MONO,
               }}
             >
-              <span>{holdings.length} {holdings.length === 1 ? "position" : "positions"}</span>
-              {totalTarget > 0 && (
+              <span>{displayHoldings.length} {displayHoldings.length === 1 ? "position" : "positions"}</span>
+              {displayTarget > 0 && (
                 <span>
-                  Target alloc: <span style={{ color: T.text }}>{fmtPct(totalTarget)}</span>
-                  {Math.abs(totalTarget - 100) > 0.1 && (
+                  Target alloc: <span style={{ color: T.text }}>{fmtPct(displayTarget)}</span>
+                  {Math.abs(displayTarget - 100) > 0.1 && (
                     <span style={{ color: T.gold, marginLeft: 6 }}>
-                      ({totalTarget > 100 ? "+" : ""}{(totalTarget - 100).toFixed(1)} from 100)
+                      ({displayTarget > 100 ? "+" : ""}{(displayTarget - 100).toFixed(1)} from 100)
                     </span>
                   )}
                 </span>
@@ -4157,9 +4159,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           gap: 10,
                         }}
                       >
-                        Allocation
-                        {chartData.portfolioDayChange != null && (
-                          <span
+                        <span>Allocation{isExDell ? " · Ex-DELL" : ""}</span>
+                        {(chartData.portfolioDayChange != null || isExDell) && (
+                          <output
+                            aria-label={isExDell ? "Ex-DELL day change" : "Portfolio day change"}
                             style={{
                               textTransform: "none",
                               letterSpacing: "0.04em",
@@ -4175,7 +4178,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               gap: 3,
                             }}
                           >
-                            {chartData.portfolioDayChange > 0 ? (
+                            {chartData.portfolioDayChange == null ? null : chartData.portfolioDayChange > 0 ? (
                               <TrendingUp size={10} strokeWidth={2.5} />
                             ) : chartData.portfolioDayChange < 0 ? (
                               <TrendingDown size={10} strokeWidth={2.5} />
@@ -4183,8 +4186,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               <Minus size={10} strokeWidth={2.5} />
                             )}
                             {chartData.portfolioDayChange > 0 ? "+" : ""}
-                            {chartData.portfolioDayChange.toFixed(2)}%
-                          </span>
+                            {fmtPct(chartData.portfolioDayChange)}
+                          </output>
                         )}
                         {sp500 && sp500.dayChangePct != null && (
                           <span
@@ -4251,7 +4254,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         onClick={() => settings.save({ allocationView: "total" })} />
                       <ToggleButton label="Ex-DELL" active={allocationView === "ex-dell"} disabled={settings.phase !== "ready"}
                         onClick={() => settings.save({ allocationView: "ex-dell" })} />
-                      <InfoHelp title="Allocation scope">Ex-DELL hides DELL from the cards below and scales the remaining allocation targets, including Cash, to 100%. Target edits still use the saved Total Portfolio percentages.</InfoHelp>
+                      <InfoHelp title="Allocation scope">Ex-DELL hides DELL from the Holdings summaries and scales the remaining allocation targets, including Cash, to 100%. Target edits still use the saved Total Portfolio percentages.</InfoHelp>
                     </div>
                     {allocationView === "ex-dell" && !exDell.complete && <div role="status" style={{ color: T.textDim, fontSize: 12, marginBottom: 6 }}>Actual allocation is unavailable while a value or exchange rate is missing.</div>}
                     {(() => {
