@@ -49,6 +49,22 @@ test("Ex-DELL normalizes non-DELL targets, including Cash, without mutating reco
   assert.deepEqual(holdings, before);
 });
 
+test("Ex-DELL legend keeps readable labels and omits only groups with no balance or target", () => {
+  const holdings = [
+    { id: "internal-id", ticker: "IVV", name: "Index ETF", assetClass: "Stocks", qty: 1, price: 100, target: 0 },
+    { id: "fund", ticker: "LQD", assetClass: "Bonds", qty: 0, price: null, target: 20 },
+    { id: "unused", ticker: "OLD", assetClass: "Unallocated USD", qty: 0, price: null, target: 0 },
+    { id: "cash-permanent", ticker: "CASH", name: "Cash Account", assetClass: "Cash", type: "manual", manualMode: "value", manualValue: -20 },
+  ];
+  const allocation = exDellAllocation(holdings);
+  assert.deepEqual(groupExDellAllocation(allocation, false).map(row => [row.key, row.label]), [
+    ["cash-permanent", "Cash Account"], ["internal-id", "IVV"], ["fund", "LQD"],
+  ]);
+  assert.deepEqual(groupExDellAllocation(allocation, true).map(row => row.label), ["Bonds", "Cash", "Stocks"]);
+  holdings[2].qty = 1;
+  assert.ok(groupExDellAllocation(exDellAllocation(holdings), true).some(row => row.label === "Unallocated USD" && row.actual === null));
+});
+
 test("Holdings scope displays normalized weights and keeps the saved holding objects", () => {
   const dell = { id: "dell", ticker: " dell ", type: "auto", price: 100, qty: 4, target: 70 };
   const stock = { id: "aaa", ticker: "AAA", type: "auto", price: 10, qty: 50, target: 20 };

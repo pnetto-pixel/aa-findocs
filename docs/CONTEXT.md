@@ -1,5 +1,12 @@
 # CONTEXT.md — aa-findocs
 
+## Legenda Ex-DELL (v1.29.4)
+
+Allocation mostra tickers e nomes de classes na legenda, em vez de IDs
+internos. Ativos e classes com valor conhecido igual a zero e sem target
+ficam ocultos. Posições com meta, saldo ou valor desconhecido continuam
+visíveis. Nomes longos podem quebrar linha no celular.
+
 ## Dividendos no plano mensal (v1.29.3)
 
 Contributions mostra o valor disponível com o status Provisional enquanto a

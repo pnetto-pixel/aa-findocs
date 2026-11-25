@@ -6967,12 +6967,13 @@ function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap, legen
               <span
                 style={{
                   color: T.text,
-                  whiteSpace: "nowrap",
+                  whiteSpace: legendRows ? "normal" : "nowrap",
+                  overflowWrap: legendRows ? "anywhere" : undefined,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                 }}
               >
-                {key}
+                {labels.get(key) ?? key}
               </span>
             </div>
             <div style={{ textAlign: "right", color: T.textDim, minWidth: colMin }}>

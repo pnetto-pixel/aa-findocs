@@ -4,6 +4,8 @@
 
 ## ✅ Concluídos
 
+- **Legenda Ex-DELL (v1.29.4):** usa nomes e tickers e omite ativos e classes com saldo zero e sem meta.
+
 - **Dividendos em Contributions (v1.29.3):** exibe o valor disponível como provisório quando as datas de pagamento ainda estão incompletas ou a atualização falha com dados em cache. Unavailable fica reservado para falhas sem valor disponível.
 
 - **Resumo Ex-DELL em Holdings (v1.29.2):** Total Value e a variacao diaria de Allocation acompanham o seletor Ex-DELL. A contagem e os targets exibidos usam o mesmo escopo. Os seletores ficam lado a lado no celular e Exclusions mostra os nomes ativos.
