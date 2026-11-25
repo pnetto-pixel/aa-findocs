@@ -4,7 +4,7 @@
 
 ## ✅ Concluídos
 
-- **Resumo Ex-DELL em Holdings (v1.29.2):** Total Value e a variacao diaria de Allocation acompanham o seletor Ex-DELL. A contagem e os targets exibidos usam o mesmo escopo.
+- **Resumo Ex-DELL em Holdings (v1.29.2):** Total Value e a variacao diaria de Allocation acompanham o seletor Ex-DELL. A contagem e os targets exibidos usam o mesmo escopo. Os seletores ficam lado a lado no celular e Exclusions mostra os nomes ativos.
 
 - **Card de rebalance compacto (v1.29.1):** botoes de estrategia, menu unico com exclusoes pesquisaveis por ticker/classe com target e total de compras. Dynamic usa apenas o saldo do periodo de contribuicao e deixa Cash fora do calculo de alocacao. Detalhes do periodo permanecem em Contributions. O seletor Ex-DELL tambem atualiza Portfolio Map, Holdings (pesos/gaps), Standard e Tax Harvesting.
 - **Holdings Ex-DELL + Dynamic Rebalance (v1.29.0):** Allocation Ex-DELL normaliza targets com Cash. Rebalanceamento incremental deterministico, orcamento por plano mensal/quinzena ou manual, simulacao Existing Cash/New Contribution e exclusoes independentes. Standard preservado. Preferencias sincronizadas no Redis com controle de revisao, sem funcao serverless nova. Ver metodologia, testes e limites em [CONTEXT.md](./CONTEXT.md#holdings-ex-dell-e-dynamic-rebalance-v1290).

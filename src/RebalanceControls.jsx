@@ -24,13 +24,15 @@ export function PurchaseExclusions({ settings, options }) {
     { name: "Tickers", key: "excludeTickers", options: options.tickers },
     { name: "Asset classes", key: "excludeClasses", options: options.classes },
   ];
-  const active = groups.reduce((sum, group) =>
-    sum + group.options.filter(([id]) => preferences[group.key].includes(id)).length, 0);
+  const excluded = groups.flatMap(group =>
+    group.options.filter(([id]) => preferences[group.key].includes(id)).map(([, label]) => label));
   const visible = groups.map(group => ({ ...group, options: group.options.filter(([id, label]) =>
     `${id} ${label}`.toLowerCase().includes(search)) }));
 
   return <details style={{ color: dim, fontSize: 13, marginBottom: 12 }}>
-    <summary style={{ cursor: "pointer" }}>Exclusions{active > 0 ? ` (${active})` : ""}</summary>
+    <summary style={{ cursor: "pointer", overflowWrap: "anywhere" }}>
+      Exclusions{excluded.length > 0 && <span style={{ color: "#ece8e0" }}>: {excluded.join(", ")}</span>}
+    </summary>
     <div style={{ marginTop: 8, padding: 10, border: "1px solid #222831", borderRadius: 4 }}>
       <input type="search" aria-label="Search exclusions" placeholder="Search tickers or classes" style={{ ...control, width: "100%" }}
         value={filter} onChange={event => setFilter(event.target.value)} />

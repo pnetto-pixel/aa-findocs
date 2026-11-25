@@ -7,7 +7,10 @@ total dos targets normalizados, incluindo Cash. O KPI diario de Allocation e
 identificado como Ex-DELL e usa apenas as posicoes desse escopo com cotacao
 e fechamento anterior. O S&P continua sendo o mesmo benchmark. Sem valores
 suficientes, o resumo mostra indisponibilidade. Snapshots de patrimonio
-continuam usando o total do portfolio.
+continuam usando o total do portfolio. No celular, os controles de escopo
+e agrupamento ficam na mesma linha com rotulos abreviados. Exclusions
+mostra os tickers e classes ativos separados por virgulas, inclusive com
+o menu fechado.
 
 ## Card de rebalance compacto (v1.29.1)
 

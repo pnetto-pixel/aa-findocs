@@ -4124,6 +4124,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           {/* Allocation chart (single column) */}
           {(() => {
             const showAlloc = allocationView === "ex-dell" || chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
+            const compactControls = windowWidth < 520;
             return (
               <div style={{ display: "block" }}>
                 {/* Allocation charts: Target vs Actual */}
@@ -4232,29 +4233,27 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                           </span>
                         )}
                       </div>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <ToggleButton
-                          active={chartGrouping === "class"}
-                          disabled={settings.phase !== "ready"}
-                          onClick={() => settings.save({ grouping: "class" })}
-                          label="By class"
-                        />
-                        <ToggleButton
-                          active={chartGrouping === "holding"}
-                          disabled={settings.phase !== "ready"}
-                          onClick={() => settings.save({ grouping: "holding" })}
-                          label="Per holding"
-                        />
-                      </div>
                     </div>
 
                     <PreferenceStatus settings={settings} />
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }} aria-label="Allocation scope" role="group">
-                      <ToggleButton label="Total Portfolio" active={allocationView === "total"} disabled={settings.phase !== "ready"}
-                        onClick={() => settings.save({ allocationView: "total" })} />
-                      <ToggleButton label="Ex-DELL" active={allocationView === "ex-dell"} disabled={settings.phase !== "ready"}
-                        onClick={() => settings.save({ allocationView: "ex-dell" })} />
-                      <InfoHelp title="Allocation scope">Ex-DELL hides DELL from the Holdings summaries and scales the remaining allocation targets, including Cash, to 100%. Target edits still use the saved Total Portfolio percentages.</InfoHelp>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }} aria-label="Allocation scope" role="group">
+                        <ToggleButton label="Total Portfolio" shortLabel="Total" compact={compactControls}
+                          active={allocationView === "total"} disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ allocationView: "total" })} />
+                        <ToggleButton label="Ex-DELL" compact={compactControls}
+                          active={allocationView === "ex-dell"} disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ allocationView: "ex-dell" })} />
+                        <InfoHelp title="Allocation scope">Ex-DELL hides DELL from the Holdings summaries and scales the remaining allocation targets, including Cash, to 100%. Target edits still use the saved Total Portfolio percentages.</InfoHelp>
+                      </div>
+                      <div style={{ display: "flex", gap: 4 }} aria-label="Allocation grouping" role="group">
+                        <ToggleButton label="By class" shortLabel="Class" compact={compactControls}
+                          active={chartGrouping === "class"} disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ grouping: "class" })} />
+                        <ToggleButton label="Per holding" shortLabel="Holding" compact={compactControls}
+                          active={chartGrouping === "holding"} disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ grouping: "holding" })} />
+                      </div>
                     </div>
                     {allocationView === "ex-dell" && !exDell.complete && <div role="status" style={{ color: T.textDim, fontSize: 12, marginBottom: 6 }}>Actual allocation is unavailable while a value or exchange rate is missing.</div>}
                     {(() => {
@@ -6617,24 +6616,26 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
   );
 }
 
-function ToggleButton({ active, onClick, label, disabled }) {
+function ToggleButton({ active, onClick, label, shortLabel, compact, disabled }) {
   return (
-    <button type="button" aria-pressed={active} disabled={disabled}
+    <button type="button" aria-pressed={active} aria-label={compact && shortLabel ? label : undefined} disabled={disabled}
       onClick={onClick}
       style={{
         background: active ? T.gold : "transparent",
         border: `1px solid ${active ? T.gold : T.border}`,
         color: active ? T.bg : T.textDim,
-        padding: "5px 10px",
+        padding: compact ? "6px" : "5px 10px",
+        minHeight: compact ? 32 : undefined,
+        whiteSpace: "nowrap",
         fontSize: 9,
         fontFamily: FONT_MONO,
-        letterSpacing: "0.12em",
+        letterSpacing: compact ? "0.06em" : "0.12em",
         textTransform: "uppercase",
         fontWeight: 600,
         borderRadius: 2,
       }}
     >
-      {label}
+      {compact && shortLabel ? shortLabel : label}
     </button>
   );
 }
