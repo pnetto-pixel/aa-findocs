@@ -226,7 +226,7 @@ function Tile(props) {
   );
 }
 
-export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
+export default function TreemapCard({ holdings, isExDell, usdBrlRate, valuesHidden }) {
   // Multi-select asset-class filter (empty = all). No ticker filter here:
   // each tile IS a ticker — tap it for details, filter by class to zoom.
   const [classFilter, setClassFilter] = useState(() => new Set());
@@ -253,9 +253,10 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
     [allRows]
   );
 
-  const data = classFilter.size === 0
+  const availableFilter = new Set(classes.filter(name => classFilter.has(name)));
+  const data = availableFilter.size === 0
     ? allRows
-    : allRows.filter((d) => classFilter.has(d.assetClass));
+    : allRows.filter((d) => availableFilter.has(d.assetClass));
 
   if (allRows.length === 0) {
     return (
@@ -269,7 +270,7 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
           color: T.textDim,
         }}
       >
-        Nothing to map yet — add transactions or manual assets first.
+        {isExDell ? "No Ex-DELL positions to map." : "Nothing to map yet — add transactions or manual assets first."}
       </div>
     );
   }
@@ -277,7 +278,7 @@ export default function TreemapCard({ holdings, usdBrlRate, valuesHidden }) {
   return (
     <>
       {classes.length > 1 && (
-        <ClassFilterDropdown options={classes} selected={classFilter} onChange={setClassFilter} />
+        <ClassFilterDropdown options={classes} selected={availableFilter} onChange={setClassFilter} />
       )}
       {data.length === 0 ? (
         <div style={{ background: T.cardElev, borderRadius: 4, padding: "20px 24px", fontFamily: FONT_MONO, fontSize: 13, color: T.textDim }}>

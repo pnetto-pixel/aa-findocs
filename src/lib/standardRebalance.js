@@ -37,7 +37,7 @@ function isBraFixedIncome(h) {
 }
 
 // Existing Cash supplies a cap without adding money to the target denominator.
-export function standardRebalance({ holdings, totalValue, cash, fundingSource, usdBrlRate, holdingValue, isCash }) {
+export function standardRebalance({ holdings, totalValue, cash, fundingSource, usdBrlRate, holdingValue, isCash, targetOf = h => h.target }) {
   const investableTotal = totalValue + (fundingSource === "new" ? cash : 0);
   if (investableTotal <= 0) return [];
 
@@ -45,7 +45,7 @@ export function standardRebalance({ holdings, totalValue, cash, fundingSource, u
   const candidates = holdings
     .filter((h) => {
       if (isCash(h)) return false; // cash sits separately, not rebalanced
-      if (h.target <= 0) return false;
+      if (targetOf(h) <= 0) return false;
       if (h.type === "manual") {
         if (h.manualMode === "value") {
           if (!VALUE_TARGET_CLASSES.has(h.assetClass)) return false;
@@ -60,7 +60,7 @@ export function standardRebalance({ holdings, totalValue, cash, fundingSource, u
     })
     .map((h) => {
       const currentValue = holdingValue(h);
-      const targetValue = investableTotal * (h.target / 100);
+      const targetValue = investableTotal * (targetOf(h) / 100);
       const gap = targetValue - currentValue;
       const price = h.type === "manual" ? h.manualPrice : h.price;
       return { holding: h, currentValue, targetValue, gap, price };

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildDynamicModel, evaluateDynamicBasket, optimizeDynamic, OPTIMIZER_RULES, projectFunding } from "../src/lib/dynamicRebalance.js";
-import { exDellAllocation, groupExDellAllocation, rebalanceExclusionOptions, withoutAllocationCash } from "../src/lib/holdingsAllocation.js";
+import { allocationByHolding, exDellAllocation, groupExDellAllocation, holdingsForAllocationScope, rebalanceExclusionOptions, withoutAllocationCash } from "../src/lib/holdingsAllocation.js";
 import { standardRebalance } from "../src/lib/standardRebalance.js";
 import { washSaleWarnings } from "../src/lib/taxHarvest.js";
 import { fixture, largeFixture, referenceCases } from "./fixtures/rebalance.mjs";
@@ -47,6 +47,32 @@ test("Ex-DELL normalizes non-DELL targets, including Cash, without mutating reco
     assert.ok(groups.some(v => v.target === 10 && v.actual > 10));
   }
   assert.deepEqual(holdings, before);
+});
+
+test("Holdings scope displays normalized weights and keeps the saved holding objects", () => {
+  const dell = { id: "dell", ticker: " dell ", type: "auto", price: 100, qty: 4, target: 70 };
+  const stock = { id: "aaa", ticker: "AAA", type: "auto", price: 10, qty: 50, target: 20 };
+  const cash = { id: "cash", ticker: "CASH", type: "manual", manualMode: "value", manualValue: 50, assetClass: "Cash", target: 10 };
+  const holdings = [dell, stock, cash];
+  assert.equal(holdingsForAllocationScope(holdings, "total"), holdings);
+  const scoped = holdingsForAllocationScope(holdings, "ex-dell");
+  assert.deepEqual(scoped, [stock, cash]);
+  assert.equal(scoped[0], stock);
+
+  const allocation = exDellAllocation(holdings);
+  const metrics = allocationByHolding(allocation);
+  near(metrics.get(stock).actual, 500 / 550 * 100);
+  near(metrics.get(stock).target, 20 / 30 * 100);
+  near(metrics.get(cash).target, 10 / 30 * 100);
+  assert.equal(metrics.has(dell), false);
+
+  const orders = standardRebalance({
+    holdings: scoped, totalValue: allocation.total, cash: 1000, fundingSource: "new",
+    isCash: h => h === cash, holdingValue: h => h.price * h.qty, targetOf: h => metrics.get(h).target,
+  });
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].holding, stock);
+  assert.equal(stock.target, 20);
 });
 
 test("unknown amounts are distinct from known zero quantities; signed balances do not alter targets", () => {

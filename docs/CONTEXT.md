@@ -22,6 +22,15 @@
   dados de contribuicao incompletos ou transacoes indisponiveis impedem
   recomendacoes dinamicas.
 
+- O seletor Ex-DELL tambem controla Portfolio Map, Holdings, Standard e a
+  lista de Tax Harvesting no dashboard. O mapa e os filtros de classe usam
+  as posicoes do escopo. A lista de Holdings (incluindo Cash) usa os pesos e
+  gaps Ex-DELL para os detalhes e a ordenacao. Standard usa os mesmos pesos;
+  Dynamic continua sempre Ex-DELL sem Cash. Alternar para Total Portfolio
+  restaura DELL e os pesos originais. Os editores de target continuam
+  trabalhando com os percentuais gravados, e o snapshot de patrimonio
+  continua somando todo o portfolio.
+
 ## Holdings Ex-DELL e Dynamic Rebalance (v1.29.0)
 
 Nesta secao, os controles de orcamento e fonte descrevem a v1.29.0; ver a simplificacao acima.

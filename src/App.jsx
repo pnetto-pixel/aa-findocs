@@ -1,6 +1,6 @@
 import InfoHelp from "./InfoHelp.jsx";
 import { PreferenceStatus, PurchaseExclusions } from "./RebalanceControls.jsx";
-import { exDellAllocation, groupExDellAllocation, rebalanceExclusionOptions, tickerKey, withoutAllocationCash } from "./lib/holdingsAllocation.js";
+import { allocationByHolding, exDellAllocation, groupExDellAllocation, holdingsForAllocationScope, rebalanceExclusionOptions, tickerKey, withoutAllocationCash } from "./lib/holdingsAllocation.js";
 import { PER_ASSET_TARGET, standardRebalance } from "./lib/standardRebalance.js";
 import { buildDynamicModel, optimizeDynamic } from "./lib/dynamicRebalance.js";
 import { dollarsToBudgetCents } from "./lib/rebalanceBudget.js";
@@ -1952,10 +1952,17 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     [holdings]
   );
 
+  const isExDell = allocationView === "ex-dell";
+  const displayHoldings = useMemo(() => holdingsForAllocationScope(holdings, allocationView), [holdings, allocationView]);
+  const exDell = useMemo(() => exDellAllocation(holdings, rebalanceFx), [holdings, rebalanceFx]);
+  const displayAllocations = useMemo(() => isExDell ? allocationByHolding(exDell) : null, [isExDell, exDell]);
+  const displayTotal = isExDell ? (exDell.complete ? exDell.total : null) : totalValue;
+
   const deltaColorMap = useMemo(() => {
-    const ranked = holdings
+    const ranked = displayHoldings
       .filter((h) => !isCash(h) && h.target > 0)
       .map((h) => {
+        if (displayAllocations) return { id: h.id, drift: displayAllocations.get(h)?.gap ?? null };
         const v = holdingValue(h);
         const actualPct = v && totalValue > 0 ? (v / totalValue) * 100 : null;
         const drift = actualPct != null ? actualPct - h.target : null;
@@ -1970,7 +1977,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       else map.set(x.id, T.textDim);
     });
     return map;
-  }, [holdings, totalValue, usdBrlRate]);
+  }, [displayHoldings, displayAllocations, totalValue, usdBrlRate]);
 
   const setBusy = (id, v) =>
     setBusyIds((prev) => {
@@ -2948,14 +2955,16 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // plain dollar-value suggestion instead. If newCash specified, total
   // purchases <= newCash. Otherwise no overall limit. Ordered by largest
   // underweight first.
-  const exDell = useMemo(() => exDellAllocation(holdings, rebalanceFx), [holdings, rebalanceFx]);
   const investedExDell = useMemo(() => withoutAllocationCash(exDell), [exDell]);
   const exclusionOptions = useMemo(() => rebalanceExclusionOptions(investedExDell), [investedExDell]);
   const standardOrders = useMemo(() => {
-    if (strategy !== "standard") return [];
+    if (strategy !== "standard" || displayTotal == null) return [];
     const cash = parseFloat(standardBudget) || 0;
-    return standardRebalance({ holdings, totalValue, cash, fundingSource: "new", usdBrlRate, holdingValue, isCash });
-  }, [holdings, totalValue, standardBudget, usdBrlRate, strategy]);
+    return standardRebalance({
+      holdings: displayHoldings, totalValue: displayTotal, cash, fundingSource: "new", usdBrlRate, holdingValue, isCash,
+      targetOf: displayAllocations ? h => displayAllocations.get(h)?.target ?? 0 : undefined,
+    });
+  }, [displayHoldings, displayTotal, displayAllocations, standardBudget, usdBrlRate, strategy]);
 
   const taxPrices = useMemo(() => {
     const prices = {};
@@ -2970,7 +2979,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   }, [holdings]);
   const taxToday = contributionDate;
   const harvest = useMemo(() => buildHarvestLots(transactions, taxPrices, taxToday), [transactions, taxPrices, taxToday]);
-  const cardHarvest = useMemo(() => scopeHarvestToHoldings(harvest, holdings), [harvest, holdings]);
+  const cardHarvest = useMemo(() => scopeHarvestToHoldings(harvest, displayHoldings), [harvest, displayHoldings]);
   const lotsByTicker = useMemo(() => {
     const grouped = {};
     for (const lot of harvest.openLots) (grouped[lot.ticker] ||= []).push(lot);
@@ -3035,12 +3044,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // Build asset class dropdown options from existing holdings
   const assetClassOptions = useMemo(() => {
     const set = new Set();
-    holdings.forEach((h) => {
+    displayHoldings.forEach((h) => {
       const c = h.assetClass || "Uncategorized";
       set.add(c);
     });
     return Array.from(set).sort();
-  }, [holdings]);
+  }, [displayHoldings]);
+  const visibleFilterClass = assetClassOptions.includes(filterClass) ? filterClass : "";
 
   // Apply text filter, class filter, then sort
   function applyFiltersAndSort(list) {
@@ -3053,8 +3063,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           (h.name || "").toLowerCase().includes(q)
       );
     }
-    if (filterClass) {
-      result = result.filter((h) => (h.assetClass || "Uncategorized") === filterClass);
+    if (visibleFilterClass) {
+      result = result.filter((h) => (h.assetClass || "Uncategorized") === visibleFilterClass);
     }
     if (sortBy !== "default") {
       result = [...result].sort((a, b) => {
@@ -3075,6 +3085,10 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           // Holdings with no target sink to the bottom.
           const gapOf = (h) => {
             if (!h.target || h.target <= 0) return null;
+            if (displayAllocations) {
+              const gap = displayAllocations.get(h)?.gap;
+              return gap == null ? null : -gap;
+            }
             const v = holdingValue(h);
             const actualPct = totalValue > 0 ? (v / totalValue) * 100 : 0;
             return h.target - actualPct;
@@ -3092,19 +3106,17 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     return result;
   }
 
-  // Consolidated holdings (auto + manual non-cash) — filtered & sorted together
+  const positions = useMemo(
+    () => displayHoldings.filter(h => !isCash(h) && !(isZeroHolding(h) && !(h.target > 0))),
+    [displayHoldings]
+  );
   const filteredHoldings = useMemo(
-    () =>
-      applyFiltersAndSort(
-        holdings
-          .filter((h) => !isCash(h))
-          .filter((h) => !(isZeroHolding(h) && !(h.target > 0)))
-      ),
-    [holdings, filterText, filterClass, sortBy, totalValue]
+    () => applyFiltersAndSort(positions),
+    [positions, filterText, visibleFilterClass, sortBy, totalValue, displayAllocations, usdBrlRate]
   );
   // Cash accounts — separate section, not affected by sort/filter (except text filter)
   const cashAccounts = useMemo(() => {
-    let result = holdings.filter(isCash);
+    let result = displayHoldings.filter(isCash);
     if (filterText.trim()) {
       const q = filterText.trim().toLowerCase();
       result = result.filter(
@@ -3114,9 +3126,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       );
     }
     return result;
-  }, [holdings, filterText]);
+  }, [displayHoldings, filterText]);
 
-  const hasActiveFilter = !!(filterText.trim() || filterClass || sortBy !== "gap_desc");
+  const hasActiveFilter = !!(filterText.trim() || visibleFilterClass || sortBy !== "gap_desc");
 
   // Build allocation chart data: target vs actual, grouped by class or per holding
   const chartData = useMemo(() => {
@@ -4239,7 +4251,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         onClick={() => settings.save({ allocationView: "total" })} />
                       <ToggleButton label="Ex-DELL" active={allocationView === "ex-dell"} disabled={settings.phase !== "ready"}
                         onClick={() => settings.save({ allocationView: "ex-dell" })} />
-                      <InfoHelp title="Allocation scope">Ex-DELL removes DELL market value and scales all remaining targets, including Cash, to 100%.</InfoHelp>
+                      <InfoHelp title="Allocation scope">Ex-DELL hides DELL from the cards below and scales the remaining allocation targets, including Cash, to 100%. Target edits still use the saved Total Portfolio percentages.</InfoHelp>
                     </div>
                     {allocationView === "ex-dell" && !exDell.complete && <div role="status" style={{ color: T.textDim, fontSize: 12, marginBottom: 6 }}>Actual allocation is unavailable while a value or exchange rate is missing.</div>}
                     {(() => {
@@ -4374,11 +4386,9 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         </div>
                       }
                     >
-                      {/* Full holdings list (not filteredHoldings): the map should
-                          show the whole portfolio, including Cash — zero-value
-                          holdings are dropped inside the component. */}
                       <TreemapCard
-                        holdings={holdings}
+                        holdings={displayHoldings}
+                        isExDell={isExDell}
                         usdBrlRate={usdBrlRate}
                         valuesHidden={valuesHidden}
                       />
@@ -4455,12 +4465,12 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   />
                 </div>
                 <select
-                  value={filterClass}
+                  value={visibleFilterClass}
                   onChange={(e) => setFilterClass(e.target.value)}
                   style={{
                     background: T.cardElev,
                     border: `1px solid ${T.border}`,
-                    color: filterClass ? T.text : T.textFaint,
+                    color: visibleFilterClass ? T.text : T.textFaint,
                     padding: "8px 10px",
                     fontSize: 11,
                     fontFamily: FONT_MONO,
@@ -4529,7 +4539,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   <SectionLabel
                     label="Holdings"
                     count={filteredHoldings.length}
-                    of={holdings.filter((h) => !isCash(h) && !(isZeroHolding(h) && !(h.target > 0))).length}
+                    of={positions.length}
                     collapsible
                     collapsed={trackedCollapsed}
                     onToggle={() => setTrackedCollapsed(!trackedCollapsed)}
@@ -4544,7 +4554,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               lots={lotsByTicker[(h.ticker || "").toUpperCase()] || []}
                               lotsUncertain={harvest.uncertainTickers.includes((h.ticker || "").toUpperCase())}
                               usdBrlRate={usdBrlRate}
-                              totalValue={totalValue}
+                              totalValue={displayTotal}
+                              allocation={displayAllocations?.get(h)}
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                               onUpdate={(patch) => updateManualHolding(h.id, patch)}
@@ -4557,7 +4568,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                               holding={h}
                               lots={lotsByTicker[(h.ticker || "").toUpperCase()] || []}
                               lotsUncertain={harvest.uncertainTickers.includes((h.ticker || "").toUpperCase())}
-                              totalValue={totalValue}
+                              totalValue={displayTotal}
+                              allocation={displayAllocations?.get(h)}
                               busy={!!busyIds[h.id]}
                               valuesHidden={valuesHidden}
                               deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
@@ -4603,7 +4615,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     <div key={h.id} style={i > 0 ? { borderTop: `1px solid ${T.borderSoft}` } : {}}>
                       <ManualHoldingRow
                         holding={h}
-                        totalValue={totalValue}
+                        totalValue={displayTotal}
+                        allocation={displayAllocations?.get(h)}
                         valuesHidden={valuesHidden}
                         deltaColor={deltaColorMap.get(h.id) ?? T.textDim}
                         onUpdate={(patch) => updateManualHolding(h.id, patch)}
@@ -4628,14 +4641,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     fontSize: 14,
                   }}
                 >
-                  No holdings match your filter.
+                  {isExDell && positions.length === 0 ? "No Ex-DELL holdings." : "No holdings match your filter."}
                 </div>
               )}
             </>
           )}
 
           {/* Rebalance Suggestion */}
-          {holdings.some((h) => h.target > 0) && (
+          {displayHoldings.some((h) => h.target > 0) && (
             <section style={{ marginTop: 18 }}>
               <button
                 onClick={() => setShowRebalance(!showRebalance)}
@@ -4731,13 +4744,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     }}>
                       {isDynamic
                         ? dynamicError || "No eligible purchase improves the allocation within this budget."
-                        : "Nothing to buy — you're at or above target on every holding."}
+                        : displayTotal == null ? "Ex-DELL allocation is unavailable while a value or exchange rate is missing."
+                          : "Nothing to buy — you're at or above target on every holding."}
                     </div>
                   )}
                   {isDynamic && dynamicResult?.limited && <div role="status" style={{ color: T.textDim, fontSize: 12, marginTop: 6 }}>
                     Search limit reached. Showing the best plan found.
                   </div>}
-                  {!isDynamic && Math.abs(totalTarget - 100) > 0.5 && <div style={{
+                  {!isDynamic && !isExDell && Math.abs(totalTarget - 100) > 0.5 && <div style={{
                     marginTop: 12, padding: "8px 10px", fontSize: 11, color: T.gold,
                     background: "rgba(201, 169, 97, 0.06)", border: `1px solid ${T.goldDim}33`, borderRadius: 2,
                     display: "flex", alignItems: "center", gap: 6, fontFamily: FONT_MONO,
@@ -5327,6 +5341,7 @@ function HoldingRow({
   lots = [],
   lotsUncertain = false,
   totalValue,
+  allocation,
   busy,
   valuesHidden,
   deltaColor,
@@ -5373,8 +5388,9 @@ function HoldingRow({
       ? T.red
       : T.textDim;
   const value = holding.price ? holding.price * holding.qty : null;
-  const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
-  const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
+  const actualPct = allocation ? allocation.actual : value && totalValue > 0 ? (value / totalValue) * 100 : null;
+  const targetPct = allocation ? allocation.target : holding.target;
+  const drift = actualPct != null && targetPct ? actualPct - targetPct : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
 
   const [driftOpen, setDriftOpen] = useState(false);
@@ -5509,7 +5525,7 @@ function HoldingRow({
             marginTop: 8,
           }}
         >
-          {holding.target > 0 ? (
+          {targetPct > 0 ? (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
@@ -5517,7 +5533,7 @@ function HoldingRow({
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
-                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
+                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(targetPct)}</span>
               </div>
               {driftUSD != null && (
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
@@ -5630,7 +5646,7 @@ function HoldingRow({
                   marginBottom: 4,
                 }}
               >
-                Target %
+                {allocation ? "Target % (Total Portfolio)" : "Target %"}
               </label>
               <Input value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} onEnter={saveEdit} inputMode="decimal" autoFocus />
             </div>
@@ -6180,7 +6196,7 @@ function ModeButton({ active, onClick, label }) {
   );
 }
 
-function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRate, totalValue, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false, onRefresh, busy = false }) {
+function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRate, totalValue, allocation, valuesHidden, deltaColor, onUpdate, onRemove, locked, valueLocked = false, onRefresh, busy = false }) {
   const isBankBonds = (holding.assetClass || "").includes("Bank Bonds") || holding.derivedFromTransactions === true;
   const [editing, setEditing] = useState(false);
   const [draftValue, setDraftValue] = useState("");
@@ -6202,8 +6218,9 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
           : 0
         : holding.manualValue ?? 0
       : (holding.manualPrice ?? 0) * (holding.qty ?? 0);
-  const actualPct = value && totalValue > 0 ? (value / totalValue) * 100 : null;
-  const drift = actualPct != null && holding.target ? actualPct - holding.target : null;
+  const actualPct = allocation ? allocation.actual : value && totalValue > 0 ? (value / totalValue) * 100 : null;
+  const targetPct = allocation ? allocation.target : holding.target;
+  const drift = actualPct != null && targetPct ? actualPct - targetPct : null;
   const driftUSD = drift != null && totalValue > 0 ? (drift / 100) * totalValue : null;
 
   // Bank Bonds DISPLAY the current value as `value` (manualValue is kept in
@@ -6389,7 +6406,7 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
             marginTop: 8,
           }}
         >
-          {holding.target > 0 ? (
+          {targetPct > 0 ? (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Actual</span>
@@ -6397,7 +6414,7 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                 <span style={{ fontSize: 9, fontFamily: FONT_MONO, letterSpacing: "0.1em", textTransform: "uppercase", color: T.textFaint }}>Target</span>
-                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(holding.target)}</span>
+                <span style={{ fontSize: 11, fontFamily: FONT_MONO, color: T.text }}>{fmtPct(targetPct)}</span>
               </div>
               {driftUSD != null && (
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
@@ -6542,7 +6559,7 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: (locked || isBankBonds) ? "1fr" : "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            <Input placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
+            <Input aria-label={allocation ? "Target % (Total Portfolio)" : "Target %"} placeholder="Target %" value={draftTarget} onChange={(e) => setDraftTarget(e.target.value)} inputMode="decimal" />
             {!locked && !isBankBonds && (
               <select
                 value={draftClass}
