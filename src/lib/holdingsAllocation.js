@@ -84,6 +84,8 @@ export function groupExDellAllocation(allocation, byClass) {
     }
     groups.set(key, group);
   }
-  return [...groups.values()].sort((a, b) => compare(a.label, b.label) || compare(a.key, b.key))
+  return [...groups.values()]
+    .filter(group => group.target > 0 || group.value !== 0 || group.unknown)
+    .sort((a, b) => compare(a.label, b.label) || compare(a.key, b.key))
     .map(group => ({ ...group, ...allocationPercentages(allocation, group.value, group.target) }));
 }
