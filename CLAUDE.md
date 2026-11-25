@@ -13,6 +13,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 User preference: whenever an explanation or instruction is needed in the interface, use a small circled `i` (Lucide `Info`) next to the relevant label. Tapping opens a popup with the information. Avoid adding explanatory lines or paragraphs to the main screen. Keep the trigger accessible by keyboard, with an explicit accessible label; the popup must support closing and returning focus. Use `src/InfoHelp.jsx` for the reusable circled-i trigger and `src/InfoDialog.jsx` for its accessible popup. Keep values, active filter scope, empty states and immediate validation/destructive-action warnings visible; move formulas, methodology, source details and general instructions into the popup. Do not nest the info button inside a card-toggle button.
 
+## Cross-device persistence
+
+Redis, scoped to the authenticated user, is the authoritative store for persistent
+user preferences and financial data. New features must synchronize across
+devices through authenticated API routes, reuse a route with resource dispatch
+when possible, and protect writes that could overwrite a newer device edit.
+Browser storage may cache data or retain session credentials. It must not be the
+source of truth for preferences or financial inputs. Document remaining legacy
+browser-only state and migrate it when changing its owning feature.
+
 ## Deploy Pattern
 
 **Merge direto no main** — não usar PR. O usuário não tem como fazer preview funcional antes do merge (constraint iPhone-only). Workflow:
@@ -49,11 +59,11 @@ npm run vercel-dev        # requires `vercel` CLI linked to a project
 # Build
 npm run build
 
-# Tests (no test runner — plain Node ESM)
-node test/perf-history.test.mjs
+# Tests (Node test runner, Node 20.18+ for module mocks)
+npm test
 ```
 
-There is no linter configured. No other test files exist.
+There is no linter configured.
 
 ## Architecture
 
@@ -85,7 +95,7 @@ Vercel serverless functions (Node.js ESM). Each file exports a default `async fu
 
 | Route | Purpose |
 |---|---|
-| `api/holdings.js` | GET/PUT portfolio holdings (Redis) |
+| `api/holdings.js` | GET/PUT portfolio holdings (Redis). `?resource=preferences` manages separate authenticated Holdings preferences. |
 | `api/transactions.js` | GET/POST/DELETE transaction log (Redis) |
 | `api/price.js` | Real-time quote for one ticker |
 | `api/index-quote.js` | SPY day quote (for dashboard benchmark badge) |

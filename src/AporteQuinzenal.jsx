@@ -17,13 +17,14 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { fetchDividendsCached } from "./lib/dividendsCache.js";
-import { extrasFromSnapshotForRestore } from "./lib/contributionExtras.js";
 import { initialDellPlan, validDellAmount } from "./lib/contributionDell.js";
 import AccumulatedInvestmentCard, { GrowthTooltip } from "./AccumulatedInvestmentCard.jsx";
 import { buildContributionHistory } from "./lib/contributionHistory.js";
 import {
   computeMonthlyInvested,
   computeHalfInvested,
+  contributionRollover,
+  localContributionDate,
   reconcileContributionCapacityHistory,
 } from "./lib/contributionCapacity.js";
 
@@ -46,7 +47,6 @@ const T = {
   red: "#e88c8c",
 };
 
-const LS_CONFIG = "aporteConfig";
 const LS_REALIZADO = "aporteRealizado"; // kept only to clean up on mount
 
 const DEFAULT_CONFIG = {
@@ -85,22 +85,6 @@ const DATE_INPUT_STYLE = {
 const PERIOD_OPTIONS = ["Month", "Quarter", "Half", "Year"];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function loadConfigState() {
-  try {
-    const v = localStorage.getItem(LS_CONFIG);
-    if (v) {
-      const stored = JSON.parse(v);
-      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-        return {
-          config: { ...DEFAULT_CONFIG, ...stored },
-          extrasWerePersisted: Object.prototype.hasOwnProperty.call(stored, "extras"),
-        };
-      }
-    }
-  } catch {}
-  return { config: { ...DEFAULT_CONFIG }, extrasWerePersisted: false };
-}
 
 function authHeaders(auth) {
   const h = {};
@@ -159,13 +143,13 @@ async function fetchContributionsHistory(auth) {
   return data.history && typeof data.history === "object" ? data.history : {};
 }
 
-async function putContributionsSnapshot(auth, month, snapshot, reconcileInvested) {
+async function putContributionsSnapshot(auth, month, snapshot, reconcileInvested, expectedPlanRevision) {
   const res = await fetch("/api/contributions-history", {
     method: "PUT",
     headers: { "Content-Type": "application/json", ...authHeaders(auth) },
-    body: JSON.stringify({ month, snapshot, reconcileInvested }),
+    body: JSON.stringify({ month, snapshot, reconcileInvested, expectedPlanRevision }),
   });
-  if (!res.ok) throw new Error(`Error ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`Error ${res.status}`), { code: res.status });
   return res.json();
 }
 
@@ -598,14 +582,9 @@ export default function Contributions(props) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
-  const initialConfig = useRef(null);
-  if (initialConfig.current === null) initialConfig.current = loadConfigState();
-  const [config, setConfig] = useState(initialConfig.current.config);
-  // This provenance is deliberately separate from config.extras: [] can mean
-  // either "never stored" or "the user deleted every extra". Only the former
-  // is eligible for the Redis safety-net restore.
-  const extrasWerePersisted = useRef(initialConfig.current.extrasWerePersisted);
+function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month, liveUsdBrlRate }) {
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [day, setDay] = useState(() => Number(localContributionDate().slice(-2)));
 
   const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
   useEffect(() => {
@@ -619,6 +598,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   const [txLoading, setTxLoading] = useState(true);
   const [txError, setTxError] = useState(null);
   const [divLastMonth, setDivLastMonth] = useState(null); // null = loading
+  const [divPlanComplete, setDivPlanComplete] = useState(null);
 
   const [groupBy, setGroupBy] = useState("Month");
   const [fromDate, setFromDate] = useState("");
@@ -637,12 +617,29 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   const [capacitySaveError, setCapacitySaveError] = useState(false);
   const [saveRetry, setSaveRetry] = useState(0);
   const saveRevision = useRef(0);
+  const planRevision = useRef(null);
+  const planConflict = useRef(false);
+  const [capacityConflict, setCapacityConflict] = useState(false);
 
   function loadCapacity() {
+    setCapacityLoaded(false);
     setCapacityLoadError(false);
     fetchContributionsHistory(auth)
       .then(hist => {
         setCapacityHistory(hist);
+        planRevision.current = hist[month]?.planRevision || hist[month]?.savedAt || null;
+        planConflict.current = false;
+        setCapacityConflict(false);
+        setCapacitySaveError(false);
+        const lastPriorMonth = Object.keys(hist).filter(k => /^\d{4}-\d{2}$/.test(k) && k < month).sort().at(-1);
+        const savedPlan = hist[month] || hist[lastPriorMonth];
+        setConfig({
+          ...DEFAULT_CONFIG,
+          monthlyFixed: Number.isFinite(savedPlan?.monthlyFixed) ? String(savedPlan.monthlyFixed) : "",
+          extras: (Array.isArray(savedPlan?.extras) ? savedPlan.extras : []).map(e => ({
+            label: e.name, value: String(e.amount ?? ""),
+          })),
+        });
         setDellSale(initialDellPlan(month, hist[month]));
         setCapacityLoaded(true);
       })
@@ -656,9 +653,10 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   const [newExtraValue, setNewExtraValue] = useState("");
 
   const usdBrlRate = useMemo(() => {
+    if (liveUsdBrlRate > 0) return liveUsdBrlRate;
     const v = parseFloat(localStorage.getItem("usdBrlRate"));
     return isFinite(v) && v > 0 ? v : 5.7;
-  }, []);
+  }, [liveUsdBrlRate]);
 
   useEffect(() => {
     localStorage.removeItem(LS_REALIZADO);
@@ -673,7 +671,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
         // A cached hit (from this session or a previous page load) renders
         // instantly instead of "Loading…"; the fresh fetch always runs in the
         // background and silently overwrites the KPI if the value differs.
-        const applyDivData = (data) => {
+        const applyDivData = (data, authoritative) => {
           if (!data) return;
           const now = new Date();
           const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -696,6 +694,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
             .filter((e) => e && (e.kind === "interest" || !e.kind) && e.date && e.date.startsWith(prefix) && Number(e.amount) > 0)
             .reduce((sum, e) => sum + Number(e.amount), 0);
           setDivLastMonth(apiTotal + bondTotal);
+          if (authoritative) setDivPlanComplete(Array.isArray(data.events) && data.meta?.payDatesWarm !== false);
         };
         const { cached, fresh } = fetchDividendsCached({
           auth,
@@ -703,10 +702,10 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
           bondIncome: bi,
           todayISO: localTodayISO(),
         });
-        if (cached) applyDivData(cached);
+        if (cached) applyDivData(cached, false);
         fresh
-          .then(applyDivData)
-          .catch(() => { if (!cached) setDivLastMonth(0); });
+          .then(data => applyDivData(data, true))
+          .catch(() => { setDivPlanComplete(false); if (!cached) setDivLastMonth(0); });
       })
       .catch((e) => {
         if (e.code === 401) {
@@ -718,13 +717,15 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
       });
   }, []);
 
+  useEffect(() => {
+    const update = () => setDay(Number(localContributionDate().slice(-2)));
+    const timer = setInterval(update, 10000);
+    window.addEventListener("focus", update);
+    return () => { clearInterval(timer); window.removeEventListener("focus", update); };
+  }, []);
+
   function updateConfig(patch) {
-    const next = { ...config, ...patch };
-    if (Object.prototype.hasOwnProperty.call(patch, "extras")) {
-      extrasWerePersisted.current = true;
-    }
-    setConfig(next);
-    localStorage.setItem(LS_CONFIG, JSON.stringify(next));
+    if (capacityLoaded && !planConflict.current) setConfig(current => ({ ...current, ...patch }));
   }
 
   // Previous month's saved "monthly fixed amount" (from the capacity snapshots).
@@ -736,46 +737,6 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
     const v = Number(capacityHistory[key]?.monthlyFixed);
     return isFinite(v) && v > 0 ? v : null;
   }, [capacityHistory]);
-
-  // One-time preset: when the current month has no fixed amount set yet, seed it
-  // from the previous month's value. Leaves it blank if there's no prior value.
-  const seededFixed = useRef(false);
-  useEffect(() => {
-    if (!capacityLoaded || seededFixed.current) return;
-    seededFixed.current = true;
-    if ((config.monthlyFixed === "" || config.monthlyFixed == null) && prevMonthFixed != null) {
-      updateConfig({ monthlyFixed: String(prevMonthFixed) });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capacityLoaded, prevMonthFixed]);
-
-  // The current month's capacity snapshot as last written to Redis (write path
-  // is the auto-snapshot effect below). Used only as a restore source when
-  // localStorage's aporteConfig has been wiped (e.g. Safari clearing site
-  // storage) — the extras a user adds are otherwise persisted exclusively in
-  // localStorage, so losing it silently drops them from the UI even though
-  // they still exist in the last saved Redis snapshot.
-  const currentMonthSnapshot = useMemo(
-    () => capacityHistory[currentMonthKey()],
-    [capacityHistory]
-  );
-
-  // One-time restore: if localStorage has no extras field for this session but the
-  // last Redis snapshot for the current month does, repopulate config.extras
-  // from it. Converts the Redis snapshot shape ({name, amount}) back to the
-  // local state shape ({label, value}). Runs only once so it never clobbers
-  // edits the user makes after the initial load.
-  const seededExtras = useRef(false);
-  useEffect(() => {
-    if (!capacityLoaded || seededExtras.current) return;
-    seededExtras.current = true;
-    const restoredExtras = extrasFromSnapshotForRestore({
-      extrasWerePersisted: extrasWerePersisted.current,
-      snapshotExtras: currentMonthSnapshot?.extras,
-    });
-    if (restoredExtras) updateConfig({ extras: restoredExtras });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capacityLoaded, currentMonthSnapshot]);
 
   function addExtra() {
     const label = newExtraLabel.trim();
@@ -815,26 +776,8 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   // halfPlanned (= planTotal/2). Whatever was NOT invested in the 1st half
   // (deficit) is added to the 2nd-half goal. A 1st-half surplus makes the 2nd
   // cheaper. All derived from half1Auto / half2Auto / halfPlanned — no fetch.
-  const rollover = useMemo(() => {
-    const half1Target = halfPlanned;
-    const half1Deficit = Math.max(0, half1Target - half1Auto);
-    // Only roll deficit into the 2nd half once the 1st half has closed (day > 15).
-    const past15 = new Date().getDate() > 15;
-    const half2Target = halfPlanned + (past15 ? half1Deficit : 0);
-    const half1Remaining = Math.max(0, half1Target - half1Auto);
-    const half2Remaining = Math.max(0, half2Target - half2Auto);
-    const totalInvested = half1Auto + half2Auto;
-    const monthRemaining = Math.max(0, planTotal - totalInvested);
-    return {
-      half1Target,
-      half2Target,
-      half1Deficit,
-      half1Remaining,
-      half2Remaining,
-      totalInvested,
-      monthRemaining,
-    };
-  }, [halfPlanned, half1Auto, half2Auto, planTotal]);
+  const rollover = useMemo(() => contributionRollover(planTotal, half1Auto, half2Auto, day),
+    [planTotal, half1Auto, half2Auto, day]);
 
   // ── Chunk B: auto-snapshot the CURRENT month (idempotent overwrite) ──
   // Runs once history + dividends + transactions are loaded. Always overwrites
@@ -843,7 +786,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
   // fields stay untouched and no missing month is invented. The same single
   // read-modify-write also keeps capacityHistory in sync for immediate display.
   useEffect(() => {
-    if (!capacityLoaded || txLoading || txError || divLastMonth === null || dellSale === null || month !== currentMonthKey()) return;
+    if (!capacityLoaded || txLoading || txError || divPlanComplete === null || divLastMonth === null || dellSale === null || month !== currentMonthKey()) return;
     const snapshot = {
       monthlyFixed: parseFloat(config.monthlyFixed) || 0,
       dividends: divLastMonth ?? 0,
@@ -854,6 +797,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
         amount: parseFloat(e.value) || 0,
       })),
       planTotal,
+      planComplete: divPlanComplete,
       invested: computeMonthlyInvested(transactions, usdBrlRate, month),
     };
     const reconciled = reconcileContributionCapacityHistory(
@@ -875,14 +819,27 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
     // overwrite a newer one in Redis.
     const revision = ++saveRevision.current;
     capacitySaveQueue.current = capacitySaveQueue.current
-      .then(() => putContributionsSnapshot(auth, month, snapshot, reconcileInvested))
-      .then(() => { if (revision === saveRevision.current) setCapacitySaveError(false); })
-      .catch(() => { if (revision === saveRevision.current) setCapacitySaveError(true); });
+      .then(() => {
+        if (planConflict.current) throw Object.assign(new Error("Plan needs reloading"), { code: 409 });
+        return putContributionsSnapshot(auth, month, snapshot, reconcileInvested, planRevision.current);
+      })
+      .then(data => {
+        planRevision.current = data.planRevision || data.savedAt;
+        window.dispatchEvent(new Event("contributions-saved"));
+        if (revision === saveRevision.current) setCapacitySaveError(false);
+      })
+      .catch(err => {
+        if (err.code === 409) {
+          planConflict.current = true;
+          setCapacityConflict(true);
+        } else if (revision === saveRevision.current) setCapacitySaveError(true);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     capacityLoaded,
     txLoading,
     divLastMonth,
+    divPlanComplete,
     config.monthlyFixed,
     config.extras,
     dellSale,
@@ -942,6 +899,10 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
         />
         {planOpen && (
           <div style={{ padding: "0 20px 20px" }}>
+            {capacityConflict && <div role="status" style={{ color: T.red, fontSize: 12 }}>
+              This plan changed on another device. Reload before editing.
+              <button type="button" onClick={loadCapacity} style={{ marginLeft: 6 }}>Reload plan</button>
+            </div>}
             <MonthlyFixedRow
               value={config.monthlyFixed}
               prevMonthValue={prevMonthFixed}
@@ -950,7 +911,9 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
             />
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 0", borderBottom:`1px solid ${T.borderSoft}` }}>
               <span style={{ fontFamily:FONT_BODY, fontSize:13, color:T.textDim, flex:1 }}>Dividends (last month)</span>
-              {divLastMonth === null ? (
+              {divPlanComplete === false ? (
+                <span role="status" style={{ fontSize: 12, color: T.red }}>Unavailable</span>
+              ) : divLastMonth === null ? (
                 <span style={{ fontFamily:FONT_MONO, fontSize:13, color:T.textDim }}>Loading…</span>
               ) : (
                 <div style={{ display:"flex", alignItems:"center", gap:4 }}>
@@ -964,7 +927,7 @@ function AporteQuinzenal({ auth, onAuthFail, valuesHidden, month }) {
             <DellPlanRow
               value={txLoading || divLastMonth === null || txError ? null : dellSale}
               valuesHidden={valuesHidden}
-              onSave={setDellSale}
+              onSave={value => { if (!planConflict.current) setDellSale(value); }}
               loadError={capacityLoadError || Boolean(txError)}
               saveError={capacitySaveError}
               onRetry={() => txError ? window.location.reload() : capacityLoadError ? loadCapacity() : setSaveRetry(v => v + 1)}

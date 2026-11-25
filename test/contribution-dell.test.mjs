@@ -29,20 +29,27 @@ const past = {
   planTotal: 10450, invested: 9000, savedAt: "2026-10-31T12:00:00Z",
 };
 let stored = JSON.stringify({ "2026-10": past });
-mock.module("../lib/auth.js", { exports: { authenticate: async () => ({ ok: true, storageKey: "test:holdings" }) } });
-mock.module("../lib/redis.js", { exports: { getRedis: () => ({
+mock.module("../lib/auth.js", { namedExports: { authenticate: async () => ({ ok: true, storageKey: "test:holdings" }) } });
+mock.module("../lib/redis.js", { namedExports: { getRedis: () => ({
   async get() { return stored; },
   async set(key, value) { assert.equal(key, "test:contributions-history"); stored = value; },
+  async eval(_script, count, key, expected, next) {
+    assert.equal(count, 1);
+    assert.equal(key, "test:contributions-history");
+    if ((stored || "") !== expected) return 0;
+    stored = next;
+    return 1;
+  },
 }) } });
 const { default: handler } = await import("../api/contributions-history.js");
 
-async function request(method, body) {
+async function request(method, body, expectedStatus = 200) {
   let status, response;
   await handler({ method, body }, {
     status(value) { status = value; return this; },
     json(value) { response = value; return this; },
   });
-  assert.equal(status, 200);
+  assert.equal(status, expectedStatus);
   return response;
 }
 
@@ -58,4 +65,19 @@ test("real history endpoint round-trips manual zero and keeps historical plannin
     assert.equal(initialDellPlan("2026-12", history["2026-12"]), 0);
     assert.equal(history["2026-12"], undefined);
   }
+});
+
+test("conditional plan writes protect an edit made on another device", async () => {
+  const previous = (await request("GET")).history["2026-11"];
+  const { planRevision } = await request("PUT", {
+    month: "2026-11", expectedPlanRevision: previous.savedAt,
+    snapshot: { ...previous, planTotal: 12345, planComplete: true },
+  });
+  assert.ok(planRevision);
+  await request("PUT", { month: "2026-11", expectedPlanRevision: previous.savedAt,
+    snapshot: { ...previous, planTotal: 99999 } }, 409);
+  const { history } = await request("GET");
+  assert.equal(history["2026-11"].planTotal, 12345);
+  assert.equal(history["2026-11"].planRevision, planRevision);
+  assert.equal(history["2026-10"].invested, 9500);
 });

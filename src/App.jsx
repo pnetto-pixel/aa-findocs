@@ -1,4 +1,11 @@
 import InfoHelp from "./InfoHelp.jsx";
+import { BudgetDetails, DynamicPreview, PreferenceStatus, RebalanceControls } from "./RebalanceControls.jsx";
+import { exDellAllocation, groupExDellAllocation, isValueHolding, tickerKey } from "./lib/holdingsAllocation.js";
+import { PER_ASSET_TARGET, standardRebalance } from "./lib/standardRebalance.js";
+import { buildDynamicModel, optimizeDynamic } from "./lib/dynamicRebalance.js";
+import { chooseBudget, dollarsToBudgetCents, parseBudgetCents } from "./lib/rebalanceBudget.js";
+import { contributionBudgetForDate } from "./lib/contributionCapacity.js";
+import { useContributionDate, useContributionSnapshot, useHoldingsPreferences } from "./lib/useRebalanceData.js";
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Plus, Trash2, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Minus, Upload, Scale, CheckCircle2, ChevronDown, ChevronRight, Lock, LogOut, Search, ArrowUpDown, Download, Wallet, Pencil, X, Eye, EyeOff, Cloud, CloudOff, Bell, LayoutGrid, Info } from "lucide-react";
 import InfoDialog from "./InfoDialog.jsx";
@@ -50,37 +57,6 @@ const DONUT_COLORS = [
   "#6a8a6a", // forest
 ];
 const UNALLOCATED_COLOR = "#3a3f48";
-
-// Rebalance: per-asset purchase target in dollars. Whole-share buys aim for the
-// integer quantity closest to this, within +/-10%; outside that band, the largest
-// quantity that stays at or under the target.
-const PER_ASSET_TARGET = 1000;
-const PER_ASSET_BAND_LOW = PER_ASSET_TARGET * 0.9; // 900
-const PER_ASSET_BAND_HIGH = PER_ASSET_TARGET * 1.1; // 1100
-
-// resourceLimit = min(gap, remainingCash) - hard ceiling, never exceeded.
-// cashLimit = remainingCash alone (Infinity when no cash budget is set).
-function pickShareQty(price, resourceLimit, cashLimit) {
-  if (!(price > 0)) return 0;
-  // One share already costs more than the top of the band. Shares are
-  // indivisible, so suggest exactly one rather than hiding the holding -
-  // the gap ceiling cannot be honored here, but the cash budget still is.
-  if (price > PER_ASSET_BAND_HIGH) return price <= cashLimit ? 1 : 0;
-  if (resourceLimit <= 0) return 0;
-  // Not enough room to reach the band - fall back to whatever fits.
-  if (resourceLimit < PER_ASSET_BAND_LOW) return Math.floor(resourceLimit / price);
-  const effectiveHigh = Math.min(PER_ASSET_BAND_HIGH, resourceLimit);
-  // value(n) is linear in n, so the nearest integer to the target is round(target/price).
-  const idealQty = Math.round(PER_ASSET_TARGET / price);
-  const idealValue = idealQty * price;
-  if (idealQty >= 1 && idealValue >= PER_ASSET_BAND_LOW && idealValue <= effectiveHigh) return idealQty;
-  // Band unreachable with any integer -> largest qty at or under the target.
-  return Math.floor(Math.min(PER_ASSET_TARGET, resourceLimit) / price);
-}
-
-// Manual value-only classes that can still be topped up with a dollar amount
-// (no share price, so the suggestion is a value, not a quantity).
-const VALUE_TARGET_CLASSES = new Set(["BRA Fixed Income", "Bank Bonds"]);
 
 // Permanent Cash account — cannot be deleted, only value and target editable
 const CASH_ID = "cash-permanent";
@@ -273,12 +249,7 @@ async function fetchPricesBatch(tickers, auth, quoteOnly = false) {
 // --- BRA Fixed Income (manual, entered in BRL) -----------------------------
 // These holdings (e.g. Tesouro balances copied from Nubank) are entered as a
 // total value in BRL; the app converts to USD using a live USD/BRL rate.
-function isBraFixedIncome(h) {
-  return (
-    h.type === "manual" &&
-    (h.assetClass || "").trim().toLowerCase() === "bra fixed income"
-  );
-}
+
 
 // Fetch the current USD/BRL rate (how many BRL per 1 USD).
 async function fetchUsdBrlRate(auth) {
@@ -375,7 +346,8 @@ async function fetchTransactionsForSync(auth, withMeta = false) {
     if (!res.ok) return null;
     const d = await res.json();
     noteTransactionsSavedAt(d.savedAt);
-    const transactions = d.exists && Array.isArray(d.transactions) ? d.transactions : [];
+    if (d.historyAvailable === false || !Array.isArray(d.transactions)) return null;
+    const transactions = d.transactions;
     if (withMeta) {
       return {
         transactions,
@@ -1524,9 +1496,16 @@ export default function App() {
 function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // View switcher (Dashboard | Transactions). Lazy-loaded.
   const [activeView, setActiveView] = useState("dashboard");
+  const settings = useHoldingsPreferences(auth, onAuthFail);
+  const { preferences } = settings;
+  const { allocationView, grouping: chartGrouping, strategy, washProtection } = preferences;
+  const contributionDate = useContributionDate();
+  const [transactionPhase, setTransactionPhase] = useState("loading");
+  const transactionGeneration = useRef(0);
 
   const [holdings, setHoldings] = useState(() => ensureCashAccount([]));
   const [loaded, setLoaded] = useState(false);
+  const [rebalanceFx, setRebalanceFx] = useState(null);
   const [busyIds, setBusyIds] = useState({});
   const [refreshing, setRefreshing] = useState(false);
   // Live USD/BRL rate (BRL per 1 USD), cached locally for offline/first paint.
@@ -1537,7 +1516,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [showRebalance, setShowRebalance] = useState(false);
   const [showRebalanceHelp, setShowRebalanceHelp] = useState(false);
   const [showTreemap, setShowTreemap] = useState(false);
-  const [newCash, setNewCash] = useState("");
+  const [standardNewCash, setStandardNewCash] = useState("");
+  const [standardExistingCash, setStandardExistingCash] = useState("");
   const importJsonRef = useRef(null);
 
   // Split detection/approval (Bell in header). `transactions` mirrors the log so
@@ -1600,7 +1580,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   const [editingClassValue, setEditingClassValue] = useState("");
 
   // Allocation chart grouping mode
-  const [chartGrouping, setChartGrouping] = useState("class"); // "class" | "holding"
+
 
   // Responsive window width for scaling donuts
   const [windowWidth, setWindowWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 375));
@@ -1785,11 +1765,13 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
         }
 
         // Sync qty of auto holdings from the transactions log
+        const txRevision = ++transactionGeneration.current;
         const txMeta = await fetchTransactionsForSync(auth, true);
         const txs = txMeta ? txMeta.transactions : null;
         const loadedSplitEvents = txMeta ? txMeta.splitEvents : [];
         const loadedBondIncome = txMeta ? txMeta.bondIncome : [];
-        if (!cancelled && txs) {
+        if (!cancelled && txRevision === transactionGeneration.current) setTransactionPhase(txs ? "ready" : "unavailable");
+        if (!cancelled && txs && txRevision === transactionGeneration.current) {
           setTransactions(txs);
           setSplitEvents(loadedSplitEvents);
           // Non-blocking: surface any unreflected splits via the Bell badge.
@@ -1857,6 +1839,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
           onAuthFail();
           return;
         }
+        setTransactionPhase("unavailable");
         // Server unreachable or Redis not configured → use local cache
         if (localData && Array.isArray(localData)) {
           setHoldings(ensureCashAccount(localData));
@@ -2088,6 +2071,15 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     // Non-blocking: it applies its own setHoldings patches independently.
     refreshFromSimplefin();
 
+    const txRevision = ++transactionGeneration.current;
+    setTransactionPhase("loading");
+    const txsPromise = fetchTransactionsForSync(auth).then(txs => {
+      if (txRevision !== transactionGeneration.current) return null;
+      if (txs) setTransactions(txs);
+      setTransactionPhase(txs ? "ready" : "unavailable");
+      return txs;
+    });
+    settings.reload();
     const autoHoldings = holdings.filter((h) => h.type !== "manual");
     if (autoHoldings.length === 0) return;
     setRefreshing(true);
@@ -2095,7 +2087,6 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
     // Kick off S&P 500 refresh and transactions fetch in parallel (silent)
     refreshSp500();
-    const txsPromise = fetchTransactionsForSync(auth);
 
     const results = new Map(); // id -> { ok: true, data } | { ok: false, error }
 
@@ -2214,6 +2205,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     try {
       const rate = await fetchUsdBrlRate(auth);
       setUsdBrlRate(rate);
+      setRebalanceFx(rate);
       try { localStorage.setItem("usdBrlRate", String(rate)); } catch (e) {}
     } catch (e) {
       if (e.code === 401) onAuthFail();
@@ -2222,6 +2214,8 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   }
 
   function handleTransactionsChange(txs) {
+    transactionGeneration.current++;
+    setTransactionPhase("ready");
     const netQty = computeNetQty(txs);
     const hasBankBondTx = txs.some((t) => t && t.assetClass === "Bank Bonds");
     setHoldings((prev) => {
@@ -2956,77 +2950,24 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
   // plain dollar-value suggestion instead. If newCash specified, total
   // purchases <= newCash. Otherwise no overall limit. Ordered by largest
   // underweight first.
+  const exDell = useMemo(() => exDellAllocation(holdings, rebalanceFx), [holdings, rebalanceFx]);
+  const eligibleCash = exDell.rows.filter(row => row.cash && isValueHolding(row.holding) &&
+    (!row.holding.manualCurrency || row.holding.manualCurrency === "USD"));
+  const preferredCashId = preferences.cashAccountId ?? eligibleCash.find(row => row.id === CASH_ID)?.id ?? eligibleCash[0]?.id;
+  const cashAccount = eligibleCash.find(row => row.id === preferredCashId);
+  const fundingSource = strategy === "standard" ? preferences.standardFundingSource : preferences.fundingSource;
+  const newCash = fundingSource === "cash" ? standardExistingCash : standardNewCash;
+  const setNewCash = fundingSource === "cash" ? setStandardExistingCash : setStandardNewCash;
+  const existingStandardBudget = parseBudgetCents(standardExistingCash);
+  const standardCashError = fundingSource === "cash" ? (existingStandardBudget == null
+    ? "Enter a valid Cash budget." : cashAccount?.value == null || existingStandardBudget > dollarsToBudgetCents(cashAccount.value)
+      ? "Budget exceeds the selected Cash balance." : null) : null;
+
   const rebalance = useMemo(() => {
-    const cash = parseFloat(newCash) || 0;
-    const investableTotal = totalValue + cash;
-    if (investableTotal <= 0) return [];
-
-    // Build candidate list: only underweight holdings with valid prices
-    const candidates = holdings
-      .filter((h) => {
-        if (isCash(h)) return false; // cash sits separately, not rebalanced
-        if (h.target <= 0) return false;
-        if (h.type === "manual") {
-          if (h.manualMode === "value") {
-            if (!VALUE_TARGET_CLASSES.has(h.assetClass)) return false;
-            // BRA Fixed Income reads as 0 USD when the live FX rate hasn't
-            // loaded yet - skip rather than suggest an inflated gap.
-            if (isBraFixedIncome(h) && !usdBrlRate) return false;
-            return true;
-          }
-          return h.manualPrice != null && h.manualPrice > 0 && h.qty != null;
-        }
-        return h.price != null && h.price > 0;
-      })
-      .map((h) => {
-        const currentValue = holdingValue(h);
-        const targetValue = investableTotal * (h.target / 100);
-        const gap = targetValue - currentValue;
-        const price = h.type === "manual" ? h.manualPrice : h.price;
-        return { holding: h, currentValue, targetValue, gap, price };
-      })
-      .filter((c) => c.gap > 0); // underweight only
-
-    // Sort: largest gap first
-    candidates.sort((a, b) => b.gap - a.gap);
-
-    // Allocate cash targeting ~$1K per asset (or up to gap, whichever is smaller)
-    let remainingCash = cash > 0 ? cash : Infinity;
-    const suggestions = [];
-    for (const c of candidates) {
-      if (remainingCash <= 0) break;
-      if (c.holding.manualMode === "value") {
-        // No share price: suggest the exact dollar amount, no band/floor.
-        const allocDollars = Math.min(PER_ASSET_TARGET, c.gap, remainingCash);
-        if (allocDollars <= 0) continue;
-        suggestions.push({
-          holding: c.holding,
-          currentValue: c.currentValue,
-          targetValue: c.targetValue,
-          deltaShares: null,
-          deltaDollars: allocDollars,
-          gap: c.gap,
-        });
-        remainingCash -= allocDollars;
-        continue;
-      }
-      const resourceLimit = Math.min(c.gap, remainingCash);
-      const qty = pickShareQty(c.price, resourceLimit, remainingCash);
-      if (qty <= 0) continue; // no affordable whole share for the available room
-      const actualDollars = qty * c.price;
-      suggestions.push({
-        holding: c.holding,
-        currentValue: c.currentValue,
-        targetValue: c.targetValue,
-        deltaShares: qty,
-        deltaDollars: actualDollars,
-        gap: c.gap,
-      });
-      remainingCash -= actualDollars;
-    }
-
-    return suggestions;
-  }, [holdings, totalValue, newCash, usdBrlRate]);
+    if (strategy !== "standard" || standardCashError || (fundingSource === "cash" && !existingStandardBudget)) return [];
+    const cash = fundingSource === "cash" ? existingStandardBudget / 100 : parseFloat(newCash) || 0;
+    return standardRebalance({ holdings, totalValue, cash, fundingSource, usdBrlRate, holdingValue, isCash });
+  }, [holdings, totalValue, newCash, usdBrlRate, strategy, fundingSource, standardCashError, existingStandardBudget]);
 
   const taxPrices = useMemo(() => {
     const prices = {};
@@ -3039,8 +2980,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     }
     return prices;
   }, [holdings]);
-  const now = new Date();
-  const taxToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const taxToday = contributionDate;
   const harvest = useMemo(() => buildHarvestLots(transactions, taxPrices, taxToday), [transactions, taxPrices, taxToday]);
   const cardHarvest = useMemo(() => scopeHarvestToHoldings(harvest, holdings), [harvest, holdings]);
   const lotsByTicker = useMemo(() => {
@@ -3054,6 +2994,58 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
     return grouped;
   }, [harvest.candidates]);
   const washWarnings = useMemo(() => washSaleWarnings(transactions, taxToday), [transactions, taxToday]);
+
+  const dynamicOpen = showRebalance && strategy === "dynamic" && activeView === "dashboard";
+  const contributionSnapshot = useContributionSnapshot(auth, dynamicOpen, contributionDate.slice(0, 7), onAuthFail);
+  useEffect(() => {
+    if (!dynamicOpen || !loaded) return;
+    const refresh = async () => {
+      const generation = ++transactionGeneration.current;
+      setTransactionPhase("loading");
+      const txs = await fetchTransactionsForSync(auth);
+      if (generation !== transactionGeneration.current) return;
+      if (txs) setTransactions(txs);
+      setTransactionPhase(txs ? "ready" : "unavailable");
+    };
+    refresh();
+    const visible = () => { if (!document.hidden) refresh(); };
+    const timer = setInterval(visible, 30000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [dynamicOpen, loaded, auth]);
+  const contributionPlan = useMemo(() => contributionSnapshot.phase === "ready" && transactionPhase === "ready"
+    ? contributionBudgetForDate(contributionSnapshot.snapshot, transactions, rebalanceFx, contributionDate) : null,
+    [contributionSnapshot.snapshot, contributionSnapshot.phase, transactionPhase, transactions, rebalanceFx, contributionDate]);
+  const automaticBudget = preferences.budgetMode === "current" || preferences.budgetMode === "monthly";
+  const planBudget = chooseBudget({
+    mode: preferences.budgetMode, source: fundingSource, account: cashAccount,
+    contributions: contributionPlan, customBudget: preferences.customBudget,
+  });
+  const historyNeeded = washProtection || automaticBudget;
+  const dynamicError = settings.phase !== "ready" ? "Waiting for synchronized settings."
+    : historyNeeded && transactionPhase !== "ready" ? transactionPhase === "loading"
+      ? "Loading transaction history…" : "Transaction history is unavailable. Refresh to evaluate recommendations."
+    : automaticBudget && contributionSnapshot.phase === "loading" ? "Loading contribution plan…"
+    : automaticBudget && !contributionPlan ? "Current contribution plan is unavailable or incomplete. Check Contributions."
+    : syncState === "offline" || syncState === "local-only" || syncState === "loading" ? "Server Holdings are unavailable. Refresh Holdings before continuing."
+    : !exDell.complete ? "An Ex-DELL holding is missing its value or exchange rate."
+    : !exDell.targetSum ? "Set an allocation target outside DELL."
+    : planBudget.error ?? null;
+  const dynamicResult = useMemo(() => {
+    if (!dynamicOpen || dynamicError) return null;
+    const model = buildDynamicModel(exDell, {
+      budgetCents: planBudget.cents, fundingSource, cashAccountId: cashAccount?.id, excludeTickers: preferences.excludeTickers,
+      excludeClasses: preferences.excludeClasses, warnings: washProtection ? washWarnings : {},
+    });
+    return model ? optimizeDynamic(model) : null;
+  }, [dynamicOpen, dynamicError, exDell, planBudget.cents, fundingSource, cashAccount?.id, preferences.excludeTickers,
+    preferences.excludeClasses, washProtection, washWarnings]);
+
 
   // Build asset class dropdown options from existing holdings
   const assetClassOptions = useMemo(() => {
@@ -3143,6 +3135,23 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
   // Build allocation chart data: target vs actual, grouped by class or per holding
   const chartData = useMemo(() => {
+    if (allocationView === "ex-dell") {
+      const groups = groupExDellAllocation(exDell, chartGrouping === "class");
+      const colorMap = Object.fromEntries(groups.map((g, i) => [g.key, DONUT_COLORS[i % DONUT_COLORS.length]]));
+      const dayChangeMap = new Map(groups.filter(g => g.dayValue > 0).map(g => [g.key, g.dayWeighted / g.dayValue]));
+      const dayValue = groups.reduce((sum, g) => sum + g.dayValue, 0);
+      const signed = groups.some(g => g.actual < 0);
+      return {
+        colorMap, dayChangeMap, legendRows: groups,
+        targetSlices: groups.filter(g => g.target > 0).map(g => ({ key: g.key, label: g.label, pct: g.target, color: colorMap[g.key] })),
+        actualSlices: signed ? [] : groups.filter(g => g.actual > 0).map(g => ({
+          key: g.key, label: g.label, pct: g.actual, value: g.value, color: colorMap[g.key],
+        })),
+        totalTarget: exDell.targetSum > 0 ? 100 : null, totalActualValue: exDell.complete ? exDell.total : null,
+        portfolioDayChange: dayValue > 0 ? groups.reduce((sum, g) => sum + g.dayWeighted, 0) / dayValue : null,
+      };
+    }
+
     const keyOf = (h) =>
       chartGrouping === "class" ? h.assetClass || "Uncategorized" : h.ticker || h.name;
 
@@ -3237,7 +3246,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
       dayChangeMap,
       portfolioDayChange,
     };
-  }, [holdings, chartGrouping]);
+  }, [holdings, chartGrouping, allocationView, exDell, usdBrlRate]);
 
   // Bell badge: unreviewed splits + unread alerts.
   const unreadAlertCount = alertLog.filter((a) => !a.read).length;
@@ -4037,7 +4046,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                 </div>
               }
             >
-              <AporteQuinzenalView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} />
+              <AporteQuinzenalView auth={auth} onAuthFail={onAuthFail} valuesHidden={valuesHidden} liveUsdBrlRate={rebalanceFx} />
             </Suspense>
           )}
 
@@ -4115,7 +4124,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
 
           {/* Allocation chart (single column) */}
           {(() => {
-            const showAlloc = chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
+            const showAlloc = allocationView === "ex-dell" || chartData.targetSlices.length > 0 || chartData.actualSlices.length > 0;
             return (
               <div style={{ display: "block" }}>
                 {/* Allocation charts: Target vs Actual */}
@@ -4226,17 +4235,28 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       <div style={{ display: "flex", gap: 4 }}>
                         <ToggleButton
                           active={chartGrouping === "class"}
-                          onClick={() => setChartGrouping("class")}
+                          disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ grouping: "class" })}
                           label="By class"
                         />
                         <ToggleButton
                           active={chartGrouping === "holding"}
-                          onClick={() => setChartGrouping("holding")}
+                          disabled={settings.phase !== "ready"}
+                          onClick={() => settings.save({ grouping: "holding" })}
                           label="Per holding"
                         />
                       </div>
                     </div>
 
+                    <PreferenceStatus settings={settings} />
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }} aria-label="Allocation scope" role="group">
+                      <ToggleButton label="Total Portfolio" active={allocationView === "total"} disabled={settings.phase !== "ready"}
+                        onClick={() => settings.save({ allocationView: "total" })} />
+                      <ToggleButton label="Ex-DELL" active={allocationView === "ex-dell"} disabled={settings.phase !== "ready"}
+                        onClick={() => settings.save({ allocationView: "ex-dell" })} />
+                      <InfoHelp title="Allocation scope">Ex-DELL removes DELL market value and scales all remaining targets, including Cash, to 100%.</InfoHelp>
+                    </div>
+                    {allocationView === "ex-dell" && !exDell.complete && <div role="status" style={{ color: T.textDim, fontSize: 12, marginBottom: 6 }}>Actual allocation is unavailable while a value or exchange rate is missing.</div>}
                     {(() => {
                       // Responsive donut size: clamp [140, 220] based on available section width.
                       // Below 640px (mobile) the clamp floor of 140 ensures no regression.
@@ -4259,7 +4279,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                             slices={chartData.targetSlices}
                             centerLabel="Target"
                             centerValue={
-                              chartData.totalTarget < 99.5
+                              chartData.totalTarget == null ? "—" : chartData.totalTarget < 99.5
                                 ? fmtPct(chartData.totalTarget)
                                 : "100%"
                             }
@@ -4269,7 +4289,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                             size={donutSize}
                             slices={chartData.actualSlices}
                             centerLabel="Actual"
-                            centerValue={maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
+                            centerValue={chartData.totalActualValue == null ? "—" : maskMoney(chartData.totalActualValue, valuesHidden, { short: true })}
                             valuesHidden={valuesHidden}
                           />
                         </div>
@@ -4282,6 +4302,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       targetSlices={chartData.targetSlices}
                       actualSlices={chartData.actualSlices}
                       dayChangeMap={chartData.dayChangeMap}
+                      legendRows={chartData.legendRows}
                     />
                   </section>
                 )}
@@ -4682,7 +4703,26 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                     marginTop: -1,
                   }}
                 >
-                  {/* New cash input */}
+                  <RebalanceControls settings={settings} cashAccounts={eligibleCash} cashAccountId={cashAccount?.id}
+                    fundingSource={fundingSource} valuesHidden={valuesHidden}
+                    tickerOptions={[...new Set(exDell.rows.filter(row => !row.cash && row.ticker).map(row => row.ticker))].map(t => [t, t])}
+                    classOptions={[...new Map(exDell.rows.filter(row => !row.cash).map(row => [row.classId, row.assetClass]))].sort()} />
+                  {strategy === "dynamic" ? <>
+                    <BudgetDetails date={contributionDate} plan={contributionPlan} available={planBudget.available} requested={planBudget.cents ?? planBudget.requested}
+                      money={value => maskMoney(value, valuesHidden)} />
+                    <InfoHelp title="Dynamic Ex-DELL">This estimates purchases using Ex-DELL targets and the selected funding source. For new contributions, gaps before buys include the deposit in Cash. Exclusions apply to purchases only.</InfoHelp>
+                    {dynamicError || !dynamicResult ? <div role="status" style={{ marginTop: 8, color: T.textDim, fontSize: 12 }}>
+                      {dynamicError || "No Ex-DELL value is available for this budget."}
+                    </div> : <>
+                      {dynamicResult.orders.length === 0 && <div role="status" style={{ marginTop: 8, color: T.textDim, fontSize: 12 }}>
+                        {planBudget.cents === 0 ? "No purchase budget remains." : "No eligible purchase improves the allocation within this budget."}
+                      </div>}
+                      {dynamicResult.orders.map(r => <RebalanceRow key={r.holding.id} item={r} valuesHidden={valuesHidden}
+                        warning={washWarnings[tickerKey(r.holding.ticker)]} lots={lossesByTicker[tickerKey(r.holding.ticker)] || []} />)}
+                      <DynamicPreview result={dynamicResult} money={value => maskMoney(value, valuesHidden)} />
+                    </>}
+                  </> : <>
+                  {/* Standard purchase budget */}
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                     <label
@@ -4696,11 +4736,14 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                         marginBottom: 0,
                       }}
                     >
-                      New cash to deploy <span style={{ color: T.textFaint }}>(optional)</span>
+                      {fundingSource === "new" ? "New cash to deploy " : "Existing Cash budget "}
+                      {fundingSource === "new" && <span style={{ color: T.textFaint }}>(optional)</span>}
                     </label>
                       <button type="button" aria-label="Rebalance instructions" aria-haspopup="dialog" onClick={() => setShowRebalanceHelp(true)} style={{ background: "none", border: 0, color: T.textDim, padding: 6, display: "flex", cursor: "pointer" }}><Info size={14} /></button>
                     </div>
                     <Input
+                      aria-label="Standard purchase budget"
+                      type={valuesHidden ? "password" : "text"}
                       placeholder="0.00"
                       value={newCash}
                       onChange={(e) => setNewCash(e.target.value)}
@@ -4710,7 +4753,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                   </div>
 
                   {/* Rebalance rows */}
-                  {rebalance.length === 0 ? (
+                  {standardCashError ? <div role="status" style={{ color: T.textDim, fontSize: 12 }}>{standardCashError}</div> : rebalance.length === 0 ? (
                     <div
                       style={{
                         background: T.cardElev,
@@ -4771,6 +4814,7 @@ function PortfolioTracker({ auth, onLogout, onAuthFail }) {
                       </span>
                     </div>
                   )}
+                  </>}
                 </div>
               )}
             </section>
@@ -6641,9 +6685,9 @@ function ManualHoldingRow({ holding, lots = [], lotsUncertain = false, usdBrlRat
   );
 }
 
-function ToggleButton({ active, onClick, label }) {
+function ToggleButton({ active, onClick, label, disabled }) {
   return (
-    <button
+    <button type="button" aria-pressed={active} disabled={disabled}
       onClick={onClick}
       style={{
         background: active ? T.gold : "transparent",
@@ -6855,7 +6899,7 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden, size = 140
                 marginBottom: 2,
               }}
             >
-              {hoveredSlice.key}
+              {hoveredSlice.label || hoveredSlice.key}
             </div>
             <div
               style={{
@@ -6881,11 +6925,16 @@ function DonutChart({ slices, centerLabel, centerValue, valuesHidden, size = 140
   );
 }
 
-function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap }) {
+function ChartLegend({ colorMap, targetSlices, actualSlices, dayChangeMap, legendRows }) {
   // Build unified rows showing target % vs actual % per key
   const targetMap = new Map(targetSlices.filter((s) => !s.isUnallocated).map((s) => [s.key, s.pct]));
   const actualMap = new Map(actualSlices.map((s) => [s.key, s.pct]));
-  const allKeys = Array.from(new Set([...targetMap.keys(), ...actualMap.keys()])).sort();
+  const allKeys = legendRows ? legendRows.map(row => row.key) : Array.from(new Set([...targetMap.keys(), ...actualMap.keys()])).sort();
+  const labels = new Map(legendRows?.map(row => [row.key, row.label]));
+  for (const row of legendRows || []) {
+    targetMap.set(row.key, row.target);
+    actualMap.set(row.key, row.actual);
+  }
 
   const hasUnallocated = targetSlices.some((s) => s.isUnallocated);
   const unallocPct = hasUnallocated ? targetSlices.find((s) => s.isUnallocated).pct : 0;

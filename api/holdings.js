@@ -5,6 +5,7 @@
 
 import { getRedis } from '../lib/redis.js';
 import { authenticate } from '../lib/auth.js';
+import { handleHoldingsPreferences } from '../lib/holdings-preferences.js';
 
 export default async function handler(req, res) {
   const auth = await authenticate(req);
@@ -20,6 +21,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (req.query?.resource === 'preferences') return await handleHoldingsPreferences(req, res, auth, redis);
     if (req.method === 'GET') {
       const raw = await redis.get(auth.storageKey);
       let holdings = null;

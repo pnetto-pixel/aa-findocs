@@ -26,10 +26,4 @@ jobs:
         run: npm run build
 
       - name: Run tests
-        run: |
-          status=0
-          for f in test/*.test.mjs; do
-            echo "== $f =="
-            node "$f" || status=1
-          done
-          exit $status
+        run: npm test
